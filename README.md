@@ -21,6 +21,14 @@ NEXT_PUBLIC_USE_MOCKS=true
 ```
 and restart `pnpm dev`. `src/client/api-client.ts` will then return data from `src/client/mocks/` instead of calling `/api/*`. Mocks are checked against the same Zod contracts, so they can't drift from the real API.
 
+## Database (Postgres + pgvector)
+
+```bash
+docker compose -f compose.dev.yml up -d   # local DB on 127.0.0.1:5432
+```
+
+`DATABASE_URL` in `.env.local` (see `.env.example`) points to it. Mastra creates its own tables on first use. The agent currently uses a mock model, so no LLM API key is needed.
+
 ## Commands
 | Command | What it does |
 | --- | --- |

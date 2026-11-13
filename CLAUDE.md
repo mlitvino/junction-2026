@@ -11,6 +11,8 @@ Team: one frontend dev and one backend dev, both working with AI agents in this 
 - Next.js 16, **App Router only**, TypeScript strict, everything under `src/`
 - Tailwind CSS v4 + shadcn/ui (`src/components/ui`, `cn()` in `src/components/lib/utils.ts`)
 - Zod v4 for API contracts
+- AI agents: Mastra (`@mastra/core`, `@mastra/pg`), server-side only, in `src/server/agents/`. Listed in `serverExternalPackages` in `next.config.ts`.
+- DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `docker compose -f compose.dev.yml up -d`. Migrations are additive only.
 - ESLint (flat config, `eslint.config.mjs`) + Prettier
 - pnpm
 - **Forbidden:** Pages Router (`src/pages`), Server Actions (`"use server"`).

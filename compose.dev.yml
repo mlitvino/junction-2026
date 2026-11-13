@@ -1,0 +1,15 @@
+# Local Postgres + pgvector for development: docker compose -f compose.dev.yml up -d
+# Same image as production (deploy/docker-compose.yml). Dev-only credentials.
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    # Bound to localhost only; never expose the database on all interfaces.
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+volumes:
+  pgdata:
