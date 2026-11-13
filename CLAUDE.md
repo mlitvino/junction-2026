@@ -7,6 +7,7 @@ Team: one frontend dev and one backend dev, both working with AI agents in this 
 @AGENTS.md
 
 ## Stack (do not add or change without explicit approval)
+
 - Next.js 16, **App Router only**, TypeScript strict, everything under `src/`
 - Tailwind CSS v4 + shadcn/ui (`src/components/ui`, `cn()` in `src/components/lib/utils.ts`)
 - Zod v4 for API contracts
@@ -15,6 +16,7 @@ Team: one frontend dev and one backend dev, both working with AI agents in this 
 - **Forbidden:** Pages Router (`src/pages`), Server Actions (`"use server"`).
 
 ## Structure and zones
+
 ```
 src/
   app/                    # FRONTEND: pages, layouts
@@ -30,6 +32,7 @@ src/
 ```
 
 ## Boundary rules (enforced by ESLint `no-restricted-imports`)
+
 1. **Frontend** (`app/` except `app/api/`, `components/`, `features/`, `client/`) never imports from `src/server/`. It talks to the backend only through `src/client/api-client.ts`.
 2. **Backend** (`app/api/`, `server/`) never imports from `components/`, `features/`, `client/`.
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
@@ -40,6 +43,7 @@ src/
 Never disable these lint rules to make an import work. Move the code to the right zone, or put the shared type in `shared/contracts`.
 
 ## Adding an endpoint (reference: `GET /api/health`)
+
 1. `src/shared/contracts/<name>.ts`: request/response schemas + `z.infer` types. **Contract changes need explicit approval.**
 2. `src/server/services/<name>.ts`: `import "server-only";` + plain functions with the logic.
 3. `src/app/api/<name>/route.ts`: thin handler, for example:
@@ -53,7 +57,16 @@ Never disable these lint rules to make an import work. Move the code to the righ
 4. `src/client/mocks/<name>.ts` with a mock, plus a method on `apiClient` in `src/client/api-client.ts`.
 5. UI in `src/features/<name>/`, calling `apiClient` only.
 
+## Security (enforced by `.claude/settings.json`, not by this file)
+
+- `.env*` files (except `.env.example`), `~/.ssh` and `~/.aws` are off-limits: reads are denied, and `.claude/hooks/guard.sh` blocks Bash commands that mention `.env`.
+- `sudo`, `curl`, `wget` and force-push are denied. `rm` and `git push` always ask.
+- Bash runs in a sandbox: no writes outside the project, network only to the npm registry, GitHub and Google Fonts.
+- bypassPermissions mode is disabled. Don't try to work around a block. Stop and tell the user what you needed and why.
+- Never put real secrets in code, mocks or `.env.example`. Use test keys with limits.
+
 ## Commands
+
 - `pnpm dev`: dev server (http://localhost:3000)
 - `pnpm build`: production build
 - `pnpm lint`: ESLint
