@@ -17,10 +17,13 @@
     "docker:run": "docker run --rm -p 3000:3000 junction-2026"
   },
   "dependencies": {
+    "@hono/swagger-ui": "0.6.2",
+    "@hono/zod-openapi": "1.6.3",
     "@mastra/core": "^1.82.0",
     "@mastra/pg": "^1.35.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "hono": "4.13.18",
     "next": "16.4.6",
     "pg": "^8.23.1",
     "react": "19.3.0",

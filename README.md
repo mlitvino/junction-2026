@@ -12,7 +12,7 @@ pnpm install
 cp .env.example .env.local
 pnpm dev
 ```
-Open http://localhost:3000. The page shows the status from `GET /api/health`.
+Open http://localhost:3000. The page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
 
 ## Mocks (frontend without a backend)
 Set this in `.env.local`:

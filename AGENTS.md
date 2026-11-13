@@ -31,6 +31,7 @@ Before editing in a zone, read that zone's `AGENTS.md` (`src/<zone>/AGENTS.md`, 
 - Next.js 16, **App Router only**, TypeScript strict, everything under `src/`
 - Tailwind CSS v4 + shadcn/ui (`src/components/ui`, `cn()` in `src/components/lib/utils.ts`)
 - Zod v4 for API contracts
+- Hono + `@hono/zod-openapi` for every `/api` route; OpenAPI 3.1 spec at `/api/openapi.json`, Swagger UI at `/api/docs` (both public)
 - AI agents: Mastra (`@mastra/core`, `@mastra/pg`), server-side only, in `src/server/agents/`. Listed in `serverExternalPackages` in `next.config.ts`.
 - DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `pnpm db:up`. Migrations are additive only.
 - ESLint (flat config, `eslint.config.mjs`) + Prettier
@@ -59,7 +60,7 @@ src/
 1. **Frontend** (`app/` except `app/api/`, `components/`, `features/`, `client/`) never imports from `src/server/`. It talks to the backend only through `src/client/api-client.ts`.
 2. **Backend** (`app/api/`, `server/`) never imports from `components/`, `features/`, `client/`.
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
-4. Route handlers `app/api/**/route.ts` are thin: parse the input with a Zod schema from `shared/contracts`, call a function from `server/services`, return a response that matches the schema. No logic.
+4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints are `createRoute` modules in `src/server/api/routes/`: request/response schemas from `shared/contracts`, the handler calls a function from `server/services`. No logic in route modules.
 5. Every file in `src/server/` starts with `import "server-only";`.
 6. `api-client.ts` is typed by `shared/contracts` and serves data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready.
 
@@ -71,14 +72,18 @@ Step 1 is joint, steps 2–3 belong to the backend dev, steps 4–5 to the front
 
 1. `src/shared/contracts/<name>.ts`: request/response schemas + `z.infer` types. **Contract changes need explicit approval from both developers.**
 2. `src/server/services/<name>.ts`: `import "server-only";` + plain functions with the logic.
-3. `src/app/api/<name>/route.ts`: thin handler, for example:
+3. `src/server/api/routes/<name>.ts`: a router from `createRouter()` with one `createRoute` per endpoint, then register it in `src/server/api/app.ts` (`app.route("/", <name>Router)`). Never add files under `src/app/api/`. Example (see `routes/health.ts`):
    ```ts
-   export async function POST(req: Request) {
-     const parsed = CreateThingRequestSchema.safeParse(await req.json());
-     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues }, { status: 400 });
-     return NextResponse.json(CreateThingResponseSchema.parse(await createThing(parsed.data)));
-   }
+   const createThingRoute = createRoute({
+     method: "post", path: "/things", tags: ["Things"], summary: "Create a thing",
+     request: { body: { content: { "application/json": { schema: CreateThingRequestSchema } } } },
+     responses: { 200: { description: "Created", content: { "application/json": { schema: CreateThingResponseSchema } } } },
+   });
+   export const thingsRouter = createRouter().openapi(createThingRoute, async (c) =>
+     c.json(await createThing(c.req.valid("json")), 200),
+   );
    ```
+   Invalid input gets `400 { error: issues }` automatically, and the endpoint shows up in `/api/openapi.json` and `/api/docs`. Use `.meta({ description, example })` on contract fields to document them.
 4. `src/client/mocks/<name>.ts` with a mock, plus a method on `apiClient` in `src/client/api-client.ts`.
 5. UI in `src/features/<name>/`, calling `apiClient` only.
 
