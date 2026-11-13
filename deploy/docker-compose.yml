@@ -1,4 +1,4 @@
-# Template. The live copy sits on the server in ~/app next to Caddyfile and .env.
+# Template. The live copy sits on the server in ~/junction-2026 next to Caddyfile and .env.
 services:
   app:
     image: ghcr.io/mlitvino/junction-2026:${APP_TAG:-latest}

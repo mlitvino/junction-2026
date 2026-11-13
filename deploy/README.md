@@ -4,7 +4,7 @@
 `ghcr.io/mlitvino/junction-2026:{latest,sha-<short>}` → SSHes to the server and runs
 `docker compose pull app && docker compose up -d`.
 
-The files in this folder are templates. On the server, `~/app` holds
+The files in this folder are templates. On the server, `~/junction-2026` holds
 `docker-compose.yml`, `Caddyfile` and `.env` (from `.env.example`).
 
 ## One-time setup
@@ -21,7 +21,7 @@ The files in this folder are templates. On the server, `~/app` holds
    private key → GitHub secret `SSH_KEY`.
 4. GitHub → Settings → Secrets → Actions: `SSH_HOST`, `SSH_USER`, `SSH_KEY`.
    ghcr needs nothing: the built-in `GITHUB_TOKEN` has `packages: write`.
-5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/app`; set the domain and
+5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/junction-2026`; set the domain and
    `POSTGRES_PASSWORD`.
 6. Push to `main`; check the image under Packages and the site over HTTPS.
 
@@ -29,7 +29,7 @@ The files in this folder are templates. On the server, `~/app` holds
 
 | Way       | Command                                                    | Time    |
 | --------- | ---------------------------------------------------------- | ------- |
-| SSH + tag | `cd ~/app && APP_TAG=sha-a1b2c3d docker compose up -d app` | ~10 s   |
+| SSH + tag | `cd ~/junction-2026 && APP_TAG=sha-a1b2c3d docker compose up -d app` | ~10 s   |
 | Re-run    | Actions → last green run → Re-run all jobs                 | 2–4 min |
 | Revert    | `git revert <commit> && git push`                          | 2–4 min |
 
