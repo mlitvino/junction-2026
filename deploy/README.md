@@ -35,11 +35,11 @@ server (example for certbot; adjust the paths if the app keeps them elsewhere):
 ```bash
 mkdir -p ~/junction-2026/certs
 sudo cp /etc/letsencrypt/live/valinor.ink/fullchain.pem ~/junction-2026/certs/
-sudo cp /etc/letsencrypt/live/valinor.ink/privkey.pem ~/junction-2026/certs/
-sudo chown "$USER": ~/junction-2026/certs/*.pem && chmod 600 ~/junction-2026/certs/privkey.pem
+sudo cp /etc/letsencrypt/live/valinor.ink/private.key.pem ~/junction-2026/certs/
+sudo chown "$USER": ~/junction-2026/certs/*.pem && chmod 600 ~/junction-2026/certs/private.key.pem
 ```
 
-- Files must be named `fullchain.pem` (certificate + chain) and `privkey.pem` (private key),
+- Files must be named `fullchain.pem` (certificate + chain) and `private.key.pem` (private key),
   and the certificate must cover `valinor.ink`.
 - The private key stays on the server only: `*.pem` is git- and docker-ignored.
 - Certificates expire (Let's Encrypt: 90 days) and a copy does not renew itself. After the

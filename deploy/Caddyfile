@@ -7,6 +7,6 @@
 }
 
 https://valinor.ink:9090 {
-    tls /certs/fullchain.pem /certs/privkey.pem
+    tls /certs/fullchain.pem /certs/private.key.pem
     reverse_proxy app:3000
 }
