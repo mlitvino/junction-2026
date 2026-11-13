@@ -75,3 +75,10 @@ Never disable these lint rules to make an import work. Move the code to the righ
 - `pnpm format`: Prettier
 
 **After any change, run `pnpm check` and fix every error before finishing.**
+
+## Deploy
+
+Push to `main` → `.github/workflows/deploy.yml` builds the `Dockerfile` (Next.js `output: "standalone"`), pushes to ghcr.io and restarts the app on the Hetzner server over SSH. Server templates and rollback steps: `deploy/README.md`.
+
+- Never put secrets in the image or in git: the server's `.env` lives only on the server.
+- DB migrations are additive only (new tables/columns, no drops), so a rollback to an older image keeps working.
