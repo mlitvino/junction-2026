@@ -1,6 +1,6 @@
 # junction-2026
 
-TODO: 1–2 sentences about what the app does.
+Trusted Trade Agents (Junction 2026, Valio Aimo challenge): a prototype interface that lets an external purchasing agent look up products, prices and availability in a mock Valio Aimo backend, place an order within its permissions, or send it to a human for approval, and leave a readable audit trail of why.
 
 Team: one frontend dev and one backend dev, both working with AI agents in this repo. Stay in your zone.
 
