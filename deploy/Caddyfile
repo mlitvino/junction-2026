@@ -1,0 +1,5 @@
+# Template. Replace the host with your domain, or with <server-ip-with-dashes>.sslip.io
+# (e.g. 1-2-3-4.sslip.io) if you have no domain. Caddy gets the HTTPS certificate itself.
+myapp.example.com {
+    reverse_proxy app:3000
+}
