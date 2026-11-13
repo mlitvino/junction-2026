@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.github
+.claude
+deploy
+*.docx
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets never go into the image
+.env*
+!.env.example
+*.pem

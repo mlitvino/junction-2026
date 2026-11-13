@@ -1,0 +1,12 @@
+# https://valinor.ink:9090 with the certificate of the existing valinor.ink app.
+# Ports 80/443 on this server belong to that app, so Caddy must not use them: automatic
+# certificates (which need 80/443) are off and the certificate files are loaded instead.
+# The files live only on the server, in ./certs (see deploy/README.md, "Certificate").
+{
+    auto_https off
+}
+
+https://valinor.ink:9090 {
+    tls /certs/fullchain.pem /certs/private.key.pem
+    reverse_proxy app:3000
+}
