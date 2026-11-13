@@ -48,6 +48,6 @@ Code is split into frontend, backend and shared zones, and ESLint enforces the b
 
 ## Working with AI agents
 - [AGENTS.md](AGENTS.md) is the single source of rules for every agent. Each zone has its own `src/<zone>/AGENTS.md`.
-- **Claude Code** reads `CLAUDE.md`, which imports `AGENTS.md` and adds Claude-only notes. Every zone `CLAUDE.md` is a one-line import of the zone's `AGENTS.md`. Edit the `AGENTS.md` files, not the stubs.
+- **Claude Code** reads the root `CLAUDE.md`, which imports the root and every zone `AGENTS.md` and adds Claude-only notes. There are no other `CLAUDE.md` files: edit the `AGENTS.md` files, and when you add a zone `AGENTS.md`, add its import to `CLAUDE.md`.
 - **Codex** reads `AGENTS.md` directly. Start it at the repo root, and add one line to your personal `~/.codex/AGENTS.md` so it knows whose agent it is: `In junction-2026 I am the frontend dev.` Recommended: run it in the `workspace-write` sandbox with approval on request.
 - Claude's guardrails (`.claude/settings.json`) don't apply to Codex. The shared gate is CI: every pull request and every deploy runs `pnpm check` and `pnpm build`.
