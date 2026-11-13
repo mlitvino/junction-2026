@@ -9,8 +9,8 @@ The files in this folder are templates. On the server, `~/junction-2026` holds
 
 ## One-time setup
 
-1. Hetzner: install Docker; Cloud Firewall with only 22, 80, 443 open
-   (Docker bypasses ufw, so ufw alone is not enough).
+1. Hetzner: install Docker; Cloud Firewall with 22 and 9090 open for this app (80/443 stay
+   open for the existing valinor.ink app). Docker bypasses ufw, so ufw alone is not enough.
 2. Optional swap (2–4 GB servers):
    ```bash
    sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
@@ -21,17 +21,37 @@ The files in this folder are templates. On the server, `~/junction-2026` holds
    private key → GitHub secret `SSH_KEY`.
 4. GitHub → Settings → Secrets → Actions: `SSH_HOST`, `SSH_USER`, `SSH_KEY`.
    ghcr needs nothing: the built-in `GITHUB_TOKEN` has `packages: write`.
-5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/junction-2026`; set the domain and
-   `POSTGRES_PASSWORD`.
-6. Push to `main`; check the image under Packages and the site over HTTPS.
+5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/junction-2026`; set
+   `POSTGRES_PASSWORD`. The `valinor.ink` A record already points to this server.
+6. Copy the existing valinor.ink certificate into `~/junction-2026/certs` (see "Certificate").
+7. Push to `main`; check the image under Packages and the site at https://valinor.ink:9090.
+
+## Certificate
+
+The existing valinor.ink app owns ports 80/443, so Caddy can't request its own certificate.
+It serves HTTPS on 9090 with the same certificate files as that app. Copy them onto the
+server (example for certbot; adjust the paths if the app keeps them elsewhere):
+
+```bash
+mkdir -p ~/junction-2026/certs
+sudo cp /etc/letsencrypt/live/valinor.ink/fullchain.pem ~/junction-2026/certs/
+sudo cp /etc/letsencrypt/live/valinor.ink/privkey.pem ~/junction-2026/certs/
+sudo chown "$USER": ~/junction-2026/certs/*.pem && chmod 600 ~/junction-2026/certs/privkey.pem
+```
+
+- Files must be named `fullchain.pem` (certificate + chain) and `privkey.pem` (private key),
+  and the certificate must cover `valinor.ink`.
+- The private key stays on the server only: `*.pem` is git- and docker-ignored.
+- Certificates expire (Let's Encrypt: 90 days) and a copy does not renew itself. After the
+  existing app renews, copy the files again and run `docker compose restart caddy`.
 
 ## Rollback
 
-| Way       | Command                                                    | Time    |
-| --------- | ---------------------------------------------------------- | ------- |
+| Way       | Command                                                              | Time    |
+| --------- | -------------------------------------------------------------------- | ------- |
 | SSH + tag | `cd ~/junction-2026 && APP_TAG=sha-a1b2c3d docker compose up -d app` | ~10 s   |
-| Re-run    | Actions → last green run → Re-run all jobs                 | 2–4 min |
-| Revert    | `git revert <commit> && git push`                          | 2–4 min |
+| Re-run    | Actions → last green run → Re-run all jobs                           | 2–4 min |
+| Revert    | `git revert <commit> && git push`                                    | 2–4 min |
 
 Tags: Packages page or `git log --oneline`. The next push returns the server to `latest`.
 The database is not rolled back, so migrations must be additive only.

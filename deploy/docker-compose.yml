@@ -20,9 +20,12 @@ services:
 
   caddy:
     image: caddy:2
-    ports: ["80:80", "443:443"]
+    # Only 9090: 80/443 are used by the existing valinor.ink app on this server.
+    ports: ["9090:9090"]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      # Certificate files copied by hand onto the server; never in git or in an image.
+      - ./certs:/certs:ro
       - caddy_data:/data
     restart: unless-stopped
 
