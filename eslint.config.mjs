@@ -3,7 +3,7 @@ import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import prettier from "eslint-config-prettier/flat";
 
-// Zone boundaries (see CLAUDE.md → "Boundary rules").
+// Zone boundaries (see AGENTS.md → "Boundary rules").
 // Each zone has exactly ONE no-restricted-imports block: in flat config a later
 // block for the same file would replace (not merge) the rule options.
 // Patterns use regex so both "@/..." aliases and relative "../" paths are caught.
@@ -11,18 +11,18 @@ import prettier from "eslint-config-prettier/flat";
 const FRONTEND_FORBIDDEN = {
   regex: "^(@/server|(\\.\\./)+server)(/|$)",
   message:
-    "Frontend must not import from src/server. Talk to the backend via @/client/api-client (CLAUDE.md, rule 1).",
+    "Frontend must not import from src/server. Talk to the backend via @/client/api-client (AGENTS.md, rule 1).",
 };
 
 const BACKEND_FORBIDDEN = {
   regex: "^(@/(components|features|client)|(\\.\\./)+(components|features|client))(/|$)",
   message:
-    "Backend (app/api, server) must not import frontend code (components, features, client) (CLAUDE.md, rule 2).",
+    "Backend (app/api, server) must not import frontend code (components, features, client) (AGENTS.md, rule 2).",
 };
 
 const SHARED_FORBIDDEN = {
   regex: "^(?!zod$|\\.{1,2}/|@/shared/)",
-  message: "shared/ may import only zod and other shared/ files (CLAUDE.md, rule 3).",
+  message: "shared/ may import only zod and other shared/ files (AGENTS.md, rule 3).",
 };
 
 const eslintConfig = defineConfig([
