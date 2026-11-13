@@ -24,7 +24,7 @@ and restart `pnpm dev`. `src/client/api-client.ts` will then return data from `s
 ## Database (Postgres + pgvector)
 
 ```bash
-docker compose -f compose.dev.yml up -d   # local DB on 127.0.0.1:5432
+pnpm db:up   # local DB on 127.0.0.1:5432 (docker compose -f compose.dev.yml up -d)
 ```
 
 `DATABASE_URL` in `.env.local` (see `.env.example`) points to it. Mastra creates its own tables on first use. The agent currently uses a mock model, so no LLM API key is needed.
@@ -38,6 +38,10 @@ docker compose -f compose.dev.yml up -d   # local DB on 127.0.0.1:5432
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check` | lint + typecheck. Run it before every commit |
 | `pnpm format` | Prettier |
+| `pnpm db:up` / `db:down` | Start / stop the local Postgres (`compose.dev.yml`) |
+| `pnpm db:logs` | Follow the local Postgres logs |
+| `pnpm docker:build` | Build the production image locally (same `Dockerfile` as CI) |
+| `pnpm docker:run` | Run that image on http://localhost:3000 |
 
 ## Project layout
 Code is split into frontend, backend and shared zones, and ESLint enforces the boundaries between them. See [AGENTS.md](AGENTS.md) for ownership, the structure, the rules and how to add an endpoint.

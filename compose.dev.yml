@@ -1,4 +1,4 @@
-# Local Postgres + pgvector for development: docker compose -f compose.dev.yml up -d
+# Local Postgres + pgvector for development: pnpm db:up (stop: pnpm db:down)
 # Same image as production (deploy/docker-compose.yml). Dev-only credentials.
 services:
   db:

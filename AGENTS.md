@@ -32,7 +32,7 @@ Before editing in a zone, read that zone's `AGENTS.md` (`src/<zone>/AGENTS.md`, 
 - Tailwind CSS v4 + shadcn/ui (`src/components/ui`, `cn()` in `src/components/lib/utils.ts`)
 - Zod v4 for API contracts
 - AI agents: Mastra (`@mastra/core`, `@mastra/pg`), server-side only, in `src/server/agents/`. Listed in `serverExternalPackages` in `next.config.ts`.
-- DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `docker compose -f compose.dev.yml up -d`. Migrations are additive only.
+- DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `pnpm db:up`. Migrations are additive only.
 - ESLint (flat config, `eslint.config.mjs`) + Prettier
 - pnpm
 - **Forbidden:** Pages Router (`src/pages`), Server Actions (`"use server"`).
@@ -97,6 +97,8 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - `pnpm typecheck`: `tsc --noEmit`
 - `pnpm check`: lint + typecheck
 - `pnpm format`: Prettier
+- `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: local Postgres from `compose.dev.yml`
+- `pnpm docker:build` / `pnpm docker:run`: build and run the production image locally (http://localhost:3000)
 
 **After any change, run `pnpm check` and fix every error before finishing.** CI runs `pnpm check` and `pnpm build` on every pull request and before every deploy.
 

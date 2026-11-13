@@ -9,7 +9,12 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "check": "pnpm lint && pnpm typecheck",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "db:up": "docker compose -f compose.dev.yml up -d",
+    "db:down": "docker compose -f compose.dev.yml down",
+    "db:logs": "docker compose -f compose.dev.yml logs -f db",
+    "docker:build": "docker build -t junction-2026 .",
+    "docker:run": "docker run --rm -p 3000:3000 junction-2026"
   },
   "dependencies": {
     "@mastra/core": "^1.82.0",
