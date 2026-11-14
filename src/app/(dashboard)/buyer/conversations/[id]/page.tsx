@@ -1,16 +1,20 @@
-import { Suspense } from "react";
+﻿import { Suspense } from "react";
 import type { Metadata } from "next";
-import { BuyerConversation } from "@/features/buyer/buyer-workspace";
-import { LoadingState } from "@/features/procurement/states";
-
-export const metadata: Metadata = { title: "Demo conversation" };
+import { AssistantConversation } from "@/features/workspace/assistant";
+import { WorkspaceGate, Loading } from "@/features/workspace/ui";
+export const metadata: Metadata = { title: "Assistant" };
 type Props = { params: Promise<{ id: string }> };
 async function Content({ params }: Props) {
-  return <BuyerConversation id={(await params).id} />;
+  const { id } = await params;
+  return (
+    <WorkspaceGate>
+      <AssistantConversation id={id} />
+    </WorkspaceGate>
+  );
 }
 export default function Page(props: Props) {
   return (
-    <Suspense fallback={<LoadingState />}>
+    <Suspense fallback={<Loading />}>
       <Content {...props} />
     </Suspense>
   );

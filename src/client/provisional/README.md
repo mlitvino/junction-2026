@@ -1,3 +1,5 @@
+> Archived Task 2 handoff. Active v3.2 routes use [workspace/README.md](../workspace/README.md) and actual canonical HTTP APIs. The instructions and proposed routes below are historical, not current integration assumptions. Use `pnpm dev:app` for frontend-only development.
+
 # Frontend procurement demo — integration handoff
 
 Status: **PROVISIONAL / FRONTEND-ONLY / NOT APPROVED BY BACKEND**.

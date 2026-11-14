@@ -65,18 +65,12 @@ export function SidebarNote({ viewer }: { viewer?: ShellViewer }) {
   return (
     <div className="mt-auto border-t p-6 text-caption text-muted-foreground">
       <p className="mb-1 font-medium text-foreground">
-        {viewer?.demo
-          ? viewer.displayName
-          : viewer
-            ? "Your purchasing workspace"
-            : "Frontend preview"}
+        {viewer?.displayName ?? "Aimo TrustBridge"}
       </p>
       <p>
-        {viewer?.demo
-          ? "Local UI simulation, not authentication. All purchasing data is synthetic."
-          : viewer
-            ? "Purchasing with human oversight."
-            : "Explore the foundation. Account and purchasing features are not connected yet."}
+        {viewer
+          ? viewer.roles.map((role) => (role === "BUYER" ? "Buyer" : "Approver")).join(" & ")
+          : "Purchasing with human oversight"}
       </p>
     </div>
   );

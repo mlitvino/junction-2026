@@ -1,13 +1,11 @@
-import type { Metadata } from "next";
-import { ComingSoon } from "@/components/layout/coming-soon";
-
+﻿import type { Metadata } from "next";
+import { Integrations } from "@/features/workspace/settings";
+import { WorkspaceGate } from "@/features/workspace/ui";
 export const metadata: Metadata = { title: "Integrations" };
-export default function IntegrationsPage() {
+export default function Page() {
   return (
-    <ComingSoon
-      title="Integrations"
-      icon="integrations"
-      description="Explore supported connections and agent interfaces when integration features are available."
-    />
+    <WorkspaceGate>
+      <Integrations />
+    </WorkspaceGate>
   );
 }
