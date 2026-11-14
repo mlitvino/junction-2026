@@ -39,10 +39,10 @@ Left
 - [x] Ranking endpoint `POST /api/products/rank`: best/better/good by price per litre/kg, availability by the date, relevance, reliability, CO2 and preferences, with reasons; the agent's selection uses the same scorer.
 - [x] Substitute rule: split, swapped and fallback lines carry `substituteFor`; `allowSubstitutes=false` → REQUIRE_APPROVAL `SUBSTITUTE_NOT_ALLOWED`. Plus `MAY_CONTAIN_EXCLUDED_ALLERGEN` → approval.
 - [x] Imported nutrition, labels, claims, content per base unit and the allergen CONTAINS / MAY_CONTAIN qualifier (migration 0007; run `pnpm data:import`).
-- [ ] Snapshot id on every price/stock answer and signed proposal hashes. Stronger trust protocol.
-- [ ] Approval expiry and a pending-count endpoint for a badge. Approvals shouldn't wait forever or go unnoticed.
-- [x] `pnpm dev` applies pending migrations on start; with a running dev server after `git pull`, run `pnpm db:migrate`.
-- [ ] Remove the `server/valio/types.ts` re-export shim. Legacy indirection.
+- [x] Snapshot id on every price/stock answer (`snapshotId`, frozen per proposal line, checked by `/verify`) and Ed25519-signed proposal hashes, public key at `GET /api/trust/public-key`.
+- [x] Approval expiry (`EXPIRED` with the quote, audited, 409 `APPROVAL_EXPIRED`) and `GET /api/approvals/pending-count` for a badge (migration 0008).
+- [x] Migrations without restart: `pnpm dev` applies pending ones on start, and a running dev server applies new ones on the next request.
+- [x] Removed the `server/valio/types.ts` re-export shim.
 - [ ] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) stay unused; drop them only in a later cleanup once rollbacks to old images are no longer needed. Migrations are additive.
 - [ ] Map agent configuration and model errors to a clear response: a missing `GOOGLE_GENERATIVE_AI_API_KEY` throws a plain `Error`, and since #8 a failed model call in extraction or proposal revision is no longer caught, so both become `500 Internal error`. Return e.g. 503 "agent not configured" / 502 "model failed" with a message.
 - [ ] README "LLM (Gemini)" still says the agent falls back to a mock model without a key; since #8 it requires the key unless `TEST_MODE=TRUE`. Update README and the root AGENTS.md agent notes.
@@ -61,6 +61,7 @@ Left
 - [ ] Show the agent's `selection` (ranking reasons per product, conversion note) and `warnings` on a proposal.
 - [ ] Use `GET /api/products` filters and `POST /api/products/rank` in a product picker; show content per case, labels, allergens (contains / may contain) and nutrition.
 - [ ] Handle `QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED` and show `quoteExpiresAt`. Users must know to create a new proposal.
+- [ ] Show the `EXPIRED` proposal/approval status and `APPROVAL_EXPIRED`, an approvals badge from `GET /api/approvals/pending-count`, and the proposal signature / `verify` result (`signatureValid`, snapshot ids). New backend fields since migration 0008.
 - [ ] Label VAT: the policy limit is excl. VAT, screens show incl. VAT. Otherwise correct numbers look like a bug.
 - [ ] Preferences screen (incl. the new caps, category/product lists, dietary restrictions) and members screen. Backend exists; nobody can change settings without curl.
 - [ ] Audit page (`/api/audit`) and per-proposal timeline (`/api/proposals/{id}/audit`) on real data. Shows what happened and why.
