@@ -8,14 +8,6 @@ import { AppShell } from "./app-shell";
 export function DemoAppShell({ children }: { children: React.ReactNode }) {
   const viewer = useViewer();
   return (
-    <AppShell viewer={viewer.status === "ready" ? viewer.viewer : undefined}>
-      {viewer.status === "error" ? (
-        <p role="alert" className="py-12 text-center text-destructive">
-          {viewer.message}
-        </p>
-      ) : (
-        children
-      )}
-    </AppShell>
+    <AppShell viewer={viewer.status === "ready" ? viewer.viewer : undefined}>{children}</AppShell>
   );
 }

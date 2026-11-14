@@ -1,123 +1,143 @@
-"use client";
-
-import { useId } from "react";
+﻿"use client";
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { apiClient } from "@/client/api-client";
+import { useWorkspace } from "@/client/use-workspace";
 import { signOut } from "@/client/auth-client";
-import { useProcurement } from "@/client/use-procurement";
 import { useAction } from "@/features/procurement/use-action";
-import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { Button } from "@/components/ui/button";
 import { Popover } from "@/components/ui/popover";
+import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import type { ShellViewer } from "./navigation";
 
 export function AccountMenu({ viewer }: { viewer?: ShellViewer }) {
-  const snapshot = useProcurement();
-  const action = useAction();
-  const selectId = useId();
+  const s = useWorkspace(),
+    action = useAction(),
+    router = useRouter(),
+    [fault, setFault] = useState("none");
   return (
-    <Popover label="Open account menu" icon="user" title="Your account">
-      {snapshot.ready && snapshot.mode === "mock" ? (
-        <div className="space-y-4">
-          <label htmlFor={selectId} className="block text-label font-medium">
-            Demo identity (UI simulation)
-          </label>
-          <select
-            id={selectId}
-            value={snapshot.state.role}
-            disabled={action.busy}
-            onChange={(event) => {
-              const role = event.target.value;
-              if (role === "BUYER" || role === "APPROVER")
-                void action.run(() => apiClient.procurement.setDemoRole(role));
-            }}
-            className="min-h-11 w-full rounded-md border border-input bg-card px-3 text-sm"
-          >
-            <option value="BUYER">Demo Buyer</option>
-            <option value="APPROVER">Demo Approver</option>
-          </select>
-          <p className="text-caption text-muted-foreground">
-            For testing in this tab only. This is not authentication or authorization.
-          </p>
-          {action.error && (
-            <p role="alert" className="text-sm text-destructive">
-              {action.error}
-            </p>
-          )}
-          <div className="border-t pt-4">
-            <ActionConfirmation
-              title="Reset local demo?"
-              description="This clears the synthetic conversations, approvals and orders in this tab and stops any running demonstration."
-              trigger="Reset local demo"
-              confirmLabel="Reset demo"
-              destructive
-              onConfirm={() => apiClient.procurement.resetDemo()}
-            />
-          </div>
-        </div>
-      ) : (
+    <Popover
+      label="Open account menu"
+      icon="user"
+      title="Your account"
+      trigger={
         <>
-          {viewer ? (
-            <div className="space-y-4">
-              <div>
-                <p className="break-words font-medium">{viewer.displayName}</p>
-                {viewer.organizationLabel && (
-                  <p className="mt-1 break-words text-sm text-muted-foreground">
-                    {viewer.organizationLabel}
-                  </p>
-                )}
-                <p className="mt-1 text-caption text-muted-foreground">
-                  {viewer.roles.map(roleLabel).join(" · ")}
-                </p>
-              </div>
-              {snapshot.ready && snapshot.mode === "simulated" && (
-                <div className="border-t pt-4">
-                  <ActionConfirmation
-                    title="Reset local demo?"
-                    description="This clears your simulated conversations, approvals and orders in this tab. Your account is not affected."
-                    trigger="Reset local demo"
-                    confirmLabel="Reset demo"
-                    destructive
-                    onConfirm={() => apiClient.procurement.resetDemo()}
-                  />
-                </div>
-              )}
-              {!viewer.demo && (
-                <div className="border-t pt-4">
-                  <Button
-                    variant="outline"
-                    disabled={action.busy}
-                    onClick={() =>
-                      void action.run(async () => {
-                        await signOut();
-                        // Full navigation: the cached account and simulator start fresh.
-                        window.location.assign(new URL("/login", window.location.origin).href);
-                      })
-                    }
-                  >
-                    {action.busy ? "Signing out…" : "Sign out"}
-                  </Button>
-                  {action.error && (
-                    <p role="alert" className="mt-2 text-sm text-destructive">
-                      {action.error}
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              <p className="font-medium">Account not connected</p>
-              <p className="mt-2 text-sm text-muted-foreground">
-                You’re viewing the frontend preview. Sign-in and account controls are coming in a
-                later milestone.
-              </p>
-            </>
-          )}
+          <span
+            aria-hidden="true"
+            className="flex size-7 items-center justify-center rounded-full bg-secondary text-xs font-semibold text-secondary-foreground"
+          >
+            {viewer?.displayName.slice(0, 1).toUpperCase() ?? "A"}
+          </span>
+          <span className="hidden max-w-36 truncate text-label md:inline">
+            {viewer?.displayName ?? "Account"}
+          </span>
         </>
+      }
+    >
+      <p className="font-semibold break-words">{viewer?.displayName ?? "Loading account…"}</p>
+      <p className="mt-2 text-sm text-muted-foreground">{viewer?.organizationLabel}</p>
+      <p className="mt-2 text-caption text-muted-foreground">
+        {viewer?.roles.map((r) => (r === "BUYER" ? "Buyer" : "Approver")).join(" & ")}
+      </p>
+      <Link href="/admin/agents" className="mt-4 block min-h-11 py-3 text-sm text-primary">
+        Organization preferences
+      </Link>
+      {apiClient.workspace.mock ? (
+        <details className="border-t pt-3 text-sm">
+          <summary className="min-h-11 py-3">Development tools</summary>
+          <p className="mb-4 text-caption text-muted-foreground">
+            Local capability controls are not authentication. No supplier orders or payments are
+            sent.
+          </p>
+          <label className="block text-label">
+            Capabilities
+            <select
+              aria-label="Capabilities"
+              className="mt-2 min-h-11 w-full rounded-md border bg-card p-2"
+              value={s.user?.roles.length === 2 ? "both" : (s.user?.roles[0] ?? "buyer")}
+              onChange={(e) =>
+                void action.run(() =>
+                  apiClient.workspace.setRoles(
+                    e.target.value === "both"
+                      ? ["buyer", "approver"]
+                      : [e.target.value as "buyer" | "approver"],
+                  ),
+                )
+              }
+            >
+              <option value="both">Buyer & Approver</option>
+              <option value="buyer">Buyer only</option>
+              <option value="approver">Approver only</option>
+            </select>
+          </label>
+          <label className="mt-4 block text-label">
+            Quote condition
+            <select
+              aria-label="Quote condition"
+              className="mt-2 min-h-11 w-full rounded-md border bg-card p-2"
+              value={fault}
+              onChange={(e) => {
+                const value = e.target.value as "none" | "price" | "expired";
+                setFault(value);
+                apiClient.workspace.setFault(value);
+              }}
+            >
+              <option value="none">Current quote</option>
+              <option value="price">Price changes at ordering</option>
+              <option value="expired">Expired quote at ordering</option>
+            </select>
+          </label>
+          <div className="my-4 space-y-2">
+            {[
+              "Order 100 litres of lactose-free milk",
+              "Order 400 litres of lactose-free milk",
+              "Order milk-protein-free oat drink",
+              "Plan macaroni for 1,000 portions",
+              "Restock cheese to target",
+            ].map((text) => (
+              <Button
+                key={text}
+                variant="ghost"
+                className="h-auto w-full whitespace-normal text-left"
+                onClick={() => {
+                  apiClient.workspace.draft("welcome", text);
+                  router.push("/buyer");
+                }}
+              >
+                {text}
+              </Button>
+            ))}
+          </div>
+          <ActionConfirmation
+            title="Reset development workspace?"
+            description="Clear local conversations, plans and purchasing reference data. This does not affect a connected organization."
+            trigger="Reset development workspace"
+            confirmLabel="Reset workspace"
+            destructive
+            onConfirm={() => apiClient.workspace.reset()}
+          />
+        </details>
+      ) : (
+        <Button
+          className="mt-4"
+          variant="outline"
+          disabled={action.busy}
+          onClick={() =>
+            void action.run(async () => {
+              await signOut();
+              window.location.assign(new URL("/login", window.location.origin).href);
+            })
+          }
+        >
+          Sign out
+        </Button>
+      )}
+      {action.error && (
+        <p role="alert" className="mt-3 text-sm text-destructive">
+          {action.error}
+        </p>
       )}
     </Popover>
   );
 }
-
-const roleLabel = (role: string) =>
-  role === "BUYER" ? "Buyer" : role === "APPROVER" ? "Approver" : role;

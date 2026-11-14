@@ -1,7 +1,11 @@
-import type { Metadata } from "next";
-import { ApprovalInbox } from "@/features/approvals/approval-inbox";
-
-export const metadata: Metadata = { title: "Approvals" };
-export default function ApprovalsPage() {
-  return <ApprovalInbox />;
+﻿import type { Metadata } from "next";
+import { ToReview } from "@/features/workspace/purchasing-pages";
+import { WorkspaceGate } from "@/features/workspace/ui";
+export const metadata: Metadata = { title: "To review" };
+export default function Page() {
+  return (
+    <WorkspaceGate>
+      <ToReview />
+    </WorkspaceGate>
+  );
 }

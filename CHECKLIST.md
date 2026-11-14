@@ -6,6 +6,7 @@ Challenge core: lookup, inquiry → order at fixed prices, permissions and human
 ## Static API (backend, no AI)
 
 Done
+
 - [x] Products and offers: `GET /api/products`, `/api/products/{id}`, `/offer`, `POST /api/offers`. Core lookup for agents and UI.
 - [x] Organizations, roles (buyer, approver) and members. Who may do what.
 - [x] Layered preferences (base → buyer/approver, locks). The rules the policy applies.
@@ -15,6 +16,7 @@ Done
 - [x] Unit tests in CI (`pnpm test`). Rules can't silently break.
 
 Left
+
 - [ ] Agent identity: per-agent API keys created/revoked by approvers, scopes, every call attributed. The challenge is about external agents; today only humans with cookies can call the API.
 - [ ] Audit trail: insert-only event log (actor, action, reason, time) + `GET /api/audit`. Human-readable record of what was done and why (optional direction, high value).
 - [ ] Usernames in proposal/approval/order responses. Approvers should see "alice", not a user id.
@@ -34,32 +36,40 @@ Left
 
 ## Frontend
 
-Done
-- [x] Real sign-in, user, organization and roles from `GET /api/me`. Screens per role.
-- [x] Demo scenarios use real catalog products, prices and availability. No synthetic prices in connected mode.
-- [x] Demo scenarios use the real policy decision. Limits come from the organization's preferences.
+Implemented v3.2 (14 November 2026). Evidence and limitations: `docs/FRONTEND-UX-IMPLEMENTATION-STATUS.md` and `docs/INTEGRATION-STATUS.md`. Checked integration means actual local backend/browser evidence where stated, not production or supplier fulfillment.
 
-Left
-- [ ] Switch the purchasing flow to `/api/proposals`, `/api/approvals`, `/api/orders` (map types: EUR excl. VAT numbers, `ORDERED`, hash-bound approvals, no intent). Approvals then work across browsers and users.
-- [ ] Manual buyer flow: search products, pick quantities, policy preview, create proposal. Replaces the scripted scenarios until the agent exists.
-- [ ] Handle the new 409 codes (`QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED`) and show `quoteExpiresAt`. Users must know to create a new proposal.
-- [ ] Label VAT: the policy limit is excl. VAT, screens show incl. VAT. Otherwise correct numbers look like a bug.
-- [ ] Preferences screen (approvers edit layers and locks). The backend exists; nobody can change settings without curl.
-- [ ] Members screen (create colleagues, change roles). Same: backend exists, no UI.
-- [ ] Agent keys screen (after the backend). Approvers create and revoke agent access.
-- [ ] Audit page on `GET /api/audit` (after the backend). Shows what happened and why.
-- [ ] Remove connected-mode scenario glue (`real-catalog.ts`, `realScenarioFixture`, hand-made litres table) after the switch. Legacy once real proposals are used.
-- [ ] Rename or remove the "Within the demo limit" scenario label. Default preferences now require approval, so it's misleading.
-- [ ] Fix `docs/INTEGRATION-STATUS.md` contradictions and `/api/v1/...` paths in planning docs. Real paths are `/api/proposals`, `/api/approvals`, `/api/orders`.
-- [ ] Optional: align naming procurement → purchasing (`useProcurement`, `features/procurement`). Backend and OpenAPI say purchasing.
-- [ ] Remove unused `src/client/provisional/unavailable-service.ts`. Dead code.
+- [x] One shared shell, tokens, Inter, Light/Dark/System, role-aware navigation, account/notifications, desktop/tablet/mobile layouts. All 29 Stitch state families mapped.
+- [x] Real sign-in and identity/organization/roles from `/api/me`; Buyer + Approver supported. No connected-mode role switch.
+- [x] Canonical purchasing uses `/api/proposals`, `/api/approvals`, `/api/proposals/{id}/order` and GET `/api/orders`, numeric EUR excl. VAT, server hashes and stable idempotency. Real two-browser approval/order/replay test passed.
+- [x] Manual buyer search, sales-unit quantities, actual shortlist offers, policy preview and proposal creation. Tested with connected catalog and backend.
+- [x] Continuous conversation, editable composer, nonmodal review, information questions, immutable revision/supersession, rejection recovery and hard safety blocks. Conversation orchestration remains local until streamed API exists.
+- [x] Quote expiration and 409 QUOTE_EXPIRED / PRICE_CHANGED / AVAILABILITY_CHANGED recovery; show quote expiry and prepare updated proposal. Injected conflict tests verify no local fallback order.
+- [x] Exact net price labels. No universal VAT assumption; gross/tax unavailable rather than invented.
+- [x] Preferences layer/lock editor and separate effective role settings. Connected load/save passed; invalid limits and lock inheritance tested deterministically.
+- [x] Organization colleague creation/role editing UI, both roles, last-approver error handling. Real member creation/role changes and organization read tested locally.
+- [x] Recipes library/detail/create/editor/batch planning, stock subtraction, verified unit conversions and substitute review. Existing recipe writes are local drafts with explicit new-version POST.
+- [x] Restocking overview/new/edit/pause/delete/manual checks; ready, partial/late, unknown and pending coverage. Plans/runs are browser-local; real inventory/offers and canonical purchase adapter underneath.
+- [x] Orders list/detail and read-only payment-unavailable checkout use canonical IDs, no alternate AI order lifecycle.
+- [x] Settings registry, scoped browser activity evidence and honest integration status; no fabricated credentials, global audit, scheduler, MCP or payment success.
+- [x] Removed connected scenario glue `real-catalog.ts` and hardcoded litre lookup. Replaced active default with human-review-first flow and removed misleading scenario copy from visible routes.
+- [x] Updated design system, integration tracker and current handoff; archived old provisional `/api/v1` assumptions. `unavailable-service.ts` retained because legacy imports/tests still use it.
+- [x] `pnpm check`, `pnpm test`, connected/fixture `pnpm build`, deterministic browser workflow/themes/responsiveness and connected two-user browser test. Detailed counts in implementation report.
+- [ ] Streamed, server-persisted AI conversation and autonomous tool safety (backend endpoint/contracts needed).
+- [ ] Durable restock plan CRUD/scheduler/run history and cross-user stock reservation/coverage (backend needed).
+- [ ] Real external agent key creation/revocation and MCP (backend needed; unavailable UI implemented).
+- [ ] Global append-only audit via `/api/audit` (backend needed; browser-local activity UI implemented).
+- [ ] Positive dietary/free-from evidence and server-authoritative physical unit conversions (backend needed; unknowns blocked).
+- [ ] Remote recipe update/version semantics, payment and supplier dispatch (backend support needed).
+- [ ] Optional removal/renaming of historical `features/procurement` / `client/provisional` regression surface. Not used by active routes; retained without altering backend naming.
 
 ## Agent (AI)
 
 Done
+
 - [x] Mastra set up; Gemini when `GOOGLE_GENERATIVE_AI_API_KEY` is set, mock model otherwise. Builds and CI need no key.
 
 Left
+
 - [ ] Chat endpoint with streamed events (status, message, intent, proposal, approval, order). The frontend's chat UI already expects this event shape.
 - [ ] Intent extraction: free text → products, quantity + unit, needed-by date, constraints. "1,000 L lactose-free milk by Monday" must become structured lines.
 - [ ] Search tool on the real catalog service (`services/catalog.ts`); today it returns fixed fake data. Agent answers must be real.

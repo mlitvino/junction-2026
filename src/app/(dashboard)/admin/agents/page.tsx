@@ -1,13 +1,11 @@
-import type { Metadata } from "next";
-import { ComingSoon } from "@/components/layout/coming-soon";
-
-export const metadata: Metadata = { title: "Agent Management" };
-export default function AgentsPage() {
+﻿import type { Metadata } from "next";
+import { AgentRegistry } from "@/features/workspace/settings";
+import { WorkspaceGate } from "@/features/workspace/ui";
+export const metadata: Metadata = { title: "Settings & Administration" };
+export default function Page() {
   return (
-    <ComingSoon
-      title="Agent Management"
-      icon="agents"
-      description="Manage purchasing agents and the policies that define what they can do on your behalf."
-    />
+    <WorkspaceGate>
+      <AgentRegistry />
+    </WorkspaceGate>
   );
 }

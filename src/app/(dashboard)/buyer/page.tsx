@@ -1,8 +1,11 @@
-import type { Metadata } from "next";
-import { BuyerWorkspace } from "@/features/buyer/buyer-workspace";
-
-export const metadata: Metadata = { title: "Buyer Workspace" };
-
-export default function BuyerPage() {
-  return <BuyerWorkspace />;
+﻿import type { Metadata } from "next";
+import { AssistantWelcome } from "@/features/workspace/assistant";
+import { WorkspaceGate } from "@/features/workspace/ui";
+export const metadata: Metadata = { title: "Assistant" };
+export default function Page() {
+  return (
+    <WorkspaceGate>
+      <AssistantWelcome />
+    </WorkspaceGate>
+  );
 }

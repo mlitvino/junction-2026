@@ -1,13 +1,11 @@
-import type { Metadata } from "next";
-import { ComingSoon } from "@/components/layout/coming-soon";
-
-export const metadata: Metadata = { title: "Audit" };
-export default function AuditPage() {
+﻿import type { Metadata } from "next";
+import { Audit } from "@/features/workspace/settings";
+import { WorkspaceGate } from "@/features/workspace/ui";
+export const metadata: Metadata = { title: "Activity & Audit" };
+export default function Page() {
   return (
-    <ComingSoon
-      title="Activity & Audit"
-      icon="audit"
-      description="Follow purchasing decisions and understand what happened, who acted, and why."
-    />
+    <WorkspaceGate>
+      <Audit />
+    </WorkspaceGate>
   );
 }
