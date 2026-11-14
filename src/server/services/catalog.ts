@@ -292,7 +292,8 @@ export async function getAvailability({ productIds, date }: AvailabilityRequest)
     const r = byId.get(id);
     if (!r) return [];
     const amount = r.availableAmount;
-    const unknownAmount = amount === VALIO_UNKNOWN_AMOUNT;
+    // Valio marks unknown stock with 999999 (terminal products) and sometimes 9999999999: treat as unknown.
+    const unknownAmount = amount !== null && amount >= VALIO_UNKNOWN_AMOUNT;
     return [
       {
         productId: id,
