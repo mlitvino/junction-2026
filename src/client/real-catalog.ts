@@ -7,7 +7,7 @@ import type { ProvisionalOffer, ProvisionalProduct } from "./provisional/types";
 // details and offers from our backend (GET /api/products/{id}, POST /api/offers), converted to the
 // provisional shapes the screens use. Everything else in the flow is still simulated.
 
-const DELIVERY_DATE = "2026-11-20"; // the date in the scenario prompts
+export const DELIVERY_DATE = "2026-11-20"; // the date in the scenario prompts
 
 // Litres in one sales unit (case). Curated: the catalog has no content volume for these.
 const LITRES_PER_SALES_UNIT: Record<string, number> = {

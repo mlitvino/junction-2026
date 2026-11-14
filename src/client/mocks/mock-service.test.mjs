@@ -374,7 +374,13 @@ const fakeCatalog = (priceMinor = "969") => async () => ({
   ),
   litresPerSalesUnit: { 469330: 5, 469386: 5, 469040: 10, 470611: 5 },
 });
-const withCatalog = (catalog) => service(memory(), { mode: "simulated", catalog });
+// Fake policy: approval needed above 25 cases, so the tests don't depend on backend settings.
+const fakePolicy = (outcome) => async (line) => {
+  const o = outcome ?? (line.quantity > 25 ? "REQUIRE_APPROVAL" : "ALLOW");
+  return { outcome: o, reasons: [{ code: `TEST_${o}`, message: `Test rule: ${o}.` }] };
+};
+const withCatalog = (catalog, policy = fakePolicy()) =>
+  service(memory(), { mode: "simulated", catalog, policy });
 
 test("real catalog: totals come from real prices and cases, not scripted amounts", async () => {
   const s = withCatalog(fakeCatalog());
@@ -386,18 +392,42 @@ test("real catalog: totals come from real prices and cases, not scripted amounts
   assert.equal(proposal.lines[0].selectedSalesQuantity.unit, "KI");
   assert.equal(proposal.totalGross.amountMinor, "19380"); // 20 x 9.69
   assert.equal(proposal.policyDecision.outcome, "ALLOW");
+  assert.deepEqual(proposal.policyDecision.reasons, [{ code: "TEST_ALLOW", message: "Test rule: ALLOW." }]);
   assert.equal(state(s).orders.length, 1);
   assert(s.getSnapshot().products.some((p) => p.productId === "469330"));
 });
 
-test("real catalog: the demo limit is applied to the real total", async () => {
-  const s = withCatalog(fakeCatalog());
+test("real policy: the backend decision is used, sent with the scenario's line", async () => {
+  const lines = [];
+  const s = withCatalog(fakeCatalog(), async (line) => {
+    lines.push(line);
+    return fakePolicy()(line);
+  });
   s.setActor(actor("alice", ["BUYER", "APPROVER"]));
   await s.startConversation(request("human-approval-budget"));
+  assert.deepEqual(lines, [{ productId: "469330", quantity: 80 }]);
   const proposal = state(s).proposals[0];
   assert.equal(proposal.totalGross.amountMinor, "77520"); // 80 x 9.69
   assert.equal(proposal.policyDecision.outcome, "REQUIRE_APPROVAL");
   assert.equal(state(s).orders.length, 0);
+});
+
+test("real policy: a DENY blocks the purchase", async () => {
+  const s = withCatalog(fakeCatalog(), fakePolicy("DENY"));
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.status, "BLOCKED");
+  assert.equal(state(s).orders.length, 0);
+});
+
+test("real policy: the oat scenario stays blocked on unverified allergen evidence", async () => {
+  const s = withCatalog(fakeCatalog(), fakePolicy("ALLOW"));
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("allergen-blocked"));
+  const decision = state(s).proposals[0].policyDecision;
+  assert.equal(decision.outcome, "DENY");
+  assert.deepEqual(decision.reasons.map((r) => r.code), ["MANDATORY_EVIDENCE_UNKNOWN"]);
 });
 
 test("real catalog: a failing catalog ends the run with an error and no proposal", async () => {
@@ -409,4 +439,14 @@ test("real catalog: a failing catalog ends the run with an error and no proposal
   assert.equal(state(s).proposals.length, 0);
   assert.equal(state(s).conversations[0].status, "FAILED");
   assert.match(state(s).conversations[0].error, /catalog/);
+});
+
+test("real policy: a failing policy check ends the run with an error and no proposal", async () => {
+  const s = withCatalog(fakeCatalog(), async () => {
+    throw new Error("boom");
+  });
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).proposals.length, 0);
+  assert.match(state(s).conversations[0].error, /rules/);
 });

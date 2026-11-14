@@ -14,6 +14,7 @@ import { money } from "./format";
 
 export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalProposal }) {
   const { state } = useProcurement();
+  const real = proposal.lines.some((line) => line.evidence.offer.source !== "SYNTHETIC_FRONTEND_FIXTURE");
   const viewer = useViewer();
   const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
   const action = useAction();
@@ -38,8 +39,12 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
             : proposal.status === "FAILED"
               ? "Run interrupted — start a new request"
               : proposal.policyDecision.outcome === "REQUIRE_APPROVAL"
-                ? "Demo approval required"
-                : "Allowed by the demo policy"}
+                ? real
+                  ? "Approval required by your rules"
+                  : "Demo approval required"
+                : real
+                  ? "Allowed by your rules"
+                  : "Allowed by the demo policy"}
         </StatusChip>
       )}
       <p className="text-sm">
@@ -50,7 +55,10 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
         <span className="font-medium tabular-nums text-foreground">
           {money(proposal.totalGross)}
         </span>
-        . Prices and policy outcomes are fictional scenario values.
+        .{" "}
+        {real
+          ? "Prices are real catalog prices; the decision comes from your organization's rules (limits are checked excl. VAT)."
+          : "Prices and policy outcomes are fictional scenario values."}
       </p>
       {proposal.unknownCharges.length > 0 && (
         <p className="text-warning">Unknown charges: {proposal.unknownCharges.join(", ")}</p>

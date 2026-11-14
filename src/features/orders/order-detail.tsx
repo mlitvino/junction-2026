@@ -68,7 +68,11 @@ export function OrderDetail({ id }: { id: string }) {
           </Link>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Autonomous scenario · no approval was required by the fictional policy.
+            {order.proposalSnapshot.lines.some(
+              (line) => line.evidence.offer.source !== "SYNTHETIC_FRONTEND_FIXTURE",
+            )
+              ? "No approval was required by your organization's rules."
+              : "Autonomous scenario · no approval was required by the fictional policy."}
           </p>
         )}
       </section>

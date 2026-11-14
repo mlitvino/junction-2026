@@ -18,8 +18,10 @@ import {
   demoProducts,
   demoScenarios,
   realScenarioFixture,
+  realScenarioLine,
   scenarioFixture,
   type RealCatalog,
+  type RealPolicyDecision,
 } from "./scenarios";
 
 export const DEMO_STORAGE_KEY = "aimo-procurement-demo-v1";
@@ -58,6 +60,8 @@ export function createMockProcurementService(
     mode?: "mock" | "simulated";
     /** Connected mode: real products, prices and availability for the scenarios (real-catalog.ts). */
     catalog?: () => Promise<RealCatalog>;
+    /** Connected mode: the organization's policy decision for a scenario's order line. */
+    policy?: (line: { productId: string; quantity: number }) => Promise<RealPolicyDecision>;
   } = {},
 ) {
   const mode = options.mode ?? "mock";
@@ -377,7 +381,12 @@ export function createMockProcurementService(
         const catalog = await options.catalog().catch(() => {
           throw new Error("Couldn't load products and prices from the catalog. Try again.");
         });
-        fixture = realScenarioFixture(scenario.id, catalog);
+        const { productId, quantity } = realScenarioLine(scenario.id, catalog);
+        if (!options.policy) throw new Error("No policy check is configured.");
+        const decision = await options.policy({ productId, quantity }).catch(() => {
+          throw new Error("Couldn't check the purchase against your organization's rules. Try again.");
+        });
+        fixture = realScenarioFixture(scenario.id, catalog, decision);
         showCatalogProducts();
       }
       await wait();
@@ -439,7 +448,9 @@ export function createMockProcurementService(
       await wait();
       yield record("status", {
         phase: "policy_check",
-        message: "Applying the scripted demonstration decision…",
+        message: fixture.real
+          ? "Checking your organization’s purchasing rules…"
+          : "Applying the scripted demonstration decision…",
       });
       await wait();
       if (generation !== runGeneration) return;
@@ -472,7 +483,7 @@ export function createMockProcurementService(
           unknownCharges: [],
           policyDecision: {
             outcome: fixture.outcome,
-            reasons: [fixture.reason],
+            reasons: fixture.reasons,
             evaluatedAt: now(),
             policyVersion: 1,
           },
@@ -492,7 +503,13 @@ export function createMockProcurementService(
             : "Prepared proposal version 1 from synthetic scenario data.",
           "AGENT",
         );
-        activity(state, proposal, `POLICY_${fixture.outcome}`, fixture.reason.message, "AGENT");
+        activity(
+          state,
+          proposal,
+          `POLICY_${fixture.outcome}`,
+          fixture.reasons.map((r) => r.message).join(" "),
+          "AGENT",
+        );
         return proposal;
       });
       yield record("proposal.ready", { proposal });
@@ -516,12 +533,18 @@ export function createMockProcurementService(
           message: "Your review is needed before this proposal can be sent for demo approval.",
         });
       }
-      const text =
-        fixture.outcome === "ALLOW"
+      const why = fixture.reasons.map((r) => r.message).join(" ");
+      const text = !fixture.real
+        ? fixture.outcome === "ALLOW"
           ? "Your simulated purchase has been recorded locally. Nothing was submitted to Valio."
           : fixture.outcome === "REQUIRE_APPROVAL"
             ? `I’ve prepared a demo recommendation. It exceeds the fictional agent limit. Review it and send it to ${approverLabel()}.`
-            : "I can’t confirm the mandatory milk-allergen requirement in this fixture. The purchase is blocked. Review the missing evidence or revise the request.";
+            : "I can’t confirm the mandatory milk-allergen requirement in this fixture. The purchase is blocked. Review the missing evidence or revise the request."
+        : fixture.outcome === "ALLOW"
+          ? `Your organization's rules allow this purchase. ${why} The simulated order has been recorded locally; nothing was submitted to Valio.`
+          : fixture.outcome === "REQUIRE_APPROVAL"
+            ? `I’ve prepared a recommendation. Your organization's rules need an approver: ${why} Review it and send it to ${approverLabel()}.`
+            : `This purchase is blocked. ${why} Review the reasons or revise the request.`;
       yield record("message.delta", { text });
       yield record("done", {
         conversationId,

@@ -80,7 +80,6 @@ export const realScenarioProducts = {
   "human-approval-budget": ["469330", "469386"],
   "allergen-blocked": ["469040", "470611"], // Elovena oat drink, 10 x 1 L / 10 x 0.5 L
 } as const;
-const DEMO_AGENT_LIMIT_MINOR = 25000;
 
 export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string) {
   const scenario = demoScenarios.find((item) => item.id === id)!;
@@ -130,7 +129,7 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
     salesQuantity: quantity,
     physicalQuantity: quantity,
     salesUnit: "ST",
-    real: false,
+    real: false as boolean,
     total,
     budget: approval ? "80000" : "20000",
     productId,
@@ -142,7 +141,8 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
       : approval
         ? ("REQUIRE_APPROVAL" as const)
         : ("ALLOW" as const),
-    reason: blocked
+    reasons: [
+      blocked
       ? {
           code: "MANDATORY_EVIDENCE_UNKNOWN",
           message:
@@ -159,25 +159,39 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
             message:
               "The prepared €155 purchase is within the fictional €250 agent limit. This is a scripted demonstration decision.",
           },
+    ],
   };
 }
 
+/** The organization's policy decision from the backend (POST /api/policy/evaluate). */
+export type RealPolicyDecision = {
+  outcome: "ALLOW" | "REQUIRE_APPROVAL" | "DENY";
+  reasons: { code: string; message: string }[];
+};
+
+/** The order line a scenario buys: its main product, in sales units (cases). */
+export function realScenarioLine(id: ProvisionalScenario["id"], catalog: RealCatalog) {
+  const litres = id === "human-approval-budget" ? 400 : 100;
+  const productId = realScenarioProducts[id][0];
+  const litresPerCase = catalog.litresPerSalesUnit[productId] ?? 1;
+  return { productId, quantity: Math.ceil(litres / litresPerCase), litres, litresPerCase };
+}
+
 /**
- * Same shape as scenarioFixture, but the products, prices and availability are real: they come
- * from the backend catalog (`catalog`). Only the request, the allergen evidence and the fictional
- * agent limit stay scripted. Quantity is in litres; products are sold in cases.
+ * Same shape as scenarioFixture, but the products, prices, availability and the policy decision
+ * are real: they come from the backend (`catalog`, `decision`). Only the request and the allergen
+ * evidence stay scripted. Quantity is in litres; products are sold in cases.
  */
 export function realScenarioFixture(
   id: ProvisionalScenario["id"],
   catalog: RealCatalog,
+  decision: RealPolicyDecision,
 ) {
   const scenario = demoScenarios.find((item) => item.id === id)!;
   const blocked = id === "allergen-blocked";
   const approval = id === "human-approval-budget";
-  const litres = approval ? 400 : 100;
-  const [mainId, altId] = realScenarioProducts[id];
-  const litresPerCase = catalog.litresPerSalesUnit[mainId] ?? 1;
-  const cases = Math.ceil(litres / litresPerCase);
+  const { productId: mainId, quantity: cases, litres, litresPerCase } = realScenarioLine(id, catalog);
+  const altId = realScenarioProducts[id][1];
   const offer = (productId: string) => catalog.offers[productId]!;
   const name = (productId: string) =>
     catalog.products.find((p) => p.productId === productId)?.name ?? productId;
@@ -202,38 +216,35 @@ export function realScenarioFixture(
         : alternative
           ? "A real alternative from the catalog with a different price."
           : "Real catalog product that matches the request, Finnish origin preferred.",
-      offer: { ...offer(candidateId), blocked: offer(candidateId).blocked || blocked,
-        errorCodes: blocked ? ["MANDATORY_EVIDENCE_UNKNOWN"] : offer(candidateId).errorCodes },
+      offer: {
+        ...offer(candidateId),
+        blocked: offer(candidateId).blocked || blocked,
+        errorCodes: blocked ? ["MANDATORY_EVIDENCE_UNKNOWN"] : offer(candidateId).errorCodes,
+      },
     };
   }
 
   const unit = offer(mainId).priceGross;
   const totalMinor = unit ? String(BigInt(unit.amountMinor) * BigInt(cases)) : null;
-  const euros = (minor: string) => `€${(Number(minor) / 100).toFixed(2)}`;
-  const outcome = blocked
-    ? ("DENY" as const)
-    : totalMinor === null
-      ? ("DENY" as const)
-      : BigInt(totalMinor) <= BigInt(DEMO_AGENT_LIMIT_MINOR)
-        ? ("ALLOW" as const)
-        : ("REQUIRE_APPROVAL" as const);
-  const reason =
-    outcome === "DENY"
-      ? {
-          code: blocked ? "MANDATORY_EVIDENCE_UNKNOWN" : "NO_PRICE",
-          message: blocked
-            ? "The mandatory milk-allergen condition cannot be verified. This demo will not create an order."
-            : "The catalog returned no price for this product, so no purchase can be proposed.",
-        }
-      : outcome === "REQUIRE_APPROVAL"
-        ? {
-            code: "SPEND_LIMIT_EXCEEDED",
-            message: `The ${euros(totalMinor!)} purchase exceeds the fictional €250 agent limit. An approver must decide.`,
-          }
-        : {
-            code: "WITHIN_DEMO_LIMIT",
-            message: `The ${euros(totalMinor!)} purchase is within the fictional €250 agent limit. The limit is a demonstration rule.`,
-          };
+  // The request's own requirement (milk-protein free) can't be verified: that stays a scripted
+  // block on top of the organization's decision.
+  const outcome = blocked ? ("DENY" as const) : decision.outcome;
+  const reasons = [
+    ...(blocked
+      ? [
+          {
+            code: "MANDATORY_EVIDENCE_UNKNOWN",
+            message:
+              "The mandatory milk-allergen condition cannot be verified. This demo will not create an order.",
+          },
+        ]
+      : []),
+    // An ALLOW's only reason ("within limits") would contradict the block, so it is left out.
+    ...(blocked && decision.outcome === "ALLOW" ? [] : decision.reasons).map(({ code, message }) => ({
+      code,
+      message,
+    })),
+  ];
 
   return {
     scenario,
@@ -250,6 +261,6 @@ export function realScenarioFixture(
     evidence: evidence(mainId, false),
     alternatives: [evidence(altId, true)],
     outcome,
-    reason,
+    reasons,
   };
 }
