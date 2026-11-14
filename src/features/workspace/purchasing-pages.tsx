@@ -1,10 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
+import type {
+  AuditEvent,
+  OrderReceipt,
+  ProposalVerification,
+} from "@/shared/contracts/purchasing";
 import {
   Page,
   Panel,
@@ -21,29 +26,62 @@ import {
 } from "./ui";
 import { useLoad } from "./use-load";
 
-export function ActivityTimeline({ resourceId }: { resourceId?: string }) {
+export function ActivityTimeline({
+  resourceId,
+  proposalId,
+}: {
+  resourceId?: string;
+  proposalId?: string;
+}) {
   const s = useWorkspace();
-  const events = s.local.activities.filter((a) => !resourceId || a.resourceId === resourceId);
+  const [serverEvents, setServerEvents] = useState<AuditEvent[] | null>(null);
+  const targetProposalId = proposalId ?? resourceId;
+  useEffect(() => {
+    let active = true;
+    if (store.mock || !targetProposalId) return;
+    store.api
+      .getProposalAudit(targetProposalId)
+      .then((res) => {
+        if (active) setServerEvents(res.items);
+      })
+      .catch(() => {
+        if (active) setServerEvents(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [targetProposalId]);
+  const localEvents = s.local.activities
+    .filter((a) => !resourceId || a.resourceId === resourceId)
+    .slice()
+    .reverse();
+  const events =
+    !store.mock && serverEvents && serverEvents.length > 0
+      ? serverEvents.map((e) => ({
+          id: e.id,
+          at: e.createdAt,
+          text: `${e.summary}${e.actorName ? ` · ${e.actorName} (${e.actorType})` : ` · ${e.actorType}`}`,
+        }))
+      : localEvents.map((e) => ({ id: e.id, at: e.at, text: e.text }));
   return (
     <section>
-      <h2 className="section-title mb-5">Activity & lifecycle</h2>
+      <h2 className="section-title mb-5">Activity &amp; lifecycle</h2>
       {events.length ? (
         <ol className="space-y-5 border-l pl-5">
-          {events
-            .slice()
-            .reverse()
-            .map((event) => (
-              <li key={event.id}>
-                <p className="text-sm">{event.text}</p>
-                <time className="mt-1 block text-caption text-muted-foreground" dateTime={event.at}>
-                  {displayDate(event.at)}
-                </time>
-              </li>
-            ))}
+          {events.map((event) => (
+            <li key={event.id}>
+              <p className="text-sm">{event.text}</p>
+              <time className="mt-1 block text-caption text-muted-foreground" dateTime={event.at}>
+                {displayDate(event.at)}
+              </time>
+            </li>
+          ))}
         </ol>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No browser-local activity is available for this record.
+          {store.mock
+            ? "No browser-local activity is available for this record."
+            : "No recorded audit events are available for this record."}
         </p>
       )}
     </section>
@@ -168,7 +206,7 @@ export function ReviewDetail({ id }: { id: string }) {
               Discuss in assistant
             </Button>
           )}
-          <ActivityTimeline resourceId={proposal.id} />
+          <ActivityTimeline resourceId={proposal.id} proposalId={proposal.id} />
         </>
       ) : (
         !s.error && (
@@ -194,7 +232,7 @@ export function PurchaseDetail({ id }: { id: string }) {
       {p ? (
         <>
           <ApprovalCard proposal={p} threadId={thread?.id} />
-          <ActivityTimeline resourceId={p.id} />
+          <ActivityTimeline resourceId={p.id} proposalId={p.id} />
         </>
       ) : (
         !error && <p role="status">Loading purchase details…</p>
@@ -304,6 +342,24 @@ export function OrderDetail({ id }: { id: string }) {
   const order = s.orders.find((o) => o.id === id),
     proposal = s.proposals.find((p) => p.id === order?.proposalId);
   const thread = s.local.threads.find((t) => t.proposals.includes(order?.proposalId ?? ""));
+  const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
+  const [verification, setVerification] = useState<ProposalVerification | null>(null);
+  const proposalId = order?.proposalId;
+  useEffect(() => {
+    let active = true;
+    if (store.mock || !order) return;
+    void Promise.allSettled([
+      store.api.getOrderReceipt(id),
+      proposalId ? store.api.verifyProposal(proposalId) : Promise.resolve(null),
+    ]).then(([receiptRes, verifyRes]) => {
+      if (!active) return;
+      if (receiptRes.status === "fulfilled") setReceipt(receiptRes.value);
+      if (verifyRes.status === "fulfilled" && verifyRes.value) setVerification(verifyRes.value);
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, order, proposalId]);
   return (
     <Page
       title="Order details"
@@ -324,20 +380,27 @@ export function OrderDetail({ id }: { id: string }) {
             <dl className="grid gap-5 text-sm sm:grid-cols-3">
               <div>
                 <dt className="text-muted-foreground">Origin</dt>
-                <dd className="mt-2">{thread?.source ?? "Purchasing service"}</dd>
+                <dd className="mt-2">
+                  {receipt
+                    ? `${receipt.organizationName} (${receipt.orderedByName ?? "buyer"})`
+                    : (thread?.source ?? "Purchasing service")}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Needed by</dt>
-                <dd className="mt-2">{displayDate(proposal?.pricingDate)}</dd>
+                <dd className="mt-2">
+                  {displayDate(receipt?.deliveryDate ?? proposal?.pricingDate)}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Approved by</dt>
                 <dd className="mt-2">
-                  {proposal?.approval?.decidedBy === s.user?.id
-                    ? (s.user?.username ?? "Organization approver")
-                    : proposal?.approval?.decidedBy
-                      ? "Authorized organization approver"
-                      : "Explicit purchasing policy"}
+                  {receipt?.approvedByName ??
+                    (proposal?.approval?.decidedBy === s.user?.id
+                      ? (s.user?.username ?? "Organization approver")
+                      : proposal?.approval?.decidedBy
+                        ? (proposal.approval.decidedByName ?? "Authorized organization approver")
+                        : "Explicit purchasing policy")}
                 </dd>
               </div>
             </dl>
@@ -358,7 +421,7 @@ export function OrderDetail({ id }: { id: string }) {
               </Link>
             )}
           </div>
-          <ActivityTimeline resourceId={id} />
+          <ActivityTimeline resourceId={id} proposalId={order.proposalId} />
           <EvidenceDisclosure title="View technical audit & snapshot evidence">
             <p>
               Order recorded by the purchasing service. Supplier dispatch, reserved delivery slots
@@ -367,10 +430,31 @@ export function OrderDetail({ id }: { id: string }) {
             <p>
               Content reference: <span className="break-all">{order.proposalHash}</span>
             </p>
-            <p>
-              The global audit service is not connected. Activity shown here was observed in this
-              browser.
-            </p>
+            {receipt?.proposalSignature && (
+              <p className="break-all">
+                Ed25519 signature ({receipt.signatureKeyId ?? "server"}):{" "}
+                {receipt.proposalSignature}
+              </p>
+            )}
+            {verification ? (
+              <p>
+                Integrity check: hash {verification.hashValid ? "valid" : "mismatch"} · signature{" "}
+                {verification.signatureValid === null || verification.signatureValid === undefined
+                  ? "unsigned"
+                  : verification.signatureValid
+                    ? "valid"
+                    : "invalid"}{" "}
+                · snapshots verified {verification.lines.filter((l) => l.snapshotFound).length}/
+                {verification.lines.length}
+              </p>
+            ) : (
+              store.mock && (
+                <p>
+                  The global audit service is not connected. Activity shown here was observed in
+                  this browser.
+                </p>
+              )
+            )}
           </EvidenceDisclosure>
         </>
       ) : (

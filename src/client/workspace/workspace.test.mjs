@@ -358,3 +358,121 @@ test("self role updates refresh UI capability and never retain approver member d
   assert.deepEqual(state(service).user.roles, ["buyer"]);
   assert.deepEqual(state(service).members, []);
 });
+
+test("http substitutions calls /api/products/{id}/substitutes without productId in body", async () => {
+  const calls = [];
+  const http = createHttpApi(async (url, init) => {
+    calls.push({ url, init });
+    return Response.json({ error: "No substitutes" }, { status: 404 });
+  });
+  await assert.rejects(
+    http.substitutions({ productId: "469330", requestedQuantity: 20, deliveryDate: "2026-11-20" }),
+  );
+  assert.equal(calls[0].url, "/api/products/469330/substitutes");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    requestedQuantity: 20,
+    deliveryDate: "2026-11-20",
+  });
+});
+
+test("toSales uses declared contentPerSalesUnit and createPurchase does not blanket-block excludedAllergens", async () => {
+  const { mock, storage } = await setup();
+  const baseMilk = await mock.api.getProduct("milk");
+  const service = createWorkspaceService(
+    {
+      ...mock.api,
+      getProduct: async (id) =>
+        id === "milk-case"
+          ? {
+              ...baseMilk,
+              id: "milk-case",
+              salesUnit: "KI",
+              contentPerSalesUnit: { value: 5, unit: "L" },
+              netWeightKg: null,
+            }
+          : mock.api.getProduct(id),
+    },
+    { mock: true, capabilities: mock, storage: () => storage },
+  );
+  await service.initialize();
+  assert.equal(await service.toSales("milk-case", 1000, "L"), 200);
+  await service.saveLayer("base", { values: { excludedAllergens: ["peanuts"] } });
+  const created = await service.createPurchase({ lines: [{ productId: "milk", quantity: 2 }] });
+  assert.equal(created.proposal.status, "PENDING_APPROVAL");
+});
+
+test("connected sendMessage uses /api/agent/run, structured /revise, and ranks on 503 fallback", async () => {
+  const { mock, storage } = await setup();
+  const firstProposal = await mock.api.createProposal({
+    lines: [{ productId: "milk", quantity: 100 }],
+    date: "2026-11-20",
+  });
+  const revisedProposal = await mock.api.createProposal({
+    lines: [{ productId: "milk", quantity: 150 }],
+    date: "2026-11-20",
+  });
+  const calls = [];
+  const connectedApi = {
+    ...mock.api,
+    async runAgent(body) {
+      calls.push(["runAgent", body]);
+      return {
+        reply: "Prepared 100 L milk proposal.",
+        mode: "deterministic",
+        toolCalls: [],
+        activeProposal: firstProposal,
+      };
+    },
+    async reviseProposal(id, body) {
+      calls.push(["reviseProposal", id, body]);
+      return {
+        previousProposalId: id,
+        appliedChanges: ["Set milk quantity to 150"],
+        proposal: revisedProposal,
+      };
+    },
+  };
+  const service = createWorkspaceService(connectedApi, { mock: false, storage: () => storage });
+  await service.initialize();
+  const threadId = service.newThread("Connected test");
+  await service.sendMessage(threadId, "Order 100 litres of gluten-free milk");
+  assert.equal(calls[0][0], "runAgent");
+  assert.equal(state(service).proposals[0].status, "PENDING_APPROVAL");
+
+  await service.sendMessage(threadId, "Make it 150 litres");
+  assert.equal(calls[1][0], "reviseProposal");
+  assert.equal(calls[1][1], firstProposal.id);
+  assert.deepEqual(calls[1][2], { quantityUpdates: [{ productId: "milk", quantity: 150 }] });
+
+  const fallbackCalls = [];
+  const fallbackService = createWorkspaceService(
+    {
+      ...connectedApi,
+      async runAgent() {
+        throw new ApiError("Agent key missing", 503, "AGENT_NOT_CONFIGURED");
+      },
+      async rankProducts(body) {
+        fallbackCalls.push(["rankProducts", body]);
+        return {
+          date: "2026-11-20",
+          source: "mock",
+          best: null,
+          better: null,
+          good: null,
+          ranked: [],
+          unavailable: [],
+          excluded: [],
+        };
+      },
+      async extract() {
+        throw new ApiError("Agent key missing", 503, "AGENT_NOT_CONFIGURED");
+      },
+    },
+    { mock: false, storage: () => memory() },
+  );
+  await fallbackService.initialize();
+  const fbThread = fallbackService.newThread("Fallback");
+  await fallbackService.sendMessage(fbThread, "Order 20 kg of cheese");
+  assert.equal(fallbackCalls[0][0], "rankProducts");
+  assert.equal(state(fallbackService).local.threads[0].query, "cheese");
+});

@@ -196,7 +196,8 @@ export function AssistantConversation({ id }: { id: string }) {
   const activeId = thread.proposals.at(-1),
     active = s.proposals.find((p) => p.id === activeId);
   const drawerProposal =
-    review === active?.id && !["CANCELLED", "REJECTED", "ORDERED"].includes(active.status)
+    review === active?.id &&
+    !["CANCELLED", "REJECTED", "ORDERED", "EXPIRED"].includes(active.status)
       ? active
       : undefined;
   return (
@@ -317,7 +318,11 @@ export function AssistantConversation({ id }: { id: string }) {
           <ProductPicker
             initialQuery={thread.query}
             threadId={id}
-            replacementId={active?.status !== "ORDERED" ? active?.id : undefined}
+            replacementId={
+              active && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(active.status)
+                ? active.id
+                : undefined
+            }
           />
         )}
         {active && (
@@ -335,9 +340,9 @@ export function AssistantConversation({ id }: { id: string }) {
         <details className="text-caption text-muted-foreground">
           <summary className="min-h-11 py-3">About this conversation</summary>
           <p>
-            Message history is stored in this browser. Connected purchases are stored by the
-            purchasing service. Structured streaming is not connected; product selection and order
-            actions always require explicit review.
+            {store.mock
+              ? "Message history is stored in this browser. Connected purchases are stored by the purchasing service. Product selection and order actions always require explicit review."
+              : "Conversation messages stay in this browser; proposals, approvals, orders and audit events are recorded on the backend purchasing service."}
           </p>
           {s.notice && <p className="mt-2">{s.notice}</p>}
         </details>

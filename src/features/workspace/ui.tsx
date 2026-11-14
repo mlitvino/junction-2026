@@ -10,7 +10,12 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Icon } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
-import type { Proposal, ProposalLine, Order } from "@/shared/contracts/purchasing";
+import type {
+  Proposal,
+  ProposalLine,
+  ProposalVerification,
+  Order,
+} from "@/shared/contracts/purchasing";
 
 export const store = apiClient.workspace;
 export const inputClass =
@@ -143,11 +148,12 @@ const statusLabels: Record<string, string> = {
   REJECTED: "Rejected",
   BLOCKED: "Needs attention",
   CANCELLED: "Withdrawn",
+  EXPIRED: "Expired",
   ORDERED: "Order recorded",
   SIMULATED_CONFIRMED: "Recorded",
 };
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
-  const tone = ["BLOCKED", "REJECTED"].includes(status)
+  const tone = ["BLOCKED", "REJECTED", "EXPIRED"].includes(status)
     ? "bg-destructive/10 text-destructive"
     : ["APPROVED", "ORDERED", "SIMULATED_CONFIRMED"].includes(status)
       ? "bg-success-surface text-success"
@@ -206,7 +212,15 @@ export function OrderSummary({ order }: { order: Order }) {
 
 export function ProductComparison({ proposal }: { proposal: Proposal }) {
   const [rows, setRows] = useState<
-    { id: string; name: string; unit: string; price: number | null; confirmed: boolean }[]
+    {
+      id: string;
+      name: string;
+      unit: string;
+      price: number | null;
+      confirmed: boolean;
+      tier?: string | null;
+      reasons?: string[];
+    }[]
   >([]);
   const [loaded, setLoaded] = useState(false);
   const action = useAction();
@@ -216,6 +230,32 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
         if (event.currentTarget.open && !loaded)
           void action.run(async () => {
             const query = proposal.lines[0]?.name.split(" ")[0] ?? "";
+            if (!store.mock && query) {
+              const ranked = await store.api.rankProducts({
+                q: query,
+                quantity: proposal.lines[0]?.quantity ?? 1,
+                date: proposal.pricingDate,
+                limit: 6,
+              });
+              const alt = ranked.ranked
+                .filter((r) => !proposal.lines.some((l) => l.productId === r.product.id))
+                .slice(0, 3);
+              if (alt.length) {
+                setRows(
+                  alt.map((r) => ({
+                    id: r.product.id,
+                    name: r.product.name,
+                    unit: r.salesUnit,
+                    price: r.unitPriceExclVat,
+                    confirmed: r.availableQuantity !== null,
+                    tier: r.tier,
+                    reasons: r.reasons,
+                  })),
+                );
+                setLoaded(true);
+                return;
+              }
+            }
             const products = (await store.api.searchProducts(query)).items
               .filter((p) => !proposal.lines.some((l) => l.productId === p.id))
               .slice(0, 3);
@@ -254,13 +294,21 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
           rows.map((row) => (
             <div className="flex flex-wrap justify-between gap-3 border-b pb-4" key={row.id}>
               <div>
-                <h3 className="text-sm font-medium">{row.name}</h3>
+                <h3 className="text-sm font-medium">
+                  {row.tier ? `${row.tier.toUpperCase()} · ` : ""}
+                  {row.name}
+                </h3>
                 <p className="mt-2 text-caption text-muted-foreground">
                   Per {row.unit} ·{" "}
                   {row.confirmed
                     ? "Available in the current snapshot"
                     : "Availability not confirmed"}
                 </p>
+                {row.reasons && row.reasons.length > 0 && (
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    {row.reasons.join(" · ")}
+                  </p>
+                )}
               </div>
               <PriceDisplay value={row.price} />
             </div>
@@ -274,8 +322,9 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
           )
         )}
         <p className="text-caption text-muted-foreground">
-          These are comparison candidates, not verified substitutes. Confirm packaging and dietary
-          requirements before preparing a new proposal.
+          {store.mock
+            ? "These are comparison candidates, not verified substitutes. Confirm packaging and dietary requirements before preparing a new proposal."
+            : "Ranked candidates exclude allergens, dietary restrictions and blocked vendors from your organization policy."}
         </p>
         <Link href="/buyer/products" className={buttonVariants({ variant: "outline" })}>
           Choose products & review quantities
@@ -300,6 +349,7 @@ export function ApprovalCard({
   const router = useRouter();
   const action = useAction();
   const [reason, setReason] = useState("");
+  const [verification, setVerification] = useState<ProposalVerification | null>(null);
   const buyer = s.user?.roles.includes("buyer"),
     approver = s.user?.roles.includes("approver");
   const owner = proposal.createdBy === s.user?.id;
@@ -347,7 +397,7 @@ export function ApprovalCard({
           label={
             superseded
               ? "Superseded — no longer actionable"
-              : stale && !["ORDERED", "CANCELLED", "REJECTED"].includes(proposal.status)
+              : stale && !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
                 ? "Prices need refreshing"
                 : canDecide
                   ? "Ready for your approval"
@@ -391,6 +441,9 @@ export function ApprovalCard({
           with confirmed supply.
         </p>
       )}
+      {proposal.selection && proposal.selection.warnings.length > 0 && (
+        <p className="text-sm text-warning">{proposal.selection.warnings.join(" ")}</p>
+      )}
       {
         <details>
           <summary className="min-h-11 py-3 text-sm">View items ({proposal.lines.length})</summary>
@@ -425,6 +478,50 @@ export function ApprovalCard({
         <p className="break-all text-caption">
           Proposal: {proposal.id} · Content reference: {proposal.hash}
         </p>
+        {proposal.selection && proposal.selection.pipeline.length > 0 && (
+          <div className="space-y-2 border-t pt-3">
+            <p className="font-medium text-foreground">Agent selection trail</p>
+            {proposal.selection.pipeline.map((step, index) => (
+              <p key={index}>
+                {step.extractedItem.productName} ({step.parsedQuantity} {step.parsedUnit}
+                {step.conversionNote ? ` · ${step.conversionNote}` : ""}):{" "}
+                {step.selectedProduct
+                  ? `Selected ${step.selectedProduct.name} (${step.selectedProduct.rankReasons?.join(", ") || "best match"}).`
+                  : "No matching product selected."}{" "}
+                {step.removedByPreferences.length > 0
+                  ? `${step.removedByPreferences.length} candidate(s) excluded by rules.`
+                  : ""}
+              </p>
+            ))}
+          </div>
+        )}
+        {!store.mock && (
+          <div className="space-y-2 border-t pt-3">
+            <Button
+              variant="ghost"
+              disabled={action.busy}
+              onClick={() =>
+                void action.run(async () => {
+                  setVerification(await store.api.verifyProposal(proposal.id));
+                })
+              }
+            >
+              Verify hash &amp; Valio snapshots
+            </Button>
+            {verification && (
+              <p className="text-caption">
+                Hash valid: {verification.hashValid ? "Yes" : "No"} · Signature valid:{" "}
+                {verification.signatureValid === null || verification.signatureValid === undefined
+                  ? "Unsigned"
+                  : verification.signatureValid
+                    ? `Yes (${verification.signatureKeyId ?? "server"})`
+                    : "No"}{" "}
+                · Snapshots matched:{" "}
+                {verification.lines.filter((l) => l.snapshotFound).length}/{verification.lines.length}
+              </p>
+            )}
+          </div>
+        )}
       </EvidenceDisclosure>
       <ErrorMessage error={action.error} />
       <div className="flex flex-wrap gap-3">

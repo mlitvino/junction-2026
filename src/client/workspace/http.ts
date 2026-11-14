@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MeResponseSchema } from "@/shared/contracts/me";
 import { HealthResponseSchema } from "@/shared/contracts/health";
+import { AgentRunRequestSchema, AgentRunResponseSchema } from "@/shared/contracts/agent";
 import {
   CreateProposalRequestSchema,
   ProposalSchema,
@@ -9,17 +10,30 @@ import {
   OrderSchema,
   OrderListSchema,
   DecideApprovalRequestSchema,
+  CreateProposalFromPromptRequestSchema,
+  ProposalFromPromptResponseSchema,
+  ReviseProposalRequestSchema,
+  ReviseProposalResponseSchema,
+  OrderReceiptSchema,
+  ProposalVerificationSchema,
+  AuditListSchema,
+  AuditQuerySchema,
+  PendingApprovalCountSchema,
 } from "@/shared/contracts/purchasing";
 import {
   ProductSearchResponseSchema,
   ProductDetailSchema,
   OffersResponseSchema,
+  RankProductsRequestSchema,
+  RankProductsResponseSchema,
 } from "@/shared/contracts/products";
 import { PolicyDecisionSchema, PolicyEvaluateRequestSchema } from "@/shared/contracts/policy";
 import {
   RecipeSchema,
   RecipeListResponseSchema,
   CreateRecipeRequestSchema,
+  CreateOrderFromRecipeRequestSchema,
+  CreateOrderFromRecipeResponseSchema,
 } from "@/shared/contracts/recipes";
 import {
   InventoryListResponseSchema,
@@ -108,10 +122,29 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
   return {
     getMe: () => request("/me", MeResponseSchema),
     getHealth: () => request("/health", HealthResponseSchema),
-    searchProducts: (q: string, offset = 0) =>
+    searchProducts: (
+      q: string,
+      offset = 0,
+      filters?: {
+        dietary?: string;
+        excludeAllergens?: string;
+        excludeMayContain?: boolean;
+        sort?: "name" | "co2" | "reliability";
+      },
+    ) => {
+      const params = new URLSearchParams({ q, offset: String(offset), limit: "20" });
+      if (filters?.dietary) params.set("dietary", filters.dietary);
+      if (filters?.excludeAllergens) params.set("excludeAllergens", filters.excludeAllergens);
+      if (filters?.excludeMayContain) params.set("excludeMayContain", "true");
+      if (filters?.sort) params.set("sort", filters.sort);
+      return request(`/products?${params}`, ProductSearchResponseSchema);
+    },
+    rankProducts: (body: z.input<typeof RankProductsRequestSchema>) =>
       request(
-        `/products?${new URLSearchParams({ q, offset: String(offset), limit: "20" })}`,
-        ProductSearchResponseSchema,
+        "/products/rank",
+        RankProductsResponseSchema,
+        "POST",
+        RankProductsRequestSchema.parse(body),
       ),
     getProduct: (id: string) => request(`/products/${encodeURIComponent(id)}`, ProductDetailSchema),
     getOffers: (productIds: string[], date?: string) =>
@@ -189,14 +222,58 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
         `/intelligence/stockout-alerts?deliveryDate=${encodeURIComponent(date)}`,
         StockoutAlertsResponseSchema,
       ),
-    substitutions: (body: z.input<typeof ProductSubstitutionRequestSchema>) =>
-      request(
-        "/catalog/substitutions",
+    substitutions: (body: z.input<typeof ProductSubstitutionRequestSchema>) => {
+      const parsed = ProductSubstitutionRequestSchema.parse(body);
+      return request(
+        `/products/${encodeURIComponent(parsed.productId)}/substitutes`,
         ProductSubstitutionResponseSchema,
         "POST",
-        ProductSubstitutionRequestSchema.parse(body),
-      ),
+        {
+          requestedQuantity: parsed.requestedQuantity,
+          ...(parsed.deliveryDate ? { deliveryDate: parsed.deliveryDate } : {}),
+        },
+      );
+    },
     extract: (prompt: string) => request("/extract", ExtractResponseSchema, "POST", { prompt }),
+    runAgent: (body: z.input<typeof AgentRunRequestSchema>) =>
+      request("/agent/run", AgentRunResponseSchema, "POST", AgentRunRequestSchema.parse(body)),
+    createProposalFromPrompt: (body: z.input<typeof CreateProposalFromPromptRequestSchema>) =>
+      request(
+        "/proposals/from-prompt",
+        ProposalFromPromptResponseSchema,
+        "POST",
+        CreateProposalFromPromptRequestSchema.parse(body),
+      ),
+    createProposalFromRecipe: (body: z.input<typeof CreateOrderFromRecipeRequestSchema>) =>
+      request(
+        "/proposals/from-recipe",
+        CreateOrderFromRecipeResponseSchema,
+        "POST",
+        CreateOrderFromRecipeRequestSchema.parse(body),
+      ),
+    reviseProposal: (id: string, body: z.input<typeof ReviseProposalRequestSchema>) =>
+      request(
+        `/proposals/${encodeURIComponent(id)}/revise`,
+        ReviseProposalResponseSchema,
+        "POST",
+        ReviseProposalRequestSchema.parse(body),
+      ),
+    getPendingApprovalCount: () => request("/approvals/pending-count", PendingApprovalCountSchema),
+    getProposalAudit: (id: string) =>
+      request(`/proposals/${encodeURIComponent(id)}/audit`, AuditListSchema),
+    verifyProposal: (id: string) =>
+      request(`/proposals/${encodeURIComponent(id)}/verify`, ProposalVerificationSchema),
+    getOrderReceipt: (id: string) =>
+      request(`/orders/${encodeURIComponent(id)}/receipt`, OrderReceiptSchema),
+    listAudit: (query?: z.input<typeof AuditQuerySchema>) => {
+      const params = new URLSearchParams();
+      const parsed = query ? AuditQuerySchema.parse(query) : undefined;
+      if (parsed?.resourceType) params.set("resourceType", parsed.resourceType);
+      if (parsed?.resourceId) params.set("resourceId", parsed.resourceId);
+      if (parsed?.limit) params.set("limit", String(parsed.limit));
+      const qs = params.toString();
+      return request(`/audit${qs ? `?${qs}` : ""}`, AuditListSchema);
+    },
   };
 }
 export type WorkspaceApi = ReturnType<typeof createHttpApi>;

@@ -723,6 +723,52 @@ export function createMockApi(
         items: [{ productName: prompt, productType: "Food", productQuantity: "unspecified" }],
       };
     },
+    async rankProducts() {
+      throw new ApiError("Ranking requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    },
+    async runAgent() {
+      throw new ApiError("Purchasing agent requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    },
+    async createProposalFromPrompt() {
+      throw new ApiError("Prompt ordering requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    },
+    async createProposalFromRecipe() {
+      throw new ApiError(
+        "Automatic recipe ordering requires a connected backend.",
+        501,
+        "MOCK_UNSUPPORTED",
+      );
+    },
+    async reviseProposal() {
+      throw new ApiError("Proposal revision requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    },
+    async getPendingApprovalCount() {
+      load();
+      const pending = data.proposals
+        .filter((p) => p.approval?.status === "PENDING")
+        .map((p) => p.approval!);
+      const expires = pending
+        .map((a) => a.expiresAt)
+        .filter((v): v is string => !!v)
+        .sort();
+      return { count: pending.length, nextExpiresAt: expires[0] ?? null };
+    },
+    async getProposalAudit() {
+      return { items: [] };
+    },
+    async verifyProposal() {
+      throw new ApiError(
+        "Cryptographic verification requires a connected backend.",
+        501,
+        "MOCK_UNSUPPORTED",
+      );
+    },
+    async getOrderReceipt() {
+      throw new ApiError("Order receipt requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    },
+    async listAudit() {
+      return { items: [] };
+    },
   };
   function idOf(prefix: string) {
     return id(prefix);

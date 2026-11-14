@@ -546,10 +546,18 @@ export function MealPlan({ id }: { id: string }) {
           </Panel>
           {requirement && (
             <Panel>
-              <StatusBadge status="BLOCKED" label="Safety requirement needs verification" />
+              <StatusBadge
+                status={store.mock ? "BLOCKED" : "READY"}
+                label={
+                  store.mock
+                    ? "Safety requirement needs verification"
+                    : `Catalog filter active: ${requirement}`
+                }
+              />
               <p className="mt-3 text-sm">
-                Verified {requirement} evidence is required for every purchased ingredient. This
-                batch cannot proceed while that evidence is unavailable.
+                {store.mock
+                  ? `Verified ${requirement} evidence is required for every purchased ingredient. This batch cannot proceed while that evidence is unavailable.`
+                  : `Ingredient searches filter by declared catalog ${requirement} / allergen tags, and the purchasing policy checks every line on proposal creation.`}
               </p>
             </Panel>
           )}
@@ -599,7 +607,17 @@ export function MealPlan({ id }: { id: string }) {
                           disabled={action.busy}
                           onClick={() =>
                             void action.run(async () => {
-                              const result = await store.searchProducts(row.ingredient.productName);
+                              const filters =
+                                !store.mock && requirement === "gluten-free"
+                                  ? { dietary: "gluten-free" }
+                                  : !store.mock && requirement === "milk-protein-free"
+                                    ? { excludeAllergens: "milk", excludeMayContain: true }
+                                    : undefined;
+                              const result = await store.searchProducts(
+                                row.ingredient.productName,
+                                0,
+                                filters,
+                              );
                               setCandidates((c) => ({ ...c, [index]: result.items }));
                               setFinding(index);
                             })
@@ -688,34 +706,56 @@ export function MealPlan({ id }: { id: string }) {
             ))}
           </section>
           <div className="sticky bottom-20 z-10 rounded-lg border bg-background p-4 lg:bottom-4">
-            <Button
-              className="w-full sm:w-auto"
-              disabled={
-                action.busy ||
-                !purchasable.length ||
-                attention.length > 0 ||
-                !!requirement ||
-                portions <= 0 ||
-                !date
-              }
-              onClick={() =>
-                void action.run(async () => {
-                  const lines = rows.flatMap((row, index) =>
-                    row.shortage > 0 && mapping[index]?.sales && !mapping[index]?.issue
-                      ? [{ productId: mapping[index]!.id, quantity: mapping[index]!.sales! }]
-                      : [],
-                  );
-                  const result = await store.createPurchase(
-                    { lines, date, note: `${recipe.name}, ${portions} portions` },
-                    undefined,
-                    "Recipes",
-                  );
-                  router.push(`/buyer/conversations/${result.threadId}`);
-                })
-              }
-            >
-              Review purchase proposal
-            </Button>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                className="w-full sm:w-auto"
+                disabled={
+                  action.busy ||
+                  !purchasable.length ||
+                  attention.length > 0 ||
+                  (store.mock && !!requirement) ||
+                  portions <= 0 ||
+                  !date
+                }
+                onClick={() =>
+                  void action.run(async () => {
+                    const lines = rows.flatMap((row, index) =>
+                      row.shortage > 0 && mapping[index]?.sales && !mapping[index]?.issue
+                        ? [{ productId: mapping[index]!.id, quantity: mapping[index]!.sales! }]
+                        : [],
+                    );
+                    const result = await store.createPurchase(
+                      { lines, date, note: `${recipe.name}, ${portions} portions` },
+                      undefined,
+                      "Recipes",
+                    );
+                    router.push(`/buyer/conversations/${result.threadId}`);
+                  })
+                }
+              >
+                Review purchase proposal
+              </Button>
+              {!store.mock && s.user?.roles.includes("buyer") && (
+                <Button
+                  variant="outline"
+                  className="w-full sm:w-auto"
+                  disabled={action.busy || portions <= 0 || !date}
+                  onClick={() =>
+                    void action.run(async () => {
+                      const result = await store.createPurchaseFromRecipe({
+                        recipeId: id,
+                        servings: portions,
+                        deliveryDate: date,
+                        autoResolvePartialStock: true,
+                      });
+                      router.push(`/buyer/conversations/${result.threadId}`);
+                    })
+                  }
+                >
+                  Auto-prepare from recipe
+                </Button>
+              )}
+            </div>
             {attention.length > 0 && (
               <p className="mt-2 text-caption text-warning">
                 Resolve all ingredients needing attention before preparing the full batch purchase.

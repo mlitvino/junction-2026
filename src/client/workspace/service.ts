@@ -1,7 +1,11 @@
 import type { CreateProposalRequest, Proposal } from "@/shared/contracts/purchasing";
 import { CreateProposalRequestSchema } from "@/shared/contracts/purchasing";
 import type { Role } from "@/shared/contracts/me";
-import type { Recipe, CreateRecipeRequest } from "@/shared/contracts/recipes";
+import type {
+  Recipe,
+  CreateRecipeRequest,
+  CreateOrderFromRecipeRequest,
+} from "@/shared/contracts/recipes";
 import type { InventoryItem } from "@/shared/contracts/inventory";
 import type { LayerScope, UpdateLayerRequest } from "@/shared/contracts/preferences";
 import type { CreateMemberRequest } from "@/shared/contracts/organization";
@@ -31,6 +35,8 @@ export function compatibleQuantity(quantity: number, from: string, to: string): 
     KG: { group: "mass", ratio: 1 },
     G: { group: "mass", ratio: 0.001 },
     L: { group: "volume", ratio: 1 },
+    DL: { group: "volume", ratio: 0.1 },
+    CL: { group: "volume", ratio: 0.01 },
     ML: { group: "volume", ratio: 0.001 },
   };
   const a = from.toUpperCase(),
@@ -39,6 +45,32 @@ export function compatibleQuantity(quantity: number, from: string, to: string): 
   return units[a] && units[b] && units[a].group === units[b].group
     ? (quantity * units[a].ratio) / units[b].ratio
     : null;
+}
+function parseQtyUnitQuery(text: string) {
+  const unitMatch = text.match(
+    /\b(\d+(?:[.,]\d+)?)\s*(kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?)\b/i,
+  );
+  const quantity = unitMatch ? Number(unitMatch[1]!.replace(",", ".")) : null;
+  const rawUnit = unitMatch?.[2]?.toUpperCase() ?? null;
+  const unit = rawUnit
+    ? /^LIT/.test(rawUnit)
+      ? "L"
+      : /^CASE/.test(rawUnit)
+        ? "KI"
+        : rawUnit === "PCS" || rawUnit === "KPL"
+          ? "ST"
+          : rawUnit
+    : null;
+  const stripped = text
+    .replace(unitMatch?.[0] ?? "", " ")
+    .replace(/\b(order|buy|purchase|need|want|get|send|deliver(?:ed)?|tomorrow|today|please|of|for|by|some|me|i)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    quantity: quantity && Number.isFinite(quantity) && quantity > 0 ? quantity : null,
+    unit,
+    query: stripped || text.trim(),
+  };
 }
 export function recipeNeeds(recipe: Recipe, servings: number, inventory: InventoryItem[]) {
   const grouped: Recipe["ingredients"] = [];
@@ -227,6 +259,38 @@ export function createWorkspaceService(
     );
     return id;
   }
+  async function syncProposalToThread(
+    proposal: Proposal,
+    threadId: string,
+    source: Thread["source"],
+    diffText?: string,
+  ) {
+    putProposal(proposal);
+    editThread(threadId, (t) => {
+      if (!t.proposals.includes(proposal.id)) t.proposals.push(proposal.id);
+      if (diffText !== undefined) t.diff = diffText;
+      t.safetyBlocked = false;
+    });
+    let current = proposal;
+    if (proposal.status === "READY" && proposal.decision.outcome === "REQUIRE_APPROVAL") {
+      try {
+        current = await api.requestApproval(proposal.id);
+        putProposal(current);
+        record("Purchase sent for human review", proposal.id, current.approval?.id);
+      } catch (error) {
+        editThread(threadId, (t) => {
+          t.error = `The purchase proposal was prepared, but sending it for review failed. Use Send for review to retry without creating another proposal. ${error instanceof Error ? error.message : ""}`;
+        });
+      }
+    } else if (source !== "Assistant") {
+      record(
+        "Purchase proposal synced",
+        current.id,
+        `Source: ${source}. Status: ${current.status}.`,
+      );
+    }
+    return current;
+  }
   async function createPurchase(
     body: CreateProposalRequest,
     threadId?: string,
@@ -245,10 +309,6 @@ export function createWorkspaceService(
       if (!effective.buyer)
         throw new Error(
           "Buyer purchasing preferences could not be verified. Please refresh your account.",
-        );
-      if (effective.buyer.values.excludedAllergens.length)
-        throw new Error(
-          "Mandatory allergen restrictions require verified free-from evidence. The current product contract does not provide that evidence, so this purchase needs confirmation before a proposal can be prepared.",
         );
       for (const line of body.lines) {
         const product =
@@ -279,31 +339,19 @@ export function createWorkspaceService(
           throw new Error("A recorded order cannot be edited. Start a separate purchase request.");
       }
       const created = await api.createProposal(body);
-      putProposal(created);
-      editThread(id, (t) => {
-        t.proposals.push(created.id);
-        t.diff = replaceId
-          ? "A new purchase proposal replaces the previous quantity, products or delivery requirements."
-          : undefined;
-        t.safetyBlocked = false;
-      });
       record(
         "Purchase proposal prepared",
         created.id,
         `Source: ${source}. Prices excluding VAT. ${created.hash}`,
       );
-      let current = created;
-      if (created.status === "READY" && created.decision.outcome === "REQUIRE_APPROVAL") {
-        try {
-          current = await api.requestApproval(created.id);
-          putProposal(current);
-          record("Purchase sent for human review", created.id, current.approval?.id);
-        } catch (error) {
-          editThread(id, (t) => {
-            t.error = `The purchase proposal was prepared, but sending it for review failed. Use Send for review to retry without creating another proposal. ${error instanceof Error ? error.message : ""}`;
-          });
-        }
-      }
+      const current = await syncProposalToThread(
+        created,
+        id,
+        source,
+        replaceId
+          ? "A new purchase proposal replaces the previous quantity, products or delivery requirements."
+          : undefined,
+      );
       answer(
         id,
         current.status === "BLOCKED"
@@ -313,8 +361,44 @@ export function createWorkspaceService(
       return { threadId: id, proposal: current };
     });
   }
-  async function searchProducts(q: string, offset = 0) {
-    const result = await api.searchProducts(q, offset);
+  async function createPurchaseFromRecipe(
+    body: CreateOrderFromRecipeRequest,
+    threadId?: string,
+  ) {
+    return single(`recipe:${threadId ?? body.recipeId ?? body.dishQuery ?? "custom"}`, async () => {
+      if (!snapshot.user?.roles.includes("buyer"))
+        throw new Error("A Buyer is required to prepare this purchase.");
+      const result = await api.createProposalFromRecipe(body);
+      const id =
+        threadId ??
+        newThread(
+          `${result.recipeUsed.name} · ${result.requestedServings} portions`,
+          "Recipes",
+        );
+      let current: Proposal | null = null;
+      if (result.proposal) {
+        record(
+          "Recipe purchase proposal prepared",
+          result.proposal.id,
+          `${result.recipeUsed.name}, ${result.requestedServings} portions.`,
+        );
+        current = await syncProposalToThread(result.proposal, id, "Recipes");
+      }
+      const covered = result.ingredientReconciliation.filter((r) => r.coveredByInventory).length;
+      const ordered = result.ingredientReconciliation.filter((r) => !r.coveredByInventory).length;
+      answer(
+        id,
+        `${result.message} Inventory check: ${covered} covered by kitchen stock, ${ordered} need ordering.`,
+      );
+      return { threadId: id, response: { ...result, proposal: current } };
+    });
+  }
+  async function searchProducts(
+    q: string,
+    offset = 0,
+    filters?: Parameters<WorkspaceApi["searchProducts"]>[2],
+  ) {
+    const result = await api.searchProducts(q, offset, filters);
     publish({ products: result.items });
     return result;
   }
@@ -327,11 +411,246 @@ export function createWorkspaceService(
     const product = snapshot.productDetails[productId] ?? (await loadProduct(productId));
     const direct = compatibleQuantity(quantity, unit, product.salesUnit);
     if (direct !== null) return direct;
-    const kg = compatibleQuantity(quantity, unit, "KG");
+    if (product.contentPerSalesUnit && product.contentPerSalesUnit.value > 0) {
+      const inContent = compatibleQuantity(quantity, unit, product.contentPerSalesUnit.unit);
+      if (inContent !== null) return Math.ceil(inContent / product.contentPerSalesUnit.value);
+    }
     const unitInfo = product.units.find((u) => u.unitId === product.salesUnit);
-    if (kg !== null && product.netWeightKg && unitInfo?.sizeInBaseUnits)
-      return Math.ceil(kg / (product.netWeightKg * unitInfo.sizeInBaseUnits));
+    if (unitInfo?.sizeInBaseUnits) {
+      const inBase = compatibleQuantity(quantity, unit, product.baseUnit);
+      if (inBase !== null) return Math.ceil(inBase / unitInfo.sizeInBaseUnits);
+      const kg = compatibleQuantity(quantity, unit, "KG");
+      if (kg !== null && product.netWeightKg)
+        return Math.ceil(kg / (product.netWeightKg * unitInfo.sizeInBaseUnits));
+    }
     return null;
+  }
+  async function handleRestockSetup(id: string, text: string, current?: Proposal) {
+    await loadInventory();
+    if (current && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(current.status)) {
+      putProposal(await api.cancelProposal(current.id));
+      record("Previous purchase withdrawn for restocking changes", current.id);
+    }
+    const requested = text
+      .match(/(?:restock|replenish)\s+(.+?)(?:\s+to\s|\s+instead|$)/i)?.[1]
+      ?.toLowerCase();
+    const item = requested
+      ? snapshot.inventory.find((i) => i.ingredientName.toLowerCase().includes(requested))
+      : undefined;
+    if (item) {
+      const previous = snapshot.local.plans.find((p) => p.inventoryId === item.id);
+      const target =
+        Number(text.match(/\bto\s+(\d+(?:\.\d+)?)/i)?.[1]) ||
+        previous?.target ||
+        Math.max(item.minParLevel ?? 1, item.quantityInStock) * 2;
+      const draft: RestockPlan = {
+        id: previous?.id ?? uid("plan"),
+        name: previous?.name ?? item.ingredientName,
+        ingredient: item.ingredientName,
+        productId: item.linkedProductId ?? "",
+        unit: item.unit,
+        current: item.quantityInStock,
+        threshold: item.minParLevel ?? previous?.threshold ?? 1,
+        target,
+        location: item.location ?? "Kitchen",
+        schedule: previous?.schedule ?? "threshold",
+        paused: false,
+        inventoryId: item.id,
+      };
+      local((l) => {
+        l.drafts["restock:new"] = JSON.stringify(draft);
+      });
+    }
+    answer(
+      id,
+      "Let’s set the product, trigger level and target stock. Restocking plans are configured locally until background scheduling is connected.",
+    );
+    editThread(id, (t) => {
+      t.query = "restocking";
+    });
+  }
+  async function handleConnectedMessage(id: string, text: string, current?: Proposal) {
+    if (!snapshot.user?.roles.includes("buyer")) {
+      answer(
+        id,
+        "A Buyer role is required to create or revise purchases. You can review pending approvals or ask why the current proposal was chosen.",
+      );
+      return;
+    }
+    if (
+      /(?:^|\b)(?:restock|replenish|reorder)\b/i.test(text) &&
+      !/\b(?:order|buy|purchase)\b/i.test(text)
+    ) {
+      await handleRestockSetup(id, text, current);
+      return;
+    }
+    const quantity = Number(
+      text.match(/(?:make|change|set|order|need|buy|to)\s+(?:it\s+)?([\d,.]+)/i)?.[1]?.replace(/,/g, ""),
+    );
+    const quantityOnly =
+      /^(?:make|change|set)(?:\s+it|\s+the quantity)?\s+(?:to\s+)?[\d,.]+(?:\s*(?:kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?))?[.!]?$/i.test(
+        text,
+      );
+    if (current && current.status !== "ORDERED" && quantityOnly && Number.isFinite(quantity) && quantity > 0) {
+      const first = current.lines[0];
+      if (!first) throw new Error("This purchase has no items to revise.");
+      const rawUnit =
+        text.match(/\b(kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?)\b/i)?.[1]?.toUpperCase() ??
+        first.salesUnit ??
+        "ST";
+      const normalized = /^LIT/.test(rawUnit)
+        ? "L"
+        : /^CASE/.test(rawUnit)
+          ? "KI"
+          : rawUnit === "PCS" || rawUnit === "KPL"
+            ? "ST"
+            : rawUnit;
+      const sales = await toSales(first.productId, quantity, normalized);
+      if (sales === null) {
+        answer(
+          id,
+          `I need a verified conversion from ${normalized} to ${first.salesUnit ?? "sales units"}. Confirm the quantity below; the current proposal has not changed.`,
+        );
+        editThread(id, (t) => {
+          t.query = first.name;
+        });
+        return;
+      }
+      editThread(id, (t) => {
+        t.stage = "Updating purchase proposal";
+      });
+      const revised = await api.reviseProposal(current.id, {
+        quantityUpdates: [{ productId: first.productId, quantity: sales }],
+      });
+      const updated = await syncProposalToThread(
+        revised.proposal,
+        id,
+        thread(id).source,
+        revised.appliedChanges.join(" ") ||
+          "A new purchase proposal replaces the previous quantity.",
+      );
+      await refresh();
+      answer(
+        id,
+        updated.status === "BLOCKED"
+          ? "The updated proposal does not meet purchasing requirements. Review the policy reasons below."
+          : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${first.salesUnit ?? "units"}`}). Please review before continuing.`,
+      );
+      return;
+    }
+    editThread(id, (t) => {
+      t.stage = "Finding suitable products & checking policy";
+    });
+    try {
+      const result = await api.runAgent({
+        message: text,
+        ...(current && current.status !== "ORDERED" ? { proposalId: current.id } : {}),
+      });
+      if (result.activeProposal) {
+        const replaced = !!current && result.activeProposal.id !== current.id;
+        const synced = await syncProposalToThread(
+          result.activeProposal,
+          id,
+          thread(id).source,
+          replaced ? "Updated purchase proposal based on your latest request." : undefined,
+        );
+        if (replaced) await refresh();
+        editThread(id, (t) => {
+          t.query = "";
+          t.recipeChoice = false;
+        });
+        const warnings = synced.selection?.warnings ?? [];
+        answer(
+          id,
+          warnings.length
+            ? `${result.reply}\n\nNote: ${warnings.join(" ")}`
+            : result.reply,
+        );
+        return;
+      }
+      answer(id, result.reply);
+      if (/recipe|portions|servings/i.test(text)) {
+        await loadRecipes();
+        editThread(id, (t) => {
+          t.recipeChoice = true;
+        });
+        return;
+      }
+      const parsed = parseQtyUnitQuery(text);
+      await searchProducts(parsed.query);
+      editThread(id, (t) => {
+        t.query = parsed.query;
+      });
+    } catch (error) {
+      const agentUnavailable =
+        error instanceof ApiError &&
+        (error.status === 503 || error.code === "AGENT_NOT_CONFIGURED" || error.code === "MODEL_FAILED");
+      if (!agentUnavailable) throw error;
+      if (/recipe|portions|servings/i.test(text)) {
+        const recipes = await loadRecipes();
+        const servings = Number(text.match(/(\d+(?:\.\d+)?)\s*(?:portions|servings)/i)?.[1]);
+        const matched = recipes.find((r) =>
+          text.toLowerCase().includes(r.name.toLowerCase().split(" (")[0]!.toLowerCase()) ||
+          r.tags.some((tag) => text.toLowerCase().includes(tag.replace("-", " "))),
+        );
+        if (matched) {
+          await createPurchaseFromRecipe(
+            {
+              recipeId: matched.id,
+              ...(servings > 0 ? { servings } : {}),
+              autoResolvePartialStock: true,
+            },
+            id,
+          );
+          return;
+        }
+        editThread(id, (t) => {
+          t.recipeChoice = true;
+        });
+        answer(
+          id,
+          "Which recipe should I prepare? Choose one below to plan portions against your kitchen inventory.",
+        );
+        return;
+      }
+      const parsed = parseQtyUnitQuery(text);
+      let query = parsed.query;
+      try {
+        const extracted = await api.extract(text);
+        if (extracted.items[0]?.productName) query = extracted.items[0].productName;
+      } catch {
+        /* /api/extract also requires model key when unconfigured; keep parsed query */
+      }
+      await searchProducts(query);
+      try {
+        const ranked = await api.rankProducts({
+          q: query,
+          quantity: parsed.quantity ?? 1,
+          ...(parsed.unit ? { unit: parsed.unit } : {}),
+        });
+        const top = ranked.ranked
+          .slice(0, 3)
+          .map(
+            (r) =>
+              `${r.tier ? `${r.tier.toUpperCase()}: ` : ""}${r.product.name} (${r.quantity} ${r.salesUnit}, ${r.lineTotalExclVat.toFixed(2)} EUR excl. VAT)`,
+          )
+          .join("; ");
+        answer(
+          id,
+          top
+            ? `AI agent key is not configured, so here are the top compliant catalog matches: ${top}. Confirm your choice in the product picker below.`
+            : "No fully available match passed all purchasing rules. Review the catalog search results below.",
+        );
+      } catch {
+        answer(
+          id,
+          "AI agent model is unavailable right now. Search and select products directly in the product picker below.",
+        );
+      }
+      editThread(id, (t) => {
+        t.query = query;
+      });
+    }
   }
   async function sendMessage(id: string, message: string) {
     return single(`message:${id}`, async () => {
@@ -352,12 +671,19 @@ export function createWorkspaceService(
             editThread(id, (t) => {
               t.query = current.lines[0]?.name.split(" ")[0] ?? "";
             });
+          const warnings = current?.selection?.warnings.length
+            ? ` Notes: ${current.selection.warnings.join(" ")}`
+            : "";
           answer(
             id,
             current
-              ? `The recommendation uses ${current.lines.map((l) => l.name).join(", ")}, priced for ${current.pricingDate}. ${current.decision.reasons.map((r) => r.message).join(" ")} Availability and units are shown in the item details. This explanation does not change your proposal.`
+              ? `The recommendation uses ${current.lines.map((l) => l.name).join(", ")}, priced for ${current.pricingDate}. ${current.decision.reasons.map((r) => r.message).join(" ")}${warnings} Availability and units are shown in the item details. This explanation does not change your proposal.`
               : "Choose a product or prepare a purchase first, and I can explain its pricing, units and purchasing conditions.",
           );
+          return;
+        }
+        if (!options.mock) {
+          await handleConnectedMessage(id, text, current);
           return;
         }
         if (/recipe|macaroni|meal|portions/i.test(text)) {
@@ -379,48 +705,7 @@ export function createWorkspaceService(
           return;
         }
         if (/restock|replenish|reorder/i.test(text) && !mandatory && !thread(id).requirement) {
-          await loadInventory();
-          if (current && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(current.status)) {
-            putProposal(await api.cancelProposal(current.id));
-            record("Previous purchase withdrawn for restocking changes", current.id);
-          }
-          const requested = text
-            .match(/(?:restock|replenish)\s+(.+?)(?:\s+to\s|\s+instead|$)/i)?.[1]
-            ?.toLowerCase();
-          const item = requested
-            ? snapshot.inventory.find((i) => i.ingredientName.toLowerCase().includes(requested))
-            : undefined;
-          if (item) {
-            const previous = snapshot.local.plans.find((p) => p.inventoryId === item.id);
-            const target =
-              Number(text.match(/\bto\s+(\d+(?:\.\d+)?)/i)?.[1]) ||
-              previous?.target ||
-              Math.max(item.minParLevel ?? 1, item.quantityInStock) * 2;
-            const draft: RestockPlan = {
-              id: previous?.id ?? uid("plan"),
-              name: previous?.name ?? item.ingredientName,
-              ingredient: item.ingredientName,
-              productId: item.linkedProductId ?? "",
-              unit: item.unit,
-              current: item.quantityInStock,
-              threshold: item.minParLevel ?? previous?.threshold ?? 1,
-              target,
-              location: item.location ?? "Kitchen",
-              schedule: previous?.schedule ?? "threshold",
-              paused: false,
-              inventoryId: item.id,
-            };
-            local((l) => {
-              l.drafts["restock:new"] = JSON.stringify(draft);
-            });
-          }
-          answer(
-            id,
-            "Let’s set the product, trigger level and target stock. Restocking plans are configured locally until background scheduling is connected.",
-          );
-          editThread(id, (t) => {
-            t.query = "restocking";
-          });
+          await handleRestockSetup(id, text, current);
           return;
         }
         if (mandatory || thread(id).requirement) {
@@ -503,59 +788,46 @@ export function createWorkspaceService(
         editThread(id, (t) => {
           t.stage = "Finding suitable products";
         });
-        if (options.mock) {
-          const query = /cheese/i.test(text)
-            ? "cheese"
-            : /cream/i.test(text)
-              ? "cream"
-              : /oat/i.test(text)
-                ? "oat"
-                : /milk/i.test(text)
-                  ? "milk"
-                  : text;
-          const found = await searchProducts(query);
-          await new Promise((resolve) => setTimeout(resolve, 350));
-          if (epoch !== runEpoch) return;
-          if (found.items.length >= 1 && quantity > 0) {
-            const p = found.items[0]!;
-            const requestedUnit = /\bkg\b/i.test(text)
-              ? "KG"
-              : /litre|liter|\bL\b/i.test(text)
-                ? "L"
-                : p.salesUnit;
-            const sales = await toSales(p.id, quantity, requestedUnit);
-            if (sales !== null) {
-              editThread(id, (t) => {
-                t.stage = "Checking purchasing conditions";
-              });
-              await createPurchase(
-                { lines: [{ productId: p.id, quantity: sales }], date: "2026-11-20", note: text },
-                id,
-                thread(id).source,
-                current?.status === "ORDERED" ? undefined : current?.id,
-              );
-              return;
-            }
+        const query = /cheese/i.test(text)
+          ? "cheese"
+          : /cream/i.test(text)
+            ? "cream"
+            : /oat/i.test(text)
+              ? "oat"
+              : /milk/i.test(text)
+                ? "milk"
+                : text;
+        const found = await searchProducts(query);
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        if (epoch !== runEpoch) return;
+        if (found.items.length >= 1 && quantity > 0) {
+          const p = found.items[0]!;
+          const requestedUnit = /\bkg\b/i.test(text)
+            ? "KG"
+            : /litre|liter|\bL\b/i.test(text)
+              ? "L"
+              : p.salesUnit;
+          const sales = await toSales(p.id, quantity, requestedUnit);
+          if (sales !== null) {
+            editThread(id, (t) => {
+              t.stage = "Checking purchasing conditions";
+            });
+            await createPurchase(
+              { lines: [{ productId: p.id, quantity: sales }], date: "2026-11-20", note: text },
+              id,
+              thread(id).source,
+              current?.status === "ORDERED" ? undefined : current?.id,
+            );
+            return;
           }
-          editThread(id, (t) => {
-            t.query = query;
-          });
-          answer(
-            id,
-            "Choose the product and confirm its sales-unit quantity below. I’ll prepare it for review.",
-          );
-        } else {
-          const extracted = await api.extract(text);
-          const query = extracted.items[0]?.productName ?? text;
-          await searchProducts(query);
-          editThread(id, (t) => {
-            t.query = query;
-          });
-          answer(
-            id,
-            "I found the purchasing requirements. Confirm the product, sales-unit quantity and delivery date below. Physical quantities need verified packaging information before they can be ordered.",
-          );
         }
+        editThread(id, (t) => {
+          t.query = query;
+        });
+        answer(
+          id,
+          "Choose the product and confirm its sales-unit quantity below. I’ll prepare it for review.",
+        );
       } catch (error) {
         editThread(id, (t) => {
           t.error = error instanceof Error ? error.message : "Could not process this request.";
@@ -768,6 +1040,7 @@ export function createWorkspaceService(
     },
     sendMessage,
     createPurchase,
+    createPurchaseFromRecipe,
     searchProducts,
     loadProduct,
     toSales,
