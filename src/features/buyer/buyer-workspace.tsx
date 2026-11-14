@@ -77,7 +77,11 @@ export function BuyerConversation({ id }: { id: string }) {
     <div className="mx-auto w-full max-w-conversation space-y-8">
       <PageHeader
         title="Your purchasing conversation"
-        description="Scripted demo · all products, prices and availability are synthetic."
+        description={
+          snapshot.mode === "simulated"
+            ? "Scripted demo · products and prices come from the Valio catalog; the agent, policy and orders are simulated."
+            : "Scripted demo · all products, prices and availability are synthetic."
+        }
         action={
           <Link href="/buyer" className={buttonVariants({ variant: "outline" })}>
             New request

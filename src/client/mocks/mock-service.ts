@@ -14,7 +14,13 @@ import {
   type ProvisionalSnapshot,
 } from "../provisional/types";
 import { ProvisionalApiError } from "../provisional/errors";
-import { demoProducts, demoScenarios, scenarioFixture } from "./scenarios";
+import {
+  demoProducts,
+  demoScenarios,
+  realScenarioFixture,
+  scenarioFixture,
+  type RealCatalog,
+} from "./scenarios";
 
 export const DEMO_STORAGE_KEY = "aimo-procurement-demo-v1";
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
@@ -50,6 +56,8 @@ export function createMockProcurementService(
     wait?: () => Promise<void>;
     now?: () => string;
     mode?: "mock" | "simulated";
+    /** Connected mode: real products, prices and availability for the scenarios (real-catalog.ts). */
+    catalog?: () => Promise<RealCatalog>;
   } = {},
 ) {
   const mode = options.mode ?? "mock";
@@ -83,6 +91,20 @@ export function createMockProcurementService(
     }
     snapshot = freeze({ ...snapshot, ready: true, state, storageNotice: notice });
     emit();
+  }
+  // Real product names for the screens (a reload shows saved proposals without running a scenario).
+  // Best effort: a failed load only means a scenario run reports the error itself.
+  function showCatalogProducts() {
+    options
+      .catalog?.()
+      .then((catalog) => {
+        const known = new Set(snapshot.products.map((p) => p.productId));
+        const added = catalog.products.filter((p) => !known.has(p.productId));
+        if (!added.length) return;
+        snapshot = freeze({ ...snapshot, products: [...snapshot.products, ...added] });
+        emit();
+      })
+      .catch(() => {});
   }
   function initialize() {
     if (snapshot.ready) return;
@@ -313,7 +335,9 @@ export function createMockProcurementService(
       });
       return conversationId;
     });
-    const fixture = scenarioFixture(scenario.id, now());
+    // Synthetic by default; in connected mode the real catalog replaces it once loaded (below).
+    let fixture: ReturnType<typeof scenarioFixture> | ReturnType<typeof realScenarioFixture> =
+      scenarioFixture(scenario.id, now());
     function record(event: ProvisionalAgentEvent["event"], data: unknown): ProvisionalAgentEvent {
       if (generation !== runGeneration)
         fail("DEMO_RESET", "The demo was reset. This run was stopped.");
@@ -349,6 +373,13 @@ export function createMockProcurementService(
         phase: "understanding",
         message: "Reading the prepared demo request…",
       });
+      if (options.catalog) {
+        const catalog = await options.catalog().catch(() => {
+          throw new Error("Couldn't load products and prices from the catalog. Try again.");
+        });
+        fixture = realScenarioFixture(scenario.id, catalog);
+        showCatalogProducts();
+      }
       await wait();
       if (generation !== runGeneration) return;
       const intent = update((state) => {
@@ -389,12 +420,16 @@ export function createMockProcurementService(
       yield record("intent.ready", { intent });
       yield record("status", {
         phase: "catalog_search",
-        message: "Loading products from the synthetic scenario…",
+        message: fixture.real
+          ? "Loading products from the Valio catalog…"
+          : "Loading products from the synthetic scenario…",
       });
       await wait();
       yield record("status", {
         phase: "offer_check",
-        message: "Reading fixture prices and availability — no supplier request is made.",
+        message: fixture.real
+          ? "Reading live prices and availability from the Valio catalog…"
+          : "Reading fixture prices and availability — no supplier request is made.",
       });
       await wait();
       yield record("status", {
@@ -424,8 +459,8 @@ export function createMockProcurementService(
               requestedLineId: "demo-line-1",
               productId: fixture.productId,
               requestedQuantity: { value: fixture.quantity, unit: "L" },
-              selectedSalesQuantity: { value: fixture.quantity, unit: "ST" },
-              estimatedPhysicalQuantity: { value: fixture.quantity, unit: "L" },
+              selectedSalesQuantity: { value: fixture.salesQuantity, unit: fixture.salesUnit },
+              estimatedPhysicalQuantity: { value: fixture.physicalQuantity, unit: "L" },
               unitPriceGross: fixture.evidence.offer.priceGross,
               lineTotalGross: { currency: "EUR", amountMinor: fixture.total },
               evidence: fixture.evidence,
@@ -452,7 +487,9 @@ export function createMockProcurementService(
           state,
           proposal,
           "PROPOSAL_CREATED",
-          "Prepared proposal version 1 from synthetic scenario data.",
+          fixture.real
+            ? "Prepared proposal version 1 from real catalog prices (the request and policy are scripted)."
+            : "Prepared proposal version 1 from synthetic scenario data.",
           "AGENT",
         );
         activity(state, proposal, `POLICY_${fixture.outcome}`, fixture.reason.message, "AGENT");
@@ -624,6 +661,7 @@ export function createMockProcurementService(
       snapshot = serverSnapshot;
       emit();
       initialize();
+      showCatalogProducts();
     },
     async setDemoRole(role) {
       if (mode === "simulated")

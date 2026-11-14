@@ -9,7 +9,7 @@ export function DemoEnvironmentIndicator() {
     snapshot.mode === "mock"
       ? "Demo data · Local simulated orders"
       : snapshot.mode === "simulated"
-        ? "Signed in · Simulated purchasing data · Local simulated orders"
+        ? "Signed in · Real catalog prices · Simulated agent and orders"
         : "Frontend preview · Integration unavailable";
   return (
     <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-caption text-muted-foreground">

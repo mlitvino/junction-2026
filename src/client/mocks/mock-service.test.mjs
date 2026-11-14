@@ -355,3 +355,58 @@ test("each user gets their own simulation; switching users doesn't leak data", a
   s.setActor(actor("alice", ["BUYER", "APPROVER"]));
   assert.equal(state(s).orders.length, 1);
 });
+
+// ----- Connected mode with the real catalog (a fake loader stands in for the backend).
+const fakeCatalog = (priceMinor = "969") => async () => ({
+  products: ["469330", "469386", "469040", "470611"].map((productId) => ({
+    productId, name: `Real ${productId}`, language: "en", salesUnit: "KI", baseUnit: "ST", allowedLotSize: "1",
+  })),
+  offers: Object.fromEntries(
+    ["469330", "469386", "469040", "470611"].map((productId) => [
+      productId,
+      {
+        productId, requestedDate: "2026-11-20", priceGross: { currency: "EUR", amountMinor: priceMinor },
+        availableSalesUnits: null, availableDate: "2026-11-16", salesUnit: "KI",
+        stockCertainty: "SUPPLIER_UNKNOWN", blocked: false, errorCodes: [],
+        checkedAt: "2026-11-14T10:00:00.000Z", source: "VALIO_API",
+      },
+    ]),
+  ),
+  litresPerSalesUnit: { 469330: 5, 469386: 5, 469040: 10, 470611: 5 },
+});
+const withCatalog = (catalog) => service(memory(), { mode: "simulated", catalog });
+
+test("real catalog: totals come from real prices and cases, not scripted amounts", async () => {
+  const s = withCatalog(fakeCatalog());
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.lines[0].productId, "469330");
+  assert.equal(proposal.lines[0].selectedSalesQuantity.value, "20"); // 100 L / 5 L per case
+  assert.equal(proposal.lines[0].selectedSalesQuantity.unit, "KI");
+  assert.equal(proposal.totalGross.amountMinor, "19380"); // 20 x 9.69
+  assert.equal(proposal.policyDecision.outcome, "ALLOW");
+  assert.equal(state(s).orders.length, 1);
+  assert(s.getSnapshot().products.some((p) => p.productId === "469330"));
+});
+
+test("real catalog: the demo limit is applied to the real total", async () => {
+  const s = withCatalog(fakeCatalog());
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("human-approval-budget"));
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.totalGross.amountMinor, "77520"); // 80 x 9.69
+  assert.equal(proposal.policyDecision.outcome, "REQUIRE_APPROVAL");
+  assert.equal(state(s).orders.length, 0);
+});
+
+test("real catalog: a failing catalog ends the run with an error and no proposal", async () => {
+  const s = withCatalog(async () => {
+    throw new Error("boom");
+  });
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).proposals.length, 0);
+  assert.equal(state(s).conversations[0].status, "FAILED");
+  assert.match(state(s).conversations[0].error, /catalog/);
+});

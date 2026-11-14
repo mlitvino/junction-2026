@@ -38,8 +38,9 @@ export const OfferSchema = z.object({
   blocked: z.boolean(),
   errorCodes: z.array(z.string()),
   checkedAt: z.iso.datetime(),
-  // Deliberate provisional provenance extension: these are NOT supplier API responses.
-  source: z.literal("SYNTHETIC_FRONTEND_FIXTURE"),
+  // Deliberate provisional provenance extension. SYNTHETIC_FRONTEND_FIXTURE is made-up demo data;
+  // VALIO_API / VALIO_MOCK come from our backend's GET /api/offers (live Valio / the server's mock).
+  source: z.enum(["SYNTHETIC_FRONTEND_FIXTURE", "VALIO_API", "VALIO_MOCK"]),
 });
 const EvidenceSchema = z.object({
   productId: z.string(),
@@ -285,6 +286,7 @@ export const DemoStateSchema = z.object({
 
 export type ProvisionalMoney = z.infer<typeof MoneySchema>;
 export type ProvisionalProduct = z.infer<typeof ProductSchema>;
+export type ProvisionalOffer = z.infer<typeof OfferSchema>;
 export type ProvisionalEvidence = z.infer<typeof EvidenceSchema>;
 export type ProvisionalIntent = z.infer<typeof IntentSchema>;
 export type ProvisionalProposal = z.infer<typeof ProposalSchema>;

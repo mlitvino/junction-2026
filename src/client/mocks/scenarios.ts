@@ -2,6 +2,8 @@ import {
   ProductSchema,
   ScenarioSchema,
   type ProvisionalEvidence,
+  type ProvisionalOffer,
+  type ProvisionalProduct,
   type ProvisionalScenario,
 } from "../provisional/types";
 
@@ -65,6 +67,21 @@ export const demoProducts = [
   }),
 );
 
+/** What a scenario needs from the real catalog (src/client/real-catalog.ts). */
+export type RealCatalog = {
+  products: ProvisionalProduct[];
+  offers: Record<string, ProvisionalOffer>;
+  /** Litres of product in one sales unit (a case), curated per product. */
+  litresPerSalesUnit: Record<string, number>;
+};
+/** Real products behind each scenario: [recommended, alternative]. Picked from the Valio catalog. */
+export const realScenarioProducts = {
+  "happy-path-auto": ["469330", "469386"], // Arla lactose-free milk, 5 x 1 L (Finnish)
+  "human-approval-budget": ["469330", "469386"],
+  "allergen-blocked": ["469040", "470611"], // Elovena oat drink, 10 x 1 L / 10 x 0.5 L
+} as const;
+const DEMO_AGENT_LIMIT_MINOR = 25000;
+
 export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string) {
   const scenario = demoScenarios.find((item) => item.id === id)!;
   const blocked = id === "allergen-blocked";
@@ -110,6 +127,10 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
   return {
     scenario,
     quantity,
+    salesQuantity: quantity,
+    physicalQuantity: quantity,
+    salesUnit: "ST",
+    real: false,
     total,
     budget: approval ? "80000" : "20000",
     productId,
@@ -138,5 +159,97 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
             message:
               "The prepared €155 purchase is within the fictional €250 agent limit. This is a scripted demonstration decision.",
           },
+  };
+}
+
+/**
+ * Same shape as scenarioFixture, but the products, prices and availability are real: they come
+ * from the backend catalog (`catalog`). Only the request, the allergen evidence and the fictional
+ * agent limit stay scripted. Quantity is in litres; products are sold in cases.
+ */
+export function realScenarioFixture(
+  id: ProvisionalScenario["id"],
+  catalog: RealCatalog,
+) {
+  const scenario = demoScenarios.find((item) => item.id === id)!;
+  const blocked = id === "allergen-blocked";
+  const approval = id === "human-approval-budget";
+  const litres = approval ? 400 : 100;
+  const [mainId, altId] = realScenarioProducts[id];
+  const litresPerCase = catalog.litresPerSalesUnit[mainId] ?? 1;
+  const cases = Math.ceil(litres / litresPerCase);
+  const offer = (productId: string) => catalog.offers[productId]!;
+  const name = (productId: string) =>
+    catalog.products.find((p) => p.productId === productId)?.name ?? productId;
+
+  function evidence(candidateId: string, alternative: boolean): ProvisionalEvidence {
+    return {
+      productId: candidateId,
+      match: blocked ? "UNKNOWN" : "PASS",
+      physicalMeasureStatus: "CURATED",
+      constraintResults: [
+        {
+          code: blocked ? "MILK_ALLERGEN" : "LACTOSE_FREE",
+          result: blocked ? "UNKNOWN" : "PASS",
+          reason: blocked
+            ? "The catalog has no milk-allergen or cross-contact evidence for this product. Safety cannot be confirmed."
+            : "The product name in the Valio catalog says lactose free.",
+          source: "Valio product catalog (product name)",
+        },
+      ],
+      selectionReason: blocked
+        ? "Shown for review only. The mandatory milk-allergen requirement is unverified."
+        : alternative
+          ? "A real alternative from the catalog with a different price."
+          : "Real catalog product that matches the request, Finnish origin preferred.",
+      offer: { ...offer(candidateId), blocked: offer(candidateId).blocked || blocked,
+        errorCodes: blocked ? ["MANDATORY_EVIDENCE_UNKNOWN"] : offer(candidateId).errorCodes },
+    };
+  }
+
+  const unit = offer(mainId).priceGross;
+  const totalMinor = unit ? String(BigInt(unit.amountMinor) * BigInt(cases)) : null;
+  const euros = (minor: string) => `€${(Number(minor) / 100).toFixed(2)}`;
+  const outcome = blocked
+    ? ("DENY" as const)
+    : totalMinor === null
+      ? ("DENY" as const)
+      : BigInt(totalMinor) <= BigInt(DEMO_AGENT_LIMIT_MINOR)
+        ? ("ALLOW" as const)
+        : ("REQUIRE_APPROVAL" as const);
+  const reason =
+    outcome === "DENY"
+      ? {
+          code: blocked ? "MANDATORY_EVIDENCE_UNKNOWN" : "NO_PRICE",
+          message: blocked
+            ? "The mandatory milk-allergen condition cannot be verified. This demo will not create an order."
+            : "The catalog returned no price for this product, so no purchase can be proposed.",
+        }
+      : outcome === "REQUIRE_APPROVAL"
+        ? {
+            code: "SPEND_LIMIT_EXCEEDED",
+            message: `The ${euros(totalMinor!)} purchase exceeds the fictional €250 agent limit. An approver must decide.`,
+          }
+        : {
+            code: "WITHIN_DEMO_LIMIT",
+            message: `The ${euros(totalMinor!)} purchase is within the fictional €250 agent limit. The limit is a demonstration rule.`,
+          };
+
+  return {
+    scenario,
+    quantity: String(litres),
+    salesQuantity: String(cases),
+    physicalQuantity: String(cases * litresPerCase),
+    salesUnit: offer(mainId).salesUnit,
+    real: true,
+    total: totalMinor ?? "0",
+    budget: approval ? "80000" : "20000",
+    productId: mainId,
+    productName: name(mainId),
+    query: blocked ? "Milk-protein-free oat drink" : "Lactose-free milk",
+    evidence: evidence(mainId, false),
+    alternatives: [evidence(altId, true)],
+    outcome,
+    reason,
   };
 }
