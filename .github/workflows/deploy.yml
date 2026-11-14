@@ -13,6 +13,8 @@ jobs:
   # Same checks as on pull requests: a broken main never deploys.
   check:
     uses: ./.github/workflows/ci.yml
+    # The e2e job needs the Valio secrets to fetch the catalog.
+    secrets: inherit
 
   deploy:
     needs: check

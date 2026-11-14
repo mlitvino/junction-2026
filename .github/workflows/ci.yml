@@ -27,3 +27,93 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
+
+  # End-to-end: the real app (production build) against Postgres with the real Valio catalog, driven
+  # over HTTP by e2e/*.test.ts (sign-up → members → preferences → proposals → approvals → orders → audit).
+  # The catalog is fetched once with the VALIO_API_URL / VALIO_API_KEY secrets and cached; the app itself
+  # runs without the key (deterministic mock prices) and with TEST_MODE=TRUE (no Gemini).
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d app"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://app:app@localhost:5432/app
+      E2E_BASE_URL: http://localhost:3000
+    steps:
+      - name: Valio secrets present?
+        id: secrets
+        env:
+          VALIO_API_URL: ${{ secrets.VALIO_API_URL }}
+          VALIO_API_KEY: ${{ secrets.VALIO_API_KEY }}
+        run: |
+          if [ -n "$VALIO_API_URL" ] && [ -n "$VALIO_API_KEY" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::e2e skipped: add the VALIO_API_URL and VALIO_API_KEY repository secrets to run it."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.secrets.outputs.ok == 'true'
+        uses: actions/checkout@v4
+      - if: steps.secrets.outputs.ok == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.secrets.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - if: steps.secrets.outputs.ok == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # The static Valio files change rarely: download once, reuse from the cache (bump the key to refresh).
+      - if: steps.secrets.outputs.ok == 'true'
+        uses: actions/cache@v4
+        with:
+          path: data/valio
+          key: valio-data-v1
+      - name: Fetch Valio data (if not cached)
+        if: steps.secrets.outputs.ok == 'true'
+        env:
+          VALIO_API_URL: ${{ secrets.VALIO_API_URL }}
+          VALIO_API_KEY: ${{ secrets.VALIO_API_KEY }}
+        run: pnpm data:fetch --if-missing
+
+      - if: steps.secrets.outputs.ok == 'true'
+        run: pnpm db:migrate && pnpm data:import
+      - if: steps.secrets.outputs.ok == 'true'
+        run: pnpm build
+
+      - name: Start the app (standalone build, like the Docker image)
+        if: steps.secrets.outputs.ok == 'true'
+        env:
+          NODE_ENV: production
+          PORT: "3000"
+          BETTER_AUTH_SECRET: e2e-only-secret-not-used-anywhere-else
+          BETTER_AUTH_URL: http://localhost:3000
+          TEST_MODE: "TRUE"
+        run: |
+          # server.js runs from its own folder and applies migrations from ./drizzle, as in the image.
+          cp -r drizzle .next/standalone/
+          nohup node .next/standalone/server.js > server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS "$E2E_BASE_URL/api/health" > /dev/null && exit 0
+            sleep 1
+          done
+          cat server.log
+          exit 1
+
+      - if: steps.secrets.outputs.ok == 'true'
+        run: pnpm test:e2e
+
+      - name: Server log
+        if: failure() && steps.secrets.outputs.ok == 'true'
+        run: cat server.log
