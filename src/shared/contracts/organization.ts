@@ -26,7 +26,7 @@ export const CreateMemberRequestSchema = z.object({
     .max(30)
     .regex(/^[a-zA-Z0-9_.]+$/, "Letters, digits, underscore and dot only")
     .meta({ description: "Login name for the new account.", example: "bob" }),
-  password: z.string().min(8).meta({ description: "Initial password (min. 8 characters)." }),
+  password: z.string().min(2).meta({ description: "Initial password (min. 2 characters)." }),
   roles,
 });
 

@@ -1,5 +1,8 @@
 import "server-only";
 
+import { auditChange } from "@/server/services/audit";
+import { actorFor } from "@/server/services/purchasing";
+
 import {
   OrganizationError,
   createMember,
@@ -25,6 +28,12 @@ organizationRouter
   .openapi(createMemberRoute, async (c) => {
     try {
       const member = await createMember(c.var.user.organization.id, c.req.valid("json"));
+      await auditChange(actorFor(c.var.user), {
+        action: "member.created",
+        resourceType: "member",
+        resourceId: member.userId,
+        summary: `Created member ${member.username} with roles ${member.roles.join(", ")}.`,
+      });
       return c.json(MemberSchema.parse(member), 201);
     } catch (err) {
       if (err instanceof OrganizationError && err.status === 409) return c.json({ error: err.message }, 409);
@@ -35,6 +44,12 @@ organizationRouter
     try {
       const { roles } = c.req.valid("json");
       const member = await updateMemberRoles(c.var.user.organization.id, c.req.valid("param").userId, roles);
+      await auditChange(actorFor(c.var.user), {
+        action: "member.roles_changed",
+        resourceType: "member",
+        resourceId: member.userId,
+        summary: `Set ${member.username}'s roles to ${member.roles.join(", ")}.`,
+      });
       return c.json(MemberSchema.parse(member), 200);
     } catch (err) {
       if (!(err instanceof OrganizationError)) throw err;

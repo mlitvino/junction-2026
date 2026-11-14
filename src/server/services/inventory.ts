@@ -7,6 +7,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { procurementInventoryItem } from "@/server/db/schema";
+import { syntheticCatalogEnabled } from "@/server/services/mock-catalog";
 import type {
   AdjustInventoryItemRequest,
   InventoryItem,
@@ -15,7 +16,6 @@ import type {
   UpsertInventoryItemRequest,
 } from "@/shared/contracts/inventory";
 import type { SessionUser } from "@/shared/contracts/me";
-import type { OrderLineItem } from "@/shared/contracts/orders";
 import type {
   RecipeIngredient,
   RecipeIngredientReconciliation,
@@ -73,7 +73,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-salmon-fillet",
     ingredientName: "Salmon fillet",
     productType: "Fish",
-    linkedProductId: "460603",
+    linkedProductId: "SYN-460603",
     quantityInStock: 0,
     unit: "KG",
     minParLevel: 4,
@@ -84,7 +84,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-diced-potatoes",
     ingredientName: "Diced potatoes",
     productType: "Potato",
-    linkedProductId: "460701",
+    linkedProductId: "SYN-460701",
     quantityInStock: 5,
     unit: "KG",
     minParLevel: 10,
@@ -95,7 +95,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-cooking-cream",
     ingredientName: "Cooking cream",
     productType: "Cream",
-    linkedProductId: "460501",
+    linkedProductId: "SYN-460501",
     quantityInStock: 2.5,
     unit: "L",
     minParLevel: 5,
@@ -106,7 +106,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-unsalted-butter",
     ingredientName: "Unsalted butter",
     productType: "Butter",
-    linkedProductId: "460401",
+    linkedProductId: "SYN-460401",
     quantityInStock: 0.8,
     unit: "KG",
     minParLevel: 2,
@@ -117,7 +117,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-sliced-leek",
     ingredientName: "Sliced leek",
     productType: "Vegetables",
-    linkedProductId: "460703",
+    linkedProductId: "SYN-460703",
     quantityInStock: 3,
     unit: "KG",
     minParLevel: 1,
@@ -128,7 +128,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-fresh-dill",
     ingredientName: "Fresh dill",
     productType: "Herbs",
-    linkedProductId: "460801",
+    linkedProductId: "SYN-460801",
     quantityInStock: 0.05,
     unit: "KG",
     minParLevel: 0.2,
@@ -139,7 +139,7 @@ export const DEFAULT_MOCK_INVENTORY: Omit<InventoryItem, "organizationId">[] = [
     id: "inv-whipping-cream",
     ingredientName: "Heavy whipping cream",
     productType: "Cream",
-    linkedProductId: "460502",
+    linkedProductId: "SYN-460502",
     quantityInStock: 0.5,
     unit: "L",
     minParLevel: 3,
@@ -177,7 +177,7 @@ function rowToInventoryItem(
 
 /** Lists active customer inventory items for the caller's organization (or default mock kitchen). */
 export async function listInventory(
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<InventoryListResponse> {
   const orgId = actor?.organization.id ?? null;
 
@@ -203,7 +203,9 @@ export async function listInventory(
   }
 
   const key = orgId ?? DEFAULT_SCOPE_KEY;
-  const current = fallbackInventoryStore.get(key) ?? defaultInventoryForOrg(orgId);
+  // Demo stock only alongside the synthetic catalog; a real kitchen starts empty.
+  const seeded = (await syntheticCatalogEnabled()) ? defaultInventoryForOrg(orgId) : [];
+  const current = fallbackInventoryStore.get(key) ?? seeded;
   return {
     organizationId: orgId,
     items: structuredClone(current),
@@ -213,7 +215,7 @@ export async function listInventory(
 /** Upserts a single ingredient stock entry into the customer's inventory. */
 export async function upsertInventoryItem(
   input: UpsertInventoryItemRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<InventoryItem> {
   const orgId = actor?.organization.id ?? null;
   const key = orgId ?? DEFAULT_SCOPE_KEY;
@@ -301,7 +303,7 @@ export async function upsertInventoryItem(
 /** Replaces the organization's inventory stock snapshot in bulk. */
 export async function replaceInventory(
   input: ReplaceInventoryRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<InventoryListResponse> {
   const orgId = actor?.organization.id ?? null;
   const key = orgId ?? DEFAULT_SCOPE_KEY;
@@ -365,7 +367,7 @@ export async function replaceInventory(
 export async function adjustInventoryItem(
   itemId: string,
   input: AdjustInventoryItemRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<InventoryItem> {
   const orgId = actor?.organization.id ?? null;
   const key = orgId ?? DEFAULT_SCOPE_KEY;
@@ -423,39 +425,6 @@ export async function adjustInventoryItem(
   return updated;
 }
 
-/** Replenishes kitchen inventory stock when a checked-out order specifies `replenishInventory: true`. */
-export async function replenishInventoryFromOrderLines(
-  lines: OrderLineItem[],
-  actor?: SessionUser | null,
-): Promise<void> {
-  const current = (await listInventory(actor)).items;
-  for (const line of lines) {
-    const normalized = normalizeQuantityAndUnit(line.quantity, line.unit);
-    const match = current.find(
-      (it) =>
-        it.linkedProductId === line.productId ||
-        it.ingredientName.trim().toLowerCase() === line.requestedProductName.trim().toLowerCase(),
-    );
-    if (match) {
-      await adjustInventoryItem(
-        match.id,
-        { quantityDelta: normalized.quantity },
-        actor,
-      );
-    } else {
-      await upsertInventoryItem(
-        {
-          ingredientName: line.requestedProductName,
-          productType: line.productType,
-          linkedProductId: line.productId,
-          quantityInStock: normalized.quantity,
-          unit: normalized.unit,
-        },
-        actor,
-      );
-    }
-  }
-}
 
 function tokenizeWords(value: string): string[] {
   return value

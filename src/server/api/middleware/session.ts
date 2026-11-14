@@ -7,26 +7,17 @@ import type { Role, SessionUser } from "@/shared/contracts/me";
 
 import type { ApiEnv } from "../router";
 
-/**
- * Resolves the signed-in user (with organization and roles) when a session cookie and database
- * are present, or returns null for unauthenticated / external agent requests.
- */
-export async function resolveOptionalUser(headers: Headers): Promise<SessionUser | null> {
-  if (!process.env.DATABASE_URL || !headers.get("cookie")) return null;
-  try {
-    return await getSessionUser(headers);
-  } catch {
-    return null;
-  }
+/** The user an earlier middleware (default-deny in app.ts) already resolved for this request. */
+function sessionUserOf(c: { get: (key: "user") => SessionUser | undefined }): SessionUser | undefined {
+  return c.get("user");
 }
 
 /**
- * Opt-in session check: the API is open by default (for now). Add this to a router only for
- * endpoints that need the signed-in user, e.g. `createRouter().use("/me", requireSession)`.
+ * Session check. app.ts runs it on every non-public route (default-deny); routers may add it too.
  * No valid session → 401; otherwise the user (with organization and roles) is `c.var.user`.
  */
 export const requireSession = createMiddleware<ApiEnv>(async (c, next) => {
-  const user = await getSessionUser(c.req.raw.headers);
+  const user = sessionUserOf(c) ?? (await getSessionUser(c.req.raw.headers));
   if (!user) return c.json({ error: "Unauthorized" }, 401);
 
   c.set("user", user);
@@ -40,7 +31,7 @@ export const requireSession = createMiddleware<ApiEnv>(async (c, next) => {
  */
 export function requireRole(...roles: Role[]) {
   return createMiddleware<ApiEnv>(async (c, next) => {
-    const user = await getSessionUser(c.req.raw.headers);
+    const user = sessionUserOf(c) ?? (await getSessionUser(c.req.raw.headers));
     if (!user) return c.json({ error: "Unauthorized" }, 401);
     if (!roles.some((r) => user.roles.includes(r))) return c.json({ error: "Forbidden" }, 403);
 

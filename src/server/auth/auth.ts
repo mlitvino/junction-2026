@@ -20,7 +20,7 @@ function createAuth() {
     secret: requireEnv("BETTER_AUTH_SECRET"),
     baseURL: requireEnv("BETTER_AUTH_URL"),
     // Login + password. Better Auth requires an email; the client sends a placeholder (see src/client/auth-client.ts).
-    emailAndPassword: { enabled: true, minPasswordLength: 8 },
+    emailAndPassword: { enabled: true, minPasswordLength: 2 },
     plugins: [
       username({ minUsernameLength: 3, maxUsernameLength: 30 }),
       // Documents Better Auth's own endpoints at /api/auth/reference.

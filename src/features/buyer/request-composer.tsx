@@ -3,7 +3,9 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiClient } from "@/client/api-client";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
+import { viewerHasRole } from "@/client/viewer";
 import type { ProvisionalScenario } from "@/client/provisional/types";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -20,7 +22,9 @@ export function RequestComposer() {
   const action = useAction();
   const router = useRouter();
   const running = snapshot.state.conversations.some((c) => c.status === "RUNNING");
-  const allowed = snapshot.ready && snapshot.mode === "mock" && snapshot.state.role === "BUYER";
+  const viewer = useViewer();
+  const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
+  const allowed = simulatorAvailable(snapshot) && viewerHasRole(viewer, "BUYER");
   return (
     <div className="mt-8 space-y-4">
       <ErrorState message={action.error} />
@@ -72,9 +76,11 @@ export function RequestComposer() {
       </form>
       {!allowed && snapshot.ready && (
         <p className="text-sm text-muted-foreground">
-          {snapshot.mode !== "mock"
+          {!simulatorAvailable(snapshot)
             ? "Procurement integration is unavailable. Enable the local mock demo to continue."
-            : "Switch to Demo Buyer in the account menu to start a request."}
+            : demoIdentity
+              ? "Switch to Demo Buyer in the account menu to start a request."
+              : "Your account doesn't have the buyer role. An approver in your organization can add it."}
         </p>
       )}
       <details className="text-sm" open={!draft || undefined}>

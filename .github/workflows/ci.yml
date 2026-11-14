@@ -1,6 +1,6 @@
 name: CI
 
-# The shared gate for both developers' agents: zone boundaries (ESLint), types and a production build.
+# The shared gate for both developers' agents: zone boundaries (ESLint), types, unit tests and a production build.
 # Runs on every pull request, and deploy.yml calls it before every deploy.
 on:
   pull_request:
@@ -25,4 +25,5 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm test
       - run: pnpm build

@@ -13,14 +13,16 @@ pnpm bootstrap         # install, start Postgres, download the Valio files (if m
 pnpm dev               # starts Postgres (Docker) and the app
 ```
 `pnpm bootstrap` is safe to rerun: it skips the download when `data/valio/` already has the files.
-Open http://localhost:3000. You're sent to `/login`; create an account at `/signup` (login + password, min. 8 characters). The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
+Open http://localhost:3000. You're sent to `/login`; create an account at `/signup` (login + password, min. 2 characters). The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
 
 ## Mocks (frontend without a backend)
 Set this in `.env`:
 ```
 NEXT_PUBLIC_USE_MOCKS=true
 ```
-and run `pnpm dev:app` (no Docker needed). `src/client/api-client.ts` will then return data from `src/client/mocks/` instead of calling `/api/*`. Mocks are checked against the same Zod contracts, so they can't drift from the real API.
+and run `pnpm dev:app` (no Docker needed). `src/client/api-client.ts` will then return data from `src/client/mocks/` instead of calling `/api/*`, and a Demo Buyer / Demo Approver selector in the account menu replaces sign-in. Mocks are checked against the same Zod contracts, so they can't drift from the real API.
+
+**Connected mode** (the default, `pnpm dev`) is mixed: you sign in for real, and your username, organization and roles (buyer, approver) come from `GET /api/me`. Products, prices and availability in the demo scenarios are real (`GET /api/products/{id}`, `POST /api/offers`), and so is the decision (`POST /api/policy/evaluate`, from your organization's preferences; by default every order needs an approver). The agent, proposals, approvals and orders have no backend yet, so they run on the local simulator ("Real catalog prices · Simulated agent and orders"). Its data stays in your browser tab, per user: to try an approval end to end, use one account with both roles (every self-signed-up user has both).
 
 ## Database (Postgres + pgvector)
 
@@ -29,6 +31,8 @@ pnpm db:up   # local DB on 127.0.0.1:5432; pnpm dev runs this for you
 ```
 
 `DATABASE_URL` in `.env` (see `.env.example`) points to it. Mastra creates its own tables on first use.
+
+If the app fails with a migration error after pulling (e.g. `relation "approval" already exists`), your local database ran an older migration order: reset it with `pnpm db:reset && pnpm data:import` (deletes local data). Production is not affected.
 
 ## Valio catalog
 ```bash
@@ -49,6 +53,7 @@ Put your Gemini API key in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.e
 | `pnpm lint` | ESLint, including the zone boundary checks |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check` | lint + typecheck. Run it before every commit |
+| `pnpm test:server` | Backend unit tests (`src/server/**/*.test.ts`, plain Node) |
 | `pnpm format` | Prettier |
 | `pnpm db:up` / `db:down` | Start (waits until ready) / stop the local Postgres (`compose.dev.yml`) |
 | `pnpm db:psql` | psql shell in the local DB |

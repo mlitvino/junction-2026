@@ -12,7 +12,7 @@ import {
   StockoutAlertsResponseSchema,
 } from "@/shared/contracts/intelligence";
 
-import { resolveOptionalUser } from "../../middleware/session";
+import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
 import {
   getProactiveRecommendationsRoute,
@@ -20,15 +20,20 @@ import {
   postRecurringOrderCheckRoute,
 } from "./intelligence.docs";
 
-export const intelligenceRouter = createRouter()
+// Session required (default-deny in app.ts); roles per path. Separate statements: `.use()`/`.on()`
+// return a plain Hono type, so chaining `.openapi()` after them doesn't type-check.
+export const intelligenceRouter = createRouter();
+intelligenceRouter.use("/intelligence/*", requireRole("buyer", "approver"));
+
+intelligenceRouter
   .openapi(getStockoutAlertsRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     const { deliveryDate } = c.req.valid("query");
     const result = await getProactiveStockoutAlerts(deliveryDate, actor);
     return c.json(StockoutAlertsResponseSchema.parse(result), 200);
   })
   .openapi(postRecurringOrderCheckRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     try {
       const result = await checkRecurringOrderAnomalies(c.req.valid("json"), actor);
       return c.json(RecurringOrderCheckResponseSchema.parse(result), 200);
@@ -41,7 +46,7 @@ export const intelligenceRouter = createRouter()
     }
   })
   .openapi(getProactiveRecommendationsRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     const result = await getProactiveRecommendations(actor);
     return c.json(ProactiveRecommendationsResponseSchema.parse(result), 200);
   });

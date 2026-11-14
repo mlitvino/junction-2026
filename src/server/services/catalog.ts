@@ -15,6 +15,7 @@ import {
 } from "@/server/db/schema";
 import { VALIO_UNKNOWN_AMOUNT } from "@/server/valio/api-schemas";
 import { fetchAvailability, fetchPrices, valioSource } from "@/server/valio/client";
+import type { Offer, OffersResponse } from "@/shared/contracts/products";
 import type {
   Availability,
   AvailabilityRequest,
@@ -29,7 +30,7 @@ import type {
 } from "@/server/valio/types";
 
 // Catalog: static product data from Postgres (pnpm data:import), live prices and availability
-// from the Valio API. Server-internal (no HTTP endpoint): meant for the purchasing agent's tools.
+// from the Valio API. Used by the HTTP routes (routes/products) and the purchasing agent's tools.
 // Every live answer is stored as a snapshot (audit trail) and reused for CACHE_MINUTES so
 // repeated questions don't hit Valio's rate limits.
 
@@ -48,6 +49,7 @@ const summaryColumns = {
   co2PerKg: valioProduct.co2PerKg,
   deliveryReliability: valioProduct.deliveryReliability,
   hasImage: valioProduct.hasImage,
+  allergens: valioProduct.allergens,
 } as const;
 
 async function db() {
@@ -307,4 +309,37 @@ export async function getAvailability({ productIds, date }: AvailabilityRequest)
   });
 
   return { requestedDate: date, source, items, unknownProductIds: unknown };
+}
+
+// ---------- Offers ----------
+
+/** Today's date in Helsinki (YYYY-MM-DD): the default delivery date. */
+export function today(): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Helsinki" }).format(new Date());
+}
+
+/** Price and availability for the same products and delivery date, combined per product. */
+export async function getOffers(productIds: string[], date: string = today()): Promise<OffersResponse> {
+  const [prices, availability] = await Promise.all([
+    getPrices({ productIds, date }),
+    getAvailability({ productIds, date }),
+  ]);
+  const priceById = new Map(prices.quotes.map((q) => [q.productId, q]));
+  const availabilityById = new Map(availability.items.map((a) => [a.productId, a]));
+  const unknown = new Set(prices.unknownProductIds);
+  const offers: Offer[] = [...new Set(productIds)]
+    .filter((id) => !unknown.has(id))
+    .map((id) => ({
+      productId: id,
+      date,
+      price: priceById.get(id) ?? null,
+      availability: availabilityById.get(id) ?? null,
+    }));
+  return {
+    date,
+    source: prices.source,
+    currency: prices.currency,
+    offers,
+    unknownProductIds: prices.unknownProductIds,
+  };
 }

@@ -1,7 +1,7 @@
 import type { IconName } from "@/components/ui/icon";
 
 // Presentation props only, not an authentication contract or an authorization boundary.
-// Map the agreed session DTO here once it is available via api-client.
+// Built from GET /api/me (connected mode) or the demo identity: src/client/viewer.ts.
 export type ShellViewer = {
   displayName: string;
   organizationLabel?: string;
@@ -50,7 +50,8 @@ export const navigationItems: readonly NavigationItem[] = [
     context: "Agent Management",
     icon: "agents",
     group: "administration",
-    roles: ["ADMIN"],
+    // Approvers manage the organization's AI settings; there is no separate admin role.
+    roles: ["APPROVER", "ADMIN"],
     upcoming: true,
   },
   {

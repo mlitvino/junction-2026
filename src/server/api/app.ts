@@ -3,15 +3,16 @@ import "server-only";
 import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
-import { MissingGeminiKeyError } from "@/server/agents/gemini";
 import { getAuth } from "@/server/auth/auth";
 import { ensureDatabase } from "@/server/db/migrate";
 
+import { requireSession } from "./middleware/session";
 import { createRouter } from "./router";
 import { agentRouter } from "./routes/agent/agent";
+import { approvalsRouter } from "./routes/approvals/approvals";
+import { auditRouter } from "./routes/audit/audit";
 import { catalogRouter } from "./routes/catalog/catalog";
 import { extractRouter } from "./routes/extract/extract";
-import { guardrailsRouter } from "./routes/guardrails/guardrails";
 import { healthRouter } from "./routes/health/health";
 import { inquiriesRouter } from "./routes/inquiries/inquiries";
 import { intelligenceRouter } from "./routes/intelligence/intelligence";
@@ -19,16 +20,27 @@ import { inventoryRouter } from "./routes/inventory/inventory";
 import { meRouter } from "./routes/me/me";
 import { ordersRouter } from "./routes/orders/orders";
 import { organizationRouter } from "./routes/organization/organization";
+import { policyRouter } from "./routes/policy/policy";
 import { preferencesRouter } from "./routes/preferences/preferences";
+import { productsRouter } from "./routes/products/products";
+import { proposalsRouter } from "./routes/proposals/proposals";
 import { recipesRouter } from "./routes/recipes/recipes";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
  * Add an endpoint: create ./routes/<name>/<name>.ts (+ <name>.docs.ts) and register it below.
- * The API is open by default; a route that needs the signed-in user adds `requireSession`
- * from ./middleware/session.ts (see ./routes/me/me.ts).
+ * Default-deny: everything except /health, /docs, /openapi.json and /auth/* needs a session
+ * (middleware below); routers add `requireRole(...)` from ./middleware/session.ts for their role.
  */
 export const app = createRouter().basePath("/api");
+
+// Default-deny: every /api route needs a signed-in user, except the public ones below. Routers
+// still add `requireRole(...)` for the role they need; it reuses the user resolved here.
+const PUBLIC_PATHS = new Set(["/api/health", "/api/docs", "/api/openapi.json"]);
+app.use("*", async (c, next) => {
+  if (PUBLIC_PATHS.has(c.req.path) || c.req.path.startsWith("/api/auth/")) return next();
+  return requireSession(c, next);
+});
 
 // Better Auth: sign-up, sign-in, sign-out, session, its own OpenAPI reference (/api/auth/reference).
 app.on(["GET", "POST"], "/auth/*", async (c) => {
@@ -38,17 +50,21 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 
 app.route("/", healthRouter);
 app.route("/", meRouter);
+app.route("/", organizationRouter);
+app.route("/", preferencesRouter);
+app.route("/", productsRouter);
+app.route("/", policyRouter);
+app.route("/", proposalsRouter);
+app.route("/", approvalsRouter);
+app.route("/", ordersRouter);
+app.route("/", auditRouter);
 app.route("/", catalogRouter);
 app.route("/", inquiriesRouter);
-app.route("/", guardrailsRouter);
 app.route("/", inventoryRouter);
 app.route("/", recipesRouter);
 app.route("/", intelligenceRouter);
 app.route("/", extractRouter);
-app.route("/", ordersRouter);
 app.route("/", agentRouter);
-app.route("/", organizationRouter);
-app.route("/", preferencesRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
@@ -65,9 +81,9 @@ app.doc31("/openapi.json", {
     version: "0.1.0",
     description:
       "Interface for external purchasing agents to Valio Aimo (mock backend). " +
-      "Supports structured product lookup, fixed-price & availability inquiries, permission guardrails, " +
-      "human approval, order modifications, checkout receipts, and full audit trails. " +
-      "Sign-up, sign-in and sign-out are documented separately at /api/auth/reference.",
+      "Sign-up, sign-in and sign-out are provided by Better Auth and documented separately: " +
+      "[/api/auth/reference](/api/auth/reference). " +
+      "Sign in there first; the session cookie it sets is what the endpoints marked with a lock need.",
   },
 });
 app.get("/docs", swaggerUI({ url: "/api/openapi.json" }));
@@ -76,7 +92,6 @@ app.notFound((c) => c.json({ error: "Not found" }, 404));
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
-  if (err instanceof MissingGeminiKeyError) return c.json({ error: err.message }, 500);
   console.error(err);
   return c.json({ error: "Internal error" }, 500);
 });

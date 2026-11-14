@@ -11,9 +11,10 @@ export const postAgentRunRoute = createRoute({
   tags: ["Agent"],
   summary: "Run an autonomous turn of the Valio Aimo Purchasing Agent",
   description:
-    "Open conversational and tool-driven interface to the Mastra purchasingAgent. Supports " +
-    "searching products, running fixed-price & availability inquiries, creating orders within " +
-    "guardrails, swapping products on existing orders, and checking out authorized orders.",
+    "One turn of the purchasing agent, acting for the signed-in buyer: search products, ask prices and " +
+    "availability, create and revise proposals, and order a proposal only when the organization's rules allow " +
+    "it or an approver approved it. The agent never approves. Buyers only.",
+  security: [{ sessionCookie: [] }],
   request: {
     body: {
       required: true,
@@ -24,23 +25,23 @@ export const postAgentRunRoute = createRoute({
   },
   responses: {
     200: {
-      description: "Agent reply, tool invocation trace, and active order state.",
+      description: "Agent reply, tool trace and the proposal it worked on.",
       content: { "application/json": { schema: AgentRunResponseSchema } },
     },
     400: {
-      description: "Invalid agent action or order modification.",
+      description: "The requested change could not be applied.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    403: {
+      description: "Not a buyer, or not the proposal's creator.",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     404: {
-      description: "Referenced order not found.",
+      description: "Referenced proposal not found.",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
     409: {
-      description: "Order action blocked by approval or lifecycle state.",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    500: {
-      description: "Agent execution failed (e.g. GOOGLE_GENERATIVE_AI_API_KEY is not set).",
+      description: "Not possible in the proposal's current state (e.g. expired quote, changed price).",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

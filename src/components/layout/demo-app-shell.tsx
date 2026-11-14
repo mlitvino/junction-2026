@@ -1,18 +1,21 @@
 "use client";
 
-import { useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
 import { AppShell } from "./app-shell";
 
+// The viewer is the signed-in user in connected mode (GET /api/me) or the demo identity in
+// mock mode; see src/client/use-viewer.ts.
 export function DemoAppShell({ children }: { children: React.ReactNode }) {
-  const snapshot = useProcurement();
-  const viewer =
-    snapshot.ready && snapshot.mode === "mock"
-      ? {
-          displayName: snapshot.state.role === "BUYER" ? "Demo Buyer" : "Demo Approver",
-          organizationLabel: "Synthetic demo organization",
-          roles: [snapshot.state.role],
-          demo: true,
-        }
-      : undefined;
-  return <AppShell viewer={viewer}>{children}</AppShell>;
+  const viewer = useViewer();
+  return (
+    <AppShell viewer={viewer.status === "ready" ? viewer.viewer : undefined}>
+      {viewer.status === "error" ? (
+        <p role="alert" className="py-12 text-center text-destructive">
+          {viewer.message}
+        </p>
+      ) : (
+        children
+      )}
+    </AppShell>
+  );
 }

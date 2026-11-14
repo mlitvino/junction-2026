@@ -1,21 +1,16 @@
 import "server-only";
 
+import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+
 import { randomUUID } from "node:crypto";
 
-import { inArray } from "drizzle-orm";
-
-import { getDb } from "@/server/db/client";
-import { ensureDatabase } from "@/server/db/migrate";
-import { valioProduct } from "@/server/db/schema";
-import { getAvailability, getPrices, getProduct, searchProducts } from "@/server/services/catalog";
+import { getAvailability, getPrices, getProduct, searchProducts, today } from "@/server/services/catalog";
 import {
-  hashSeed,
   inferDietaryAndAllergensFromProduct,
-  inferSustainabilityCertificates,
   MOCK_CATALOG_BY_ID,
   MOCK_CATALOG_PRODUCTS,
+  syntheticCatalogEnabled,
   roundCurrency,
-  synthesizeNutritionFromSeed,
   type UnifiedCatalogRecord,
 } from "@/server/services/mock-catalog";
 import { valioSource } from "@/server/valio/client";
@@ -34,8 +29,9 @@ import type {
 const INQUIRY_LOCK_MINUTES = 5;
 const DEFAULT_FOOD_VAT_PCT = 14;
 
+/** Today in Helsinki (YYYY-MM-DD), the same default as the rest of the API. */
 export function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+  return today();
 }
 
 function toSummaryFromMock(record: UnifiedCatalogRecord): CatalogProductSummary {
@@ -54,12 +50,13 @@ function toSummaryFromMock(record: UnifiedCatalogRecord): CatalogProductSummary 
     dietaryTags: record.dietaryTags,
     sustainabilityCertificates:
       record.sustainabilityCertificates ??
-      inferSustainabilityCertificates(record.name, record.countryOfOrigin, record.brand),
+      [] /* no label data imported yet */,
   };
 }
 
-function toSummaryFromDb(item: ProductSummary, rawAllergens: string[] = []): CatalogProductSummary {
-  const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(item.name, rawAllergens);
+function toSummaryFromDb(item: ProductSummary): CatalogProductSummary {
+  // Real GS1 allergen codes from the catalog (plus name-based hints), shown as names.
+  const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(item.name, item.allergens);
   return {
     id: item.id,
     name: item.name,
@@ -73,11 +70,7 @@ function toSummaryFromDb(item: ProductSummary, rawAllergens: string[] = []): Cat
     deliveryReliability: item.deliveryReliability,
     allergens,
     dietaryTags,
-    sustainabilityCertificates: inferSustainabilityCertificates(
-      item.name,
-      item.countryOfOrigin,
-      item.brand,
-    ),
+    sustainabilityCertificates: [] /* no label data imported yet */,
   };
 }
 
@@ -133,10 +126,10 @@ function filterByAllergenAndDietary(
 export async function searchCatalogProducts(
   query: CatalogSearchQuery,
 ): Promise<CatalogSearchResponse> {
-  const excludeAllergens = (query.excludeAllergens ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
+  // Names ("milk") or GS1 codes ("AM") → the allergen names products are tagged with.
+  const excludeAllergens = allergenNames([
+    ...allergenCodes((query.excludeAllergens ?? "").split(",")),
+  ]);
   const requiredDietary = (query.dietary ?? "")
     .split(",")
     .map((s) => s.trim().toLowerCase())
@@ -144,7 +137,8 @@ export async function searchCatalogProducts(
 
   const merged = new Map<string, CatalogProductSummary>();
 
-  for (const mock of MOCK_CATALOG_PRODUCTS) {
+  const useSynthetic = await syntheticCatalogEnabled();
+  for (const mock of useSynthetic ? MOCK_CATALOG_PRODUCTS : []) {
     if (matchesMockSearch(mock, query)) {
       const summary = toSummaryFromMock(mock);
       if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
@@ -161,25 +155,11 @@ export async function searchCatalogProducts(
         limit: Math.min(100, query.limit + query.offset + 20),
         offset: 0,
       });
-      if (dbResult.items.length > 0) {
-        const missingIds = dbResult.items.map((item) => item.id).filter((id) => !merged.has(id));
-        const allergensMap = new Map<string, string[]>();
-        if (missingIds.length > 0) {
-          await ensureDatabase();
-          const allergenRows = await getDb()
-            .select({ id: valioProduct.id, allergens: valioProduct.allergens })
-            .from(valioProduct)
-            .where(inArray(valioProduct.id, missingIds));
-          for (const row of allergenRows) {
-            allergensMap.set(row.id, row.allergens);
-          }
-        }
-        for (const item of dbResult.items) {
-          if (!merged.has(item.id)) {
-            const summary = toSummaryFromDb(item, allergensMap.get(item.id) ?? []);
-            if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
-              merged.set(summary.id, summary);
-            }
+      for (const item of dbResult.items) {
+        if (!merged.has(item.id)) {
+          const summary = toSummaryFromDb(item);
+          if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
+            merged.set(summary.id, summary);
           }
         }
       }
@@ -245,7 +225,7 @@ export async function getCatalogProductDetail(
           allowedLotSize: detail.allowedLotSize,
           netWeightKg: detail.netWeightKg,
           storageTempC: detail.storageTempC,
-          nutrition: synthesizeNutritionFromSeed(detail.id),
+          nutrition: null,
           substitutes: detail.substitutes.map((s) => toSummaryFromDb(s)),
         };
       }
@@ -273,10 +253,9 @@ export async function resolveUnifiedCatalogRecord(
     const detail = await getProduct(productId);
     if (!detail) return null;
 
-    const s = hashSeed(detail.id);
-    let unitPriceEur = roundCurrency(2 + s * 12);
+    let unitPriceEur: number | null = null;
     let vatRatePct = DEFAULT_FOOD_VAT_PCT;
-    let availableQuantity: number | null = Math.max(50, Math.floor(s * 600));
+    let availableQuantity: number | null = null;
     let logisticModel: "stock" | "terminal" = "stock";
 
     try {
@@ -295,8 +274,9 @@ export async function resolveUnifiedCatalogRecord(
         logisticModel = a.logisticModel ?? "stock";
       }
     } catch {
-      // Keep deterministic price/stock fallback if live call fails.
+      // Valio unavailable: no price, so the product can't be offered below.
     }
+    if (unitPriceEur === null) return null;
 
     const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(
       detail.name,
@@ -325,7 +305,7 @@ export async function resolveUnifiedCatalogRecord(
       co2PerKg: detail.co2PerKg,
       dietaryTags,
       allergens,
-      nutrition: synthesizeNutritionFromSeed(detail.id),
+      nutrition: null,
       substituteIds: detail.substitutes.map((sub) => sub.id),
     };
   } catch {

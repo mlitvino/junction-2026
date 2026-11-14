@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
 import { PageHeader } from "@/components/layout/page-header";
 import { OrderStatus } from "@/features/procurement/status";
 import { date, money, timestamp } from "@/features/procurement/format";
@@ -11,7 +11,7 @@ import { DemoStorageNotice, EmptyState, IntegrationState } from "@/features/proc
 
 export function OrderDetail({ id }: { id: string }) {
   const snapshot = useProcurement();
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
   const order = snapshot.state.orders.find((o) => o.id === id);
   if (!order)
     return (
@@ -68,7 +68,11 @@ export function OrderDetail({ id }: { id: string }) {
           </Link>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Autonomous scenario · no approval was required by the fictional policy.
+            {order.proposalSnapshot.lines.some(
+              (line) => line.evidence.offer.source !== "SYNTHETIC_FRONTEND_FIXTURE",
+            )
+              ? "No approval was required by your organization's rules."
+              : "Autonomous scenario · no approval was required by the fictional policy."}
           </p>
         )}
       </section>

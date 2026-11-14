@@ -7,7 +7,6 @@ import { asc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { procurementRecipe } from "@/server/db/schema";
-import { getProcurementContext, mergeGuardrails } from "@/server/services/guardrails";
 import { todayIsoDate } from "@/server/services/inquiry";
 import {
   listInventory,
@@ -15,17 +14,11 @@ import {
   reconcileRecipeIngredientsWithInventory,
   roundQuantity,
 } from "@/server/services/inventory";
-import {
-  computeNameMatchScore,
-  executeCoreOrderCreation,
-  loadHistoricalOrderRecords,
-  makeAuditEvent,
-} from "@/server/services/orders";
+import { actorFor } from "@/server/services/purchasing";
+import { computeNameMatchScore, createProposalFromItems } from "@/server/services/selection";
 import type { ExtractedProductItem } from "@/shared/contracts/extract";
-import type { CustomerPreferences } from "@/shared/contracts/guardrails";
 import type { InventoryItem } from "@/shared/contracts/inventory";
 import type { SessionUser } from "@/shared/contracts/me";
-import type { AuditTrailEvent, PreviousOrderRecord } from "@/shared/contracts/orders";
 import {
   type CreateOrderFromRecipeRequest,
   type CreateOrderFromRecipeResponse,
@@ -204,7 +197,7 @@ function rowToRecipe(row: typeof procurementRecipe.$inferSelect): Recipe | null 
   };
 }
 
-async function loadAllAccessibleRecipes(actor?: SessionUser | null): Promise<Recipe[]> {
+async function loadAllAccessibleRecipes(actor: SessionUser): Promise<Recipe[]> {
   const orgId = actor?.organization.id ?? null;
   const byId = new Map<string, Recipe>();
 
@@ -254,7 +247,7 @@ async function loadAllAccessibleRecipes(actor?: SessionUser | null): Promise<Rec
 /** Lists trusted Valio recipes and customer-created recipes matching optional search filters. */
 export async function listRecipes(
   query: RecipeListQuery = {},
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<RecipeListResponse> {
   const all = await loadAllAccessibleRecipes(actor);
   const qNorm = query.q?.trim().toLowerCase();
@@ -288,7 +281,7 @@ export async function listRecipes(
 /** Retrieves a single recipe by ID if accessible to the caller. */
 export async function getRecipeById(
   recipeId: string,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<Recipe | null> {
   const all = await loadAllAccessibleRecipes(actor);
   return all.find((r) => r.id.toLowerCase() === recipeId.trim().toLowerCase()) ?? null;
@@ -297,7 +290,7 @@ export async function getRecipeById(
 /** Resolves the best-matching recipe for a natural-language dish query (e.g. 'salmon soup', 'lohikeitto'). */
 export async function findRecipeByDishQuery(
   dishQuery: string,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<Recipe | null> {
   const cleaned = dishQuery
     .replace(
@@ -335,7 +328,7 @@ export async function findRecipeByDishQuery(
 /** Creates and persists a custom customer recipe scoped to the caller's organization. */
 export async function createRecipe(
   input: CreateRecipeRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<Recipe> {
   const orgId = actor?.organization.id ?? null;
   const now = new Date();
@@ -387,12 +380,13 @@ export async function createRecipe(
  * 1. Query recipe ingredients in `[Product name] - [Product type] - [Quantity]` format.
  * 2. Aggregate total quantity for each ingredient across duplicate lines & scale by servings/batches.
  * 3. Subtract customer inventory stock: `actuallyNeeded = max(0, totalNeeded - inventoryStock)`.
- * 4–9. Run the full Valio Aimo procurement pipeline (type search -> name match -> preference filtering ->
- *      previous order ranking -> fixed-price & availability inquiry -> budget & guardrails -> create order).
+ * 4. Select products for what is still needed and create a proposal (services/selection.ts), which
+ *    the purchasing flow prices, checks against the organization's rules and sends for approval.
  */
-export async function createOrderFromRecipe(
+export async function createProposalFromRecipe(
   input: CreateOrderFromRecipeRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
+  viaAgent = false,
 ): Promise<CreateOrderFromRecipeResponse> {
   let recipe: Recipe | null = null;
 
@@ -417,7 +411,10 @@ export async function createOrderFromRecipe(
   } else if (input.dishQuery) {
     recipe = await findRecipeByDishQuery(input.dishQuery, actor);
     if (!recipe) {
-      throw new RecipeServiceError(`No matching recipe found for dish '${input.dishQuery}'.`, 404);
+      throw new RecipeServiceError(
+        `No matching recipe found for dish '${input.dishQuery}'.`,
+        404,
+      );
     }
   } else {
     throw new RecipeServiceError(
@@ -470,83 +467,38 @@ export async function createOrderFromRecipe(
       productQuantity: `${rec.actuallyNeededQuantity} ${rec.normalizedUnit}`,
     }));
 
-  const ctx = await getProcurementContext(actor, "buyer");
-  const savedSettings = ctx.settings;
-  const preferences: CustomerPreferences = input.preferences ?? savedSettings.preferences;
-  const guardrails = mergeGuardrails(savedSettings.guardrails, input.guardrails, input.budgetEur);
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
-  const previousOrders: PreviousOrderRecord[] =
-    input.previousOrders ?? (await loadHistoricalOrderRecords(actor));
-
-  const orderId = `ORD-${randomUUID().slice(0, 8).toUpperCase()}`;
-  const actorId = actor?.id ?? null;
-  const actorName = actor?.username ?? "Purchasing Agent";
-
   const coveredCount = ingredientReconciliation.filter((r) => r.coveredByInventory).length;
-  const initialAuditEvents: AuditTrailEvent[] = [
-    makeAuditEvent({
-      orderId,
-      actorType: "agent",
-      actorId,
-      actorName,
-      eventType: "recipe_loaded",
-      summary: `Loaded recipe '${recipe.name}' (${recipe.id}, source=${recipe.source}) scaled to ${requestedServings} servings (${scaleFactor}x base ${recipe.baseServings} servings).`,
-      details: {
-        recipeId: recipe.id,
-        recipeName: recipe.name,
-        source: recipe.source,
-        baseServings: recipe.baseServings,
-        requestedServings,
-        scaleFactor,
-      },
-    }),
-    makeAuditEvent({
-      orderId,
-      actorType: "agent",
-      actorId,
-      actorName,
-      eventType: "inventory_reconciled",
-      summary: `Reconciled ${ingredientReconciliation.length} aggregated recipe ingredient(s) against kitchen inventory: ${extractedItems.length} item(s) need ordering, ${coveredCount} item(s) fully covered by existing stock.`,
-      details: {
-        ingredientReconciliation,
-      },
-    }),
+  const initialSteps = [
+    {
+      action: "agent.recipe_loaded",
+      summary: `Loaded recipe '${recipe.name}' (${recipe.id}, ${recipe.source}) for ${requestedServings} servings (${scaleFactor}x the base ${recipe.baseServings}).`,
+      details: { recipeId: recipe.id, recipeName: recipe.name, requestedServings, scaleFactor },
+    },
+    {
+      action: "agent.inventory_reconciled",
+      summary: `Checked ${ingredientReconciliation.length} ingredient(s) against kitchen stock: ${extractedItems.length} to order, ${coveredCount} covered by stock.`,
+      details: { ingredientReconciliation },
+    },
   ];
+  const base = { recipeUsed: recipe, requestedServings, scaleFactor, inventoryUsed, ingredientReconciliation };
 
-  const allCoveredByStock = ingredientReconciliation.length > 0 && extractedItems.length === 0;
+  if (ingredientReconciliation.length > 0 && extractedItems.length === 0) {
+    return {
+      ...base,
+      proposal: null,
+      selection: { prompt: null, extractedItems: [], pipeline: [], suggestedAlternatives: [], previousOrdersUsed: [], warnings: [] },
+      message: `All ${ingredientReconciliation.length} ingredient(s) for '${recipe.name}' (${requestedServings} servings) are already in stock; nothing to order.`,
+    };
+  }
 
-  const syntheticPrompt = `Recipe order: ${recipe.name} (${requestedServings} servings)`;
-
-  const created = await executeCoreOrderCreation({
-    orderId,
-    prompt: syntheticPrompt,
+  const result = await createProposalFromItems(actorFor(actor, viaAgent), {
+    prompt: `Recipe order: ${recipe.name} (${requestedServings} servings)`,
     extractedItems,
     deliveryDate,
-    preferences,
-    layeredPreferences: ctx.layered,
-    guardrails,
-    previousOrders,
-    requireApproval: input.requireApproval,
     autoResolvePartialStock: input.autoResolvePartialStock,
-    initialAuditEvents,
-    emptyOrderStatusOverride: allCoveredByStock ? "confirmed" : undefined,
-    emptyReviewPromptOverride: allCoveredByStock
-      ? `All ${ingredientReconciliation.length} ingredient(s) for '${recipe.name}' (${requestedServings} servings) are already in stock in kitchen inventory — 0 EUR order needed.`
-      : undefined,
-    actor,
+    source: "recipe",
+    initialSteps,
   });
-
-  return {
-    recipeUsed: recipe,
-    requestedServings,
-    scaleFactor,
-    inventoryUsed,
-    ingredientReconciliation,
-    extractedItems: created.extractedItems,
-    preferencesUsed: created.preferencesUsed,
-    previousOrdersUsed: created.previousOrdersUsed,
-    pipeline: created.pipeline,
-    suggestedAlternatives: created.suggestedAlternatives,
-    order: created.order,
-  };
+  return { ...base, proposal: result.proposal, selection: result.selection, message: result.message };
 }

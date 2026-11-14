@@ -1,5 +1,8 @@
 import "server-only";
 
+import { auditChange } from "@/server/services/audit";
+import { actorFor } from "@/server/services/purchasing";
+
 import { PreferencesError, getEffective, getLayers, updateLayer } from "@/server/services/preferences";
 import { EffectiveResponseSchema, LayerSchema, LayersResponseSchema } from "@/shared/contracts/preferences";
 
@@ -20,12 +23,16 @@ preferencesRouter
   )
   .openapi(updateLayerRoute, async (c) => {
     try {
-      const layer = await updateLayer(
-        c.var.user.organization.id,
-        c.var.user.id,
-        c.req.valid("param").scope,
-        c.req.valid("json"),
-      );
+      const scope = c.req.valid("param").scope;
+      const request = c.req.valid("json");
+      const layer = await updateLayer(c.var.user.organization.id, c.var.user.id, scope, request);
+      await auditChange(actorFor(c.var.user), {
+        action: "preferences.updated",
+        resourceType: "preferences",
+        resourceId: scope,
+        summary: `Updated the ${scope} preferences layer: ${Object.keys(request.values).join(", ") || "cleared"}${request.locked ? `; locked: ${request.locked.join(", ") || "none"}` : ""}.`,
+        details: { values: request.values, locked: request.locked ?? null },
+      });
       return c.json(LayerSchema.parse(layer), 200);
     } catch (err) {
       if (!(err instanceof PreferencesError)) throw err;

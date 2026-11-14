@@ -38,8 +38,9 @@ export const OfferSchema = z.object({
   blocked: z.boolean(),
   errorCodes: z.array(z.string()),
   checkedAt: z.iso.datetime(),
-  // Deliberate provisional provenance extension: these are NOT supplier API responses.
-  source: z.literal("SYNTHETIC_FRONTEND_FIXTURE"),
+  // Deliberate provisional provenance extension. SYNTHETIC_FRONTEND_FIXTURE is made-up demo data;
+  // VALIO_API / VALIO_MOCK come from our backend's GET /api/offers (live Valio / the server's mock).
+  source: z.enum(["SYNTHETIC_FRONTEND_FIXTURE", "VALIO_API", "VALIO_MOCK"]),
 });
 const EvidenceSchema = z.object({
   productId: z.string(),
@@ -285,6 +286,7 @@ export const DemoStateSchema = z.object({
 
 export type ProvisionalMoney = z.infer<typeof MoneySchema>;
 export type ProvisionalProduct = z.infer<typeof ProductSchema>;
+export type ProvisionalOffer = z.infer<typeof OfferSchema>;
 export type ProvisionalEvidence = z.infer<typeof EvidenceSchema>;
 export type ProvisionalIntent = z.infer<typeof IntentSchema>;
 export type ProvisionalProposal = z.infer<typeof ProposalSchema>;
@@ -300,9 +302,23 @@ export type ProvisionalRequest = {
   message: string;
   clientRequestId: string;
 };
+/**
+ * The signed-in user the local simulator acts for in connected ("simulated") mode. Comes from
+ * GET /api/me (src/client/viewer.ts); in mock mode the demo role selector is used instead.
+ */
+export type ProvisionalActor = {
+  id: string;
+  displayName: string;
+  roles: readonly ProvisionalDemoState["role"][];
+};
+
 export type ProvisionalSnapshot = {
   ready: boolean;
-  mode: "mock" | "unavailable";
+  /**
+   * mock: demo identity + local simulator. simulated: real signed-in user + local simulator.
+   * unavailable: no procurement data source.
+   */
+  mode: "mock" | "simulated" | "unavailable";
   storageNotice: string | null;
   state: ProvisionalDemoState;
   scenarios: readonly ProvisionalScenario[];
@@ -314,6 +330,8 @@ export interface ProvisionalProcurementService {
   subscribe(listener: () => void): () => void;
   getSnapshot(): ProvisionalSnapshot;
   getServerSnapshot(): ProvisionalSnapshot;
+  /** Connected mode: the signed-in user (null when signed out). Ignored in mock mode. */
+  setActor(actor: ProvisionalActor | null): void;
   startConversation(request: ProvisionalRequest): Promise<string>;
   requestApproval(proposalId: string, expectedVersion: number): Promise<string>;
   commitOrder(proposalId: string, expectedVersion: number, idempotencyKey: string): Promise<string>;
