@@ -107,13 +107,16 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 
 ## Commands
 
-- `pnpm dev`: dev server (http://localhost:3000)
+- `pnpm dev`: starts the local Postgres (waits until it is ready), then the dev server (http://localhost:3000). Needs Docker.
+- `pnpm dev:app`: dev server only, no Docker (frontend work with `NEXT_PUBLIC_USE_MOCKS=true`)
 - `pnpm build`: production build
 - `pnpm lint`: ESLint
 - `pnpm typecheck`: `tsc --noEmit`
 - `pnpm check`: lint + typecheck
 - `pnpm format`: Prettier
-- `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: local Postgres from `compose.dev.yml`
+- `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
+- `pnpm db:psql`: psql shell in the local DB
+- `pnpm db:reset`: **deletes all local data** (drops the volume) and starts a fresh DB
 - `pnpm docker:build` / `pnpm docker:run`: build and run the production image locally (http://localhost:3000)
 
 **After any change, run `pnpm check` and fix every error before finishing.** CI runs `pnpm check` and `pnpm build` on every pull request and before every deploy.
