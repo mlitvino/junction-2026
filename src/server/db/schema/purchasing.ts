@@ -32,6 +32,9 @@ export type StoredProposalLine = {
   availableQuantity?: number | null;
   /** Set when the line stands in for what was requested (split, swap, fallback). */
   substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null;
+  /** Ids of the recorded Valio answers (valio_price_snapshot / valio_availability_snapshot) used. */
+  priceSnapshotId?: string | null;
+  availabilitySnapshotId?: string | null;
 };
 
 /** Frozen decision: see ProposalDecisionSchema. */

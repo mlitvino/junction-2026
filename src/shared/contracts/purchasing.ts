@@ -46,6 +46,12 @@ export const ProposalLineSchema = z.object({
     .object({ requested: z.string(), reason: z.enum(["split", "swap", "fallback"]) })
     .nullable()
     .meta({ description: "What this line stands in for; null when it is what was asked for." }),
+  priceSnapshotId: z.string().nullable().optional().meta({
+    description: "Id of the recorded Valio price answer the price comes from (absent on older proposals).",
+  }),
+  availabilitySnapshotId: z.string().nullable().optional().meta({
+    description: "Id of the recorded Valio availability answer (absent on older proposals).",
+  }),
 });
 
 export const ProposalDecisionSchema = z.object({
@@ -278,7 +284,11 @@ export const ProposalVerificationSchema = z.object({
     z.object({
       productId,
       unitPriceExclVat: z.number().nullable(),
-      snapshotFound: z.boolean().meta({ description: "A Valio price snapshot with this price exists for the date." }),
+      priceSnapshotId: z.string().nullable().meta({ description: "The matched price snapshot." }),
+      availabilitySnapshotId: z.string().nullable(),
+      snapshotFound: z.boolean().meta({
+        description: "The recorded Valio price answer exists and has this price, product and date (by snapshot id; older proposals: by price).",
+      }),
       snapshotFetchedAt: isoDateTime.nullable(),
       source: DataSourceSchema.nullable(),
     }),

@@ -258,6 +258,8 @@ export async function createProposal(
     availableDate: l.availableDate,
     availableQuantity: l.availableQuantity,
     substituteFor: request.lines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
+    priceSnapshotId: l.priceSnapshotId,
+    availabilitySnapshotId: l.availabilitySnapshotId,
   }));
   const stored: StoredDecision = {
     outcome: decision.outcome,
@@ -635,7 +637,8 @@ export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderRe
 
 /**
  * Trust check an agent or a person can run without a manual lookup: the stored content still
- * hashes to the stored hash, and every frozen price matches a Valio price snapshot we recorded.
+ * hashes to the stored hash, and every frozen price is the price in the recorded Valio answer it
+ * names (snapshot id; older proposals: any snapshot with that price for the date).
  */
 export async function verifyProposal(actor: Actor, id: string): Promise<ProposalVerification> {
   const d = await db();
@@ -667,12 +670,16 @@ export async function verifyProposal(actor: Actor, id: string): Promise<Proposal
     recomputedHash: recomputed,
     hashValid: recomputed === row.hash,
     lines: row.lines.map((line) => {
-      const match = snapshots.find(
-        (s) => s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat,
-      );
+      const samePrice = (s: (typeof snapshots)[number]) =>
+        s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat;
+      const match = line.priceSnapshotId
+        ? snapshots.find((s) => String(s.id) === line.priceSnapshotId && samePrice(s))
+        : snapshots.find(samePrice);
       return {
         productId: line.productId,
         unitPriceExclVat: line.unitPriceExclVat,
+        priceSnapshotId: match ? String(match.id) : (line.priceSnapshotId ?? null),
+        availabilitySnapshotId: line.availabilitySnapshotId ?? null,
         snapshotFound: !!match,
         snapshotFetchedAt: match?.fetchedAt.toISOString() ?? null,
         source: (match?.source as ProposalVerification["lines"][number]["source"]) ?? null,
