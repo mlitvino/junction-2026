@@ -4,12 +4,14 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
 import { listInventory } from "@/server/services/inventory";
-import { createOrderFromRecipe, listRecipes } from "@/server/services/recipes";
+import { createProposalFromRecipe, listRecipes } from "@/server/services/recipes";
 import { InventoryListResponseSchema } from "@/shared/contracts/inventory";
 import {
   CreateOrderFromRecipeResponseSchema,
   RecipeListResponseSchema,
 } from "@/shared/contracts/recipes";
+
+import { toolActor } from "./actor";
 
 export const listRecipesTool = createTool({
   id: "list-recipes",
@@ -20,7 +22,7 @@ export const listRecipesTool = createTool({
     tag: z.string().optional().describe("Optional recipe tag filter."),
   }),
   outputSchema: RecipeListResponseSchema,
-  execute: async ({ query, tag }) => listRecipes({ q: query, tag }),
+  execute: async ({ query, tag }, context) => listRecipes({ q: query, tag }, toolActor(context)),
 });
 
 export const getInventoryTool = createTool({
@@ -29,7 +31,7 @@ export const getInventoryTool = createTool({
     "Inspect current customer kitchen/canteen ingredient stock levels and par levels before ordering.",
   inputSchema: z.object({}),
   outputSchema: InventoryListResponseSchema,
-  execute: async () => listInventory(),
+  execute: async (_input, context) => listInventory(toolActor(context)),
 });
 
 export const createOrderFromRecipeTool = createTool({
@@ -48,27 +50,16 @@ export const createOrderFromRecipeTool = createTool({
       .optional()
       .describe("Desired number of servings to scale the recipe for."),
     deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
-    budgetEur: z.number().positive().optional().describe("Optional budget override in EUR."),
     autoResolvePartialStock: z
       .boolean()
       .optional()
       .describe("If true, splits insufficient-stock items across allergen-safe substitutes."),
   }),
   outputSchema: CreateOrderFromRecipeResponseSchema,
-  execute: async ({
-    recipeId,
-    dishQuery,
-    servings,
-    deliveryDate,
-    budgetEur,
-    autoResolvePartialStock,
-  }) =>
-    createOrderFromRecipe({
-      recipeId,
-      dishQuery,
-      servings,
-      deliveryDate,
-      budgetEur,
-      autoResolvePartialStock,
-    }),
+  execute: async ({ recipeId, dishQuery, servings, deliveryDate, autoResolvePartialStock }, context) =>
+    createProposalFromRecipe(
+      { recipeId, dishQuery, servings, deliveryDate, autoResolvePartialStock },
+      toolActor(context),
+      true,
+    ),
 });

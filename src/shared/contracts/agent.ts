@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { CreatedOrderSchema } from "./orders";
+import { ProposalSchema } from "./purchasing";
 
 /** Single tool invocation trace recorded during an autonomous agent run */
 export const AgentToolCallTraceSchema = z.object({
@@ -17,13 +17,11 @@ export type AgentToolCallTrace = z.infer<typeof AgentToolCallTraceSchema>;
 export const AgentRunRequestSchema = z.object({
   message: z.string().trim().min(1).meta({
     description:
-      "Natural-language instruction to the purchasing agent (search, inquire, buy, swap products, check status, or checkout).",
+      "Natural-language instruction to the purchasing agent (search, inquire, buy, change a proposal, check status, or order an allowed/approved proposal).",
     example: "I want 440 kg of creamy cheese delivered tomorrow",
   }),
-  orderId: z.string().trim().min(1).optional().meta({
-    description:
-      "Optional active order ID when following up on an existing order (e.g. swapping a product or checking out).",
-    example: "ORD-8A7B6C5D",
+  proposalId: z.string().trim().min(1).optional().meta({
+    description: "The proposal being discussed, when following up (change it, verify it, order it).",
   }),
   deliveryDate: z.iso.date().optional().meta({
     description: "Optional target delivery date (YYYY-MM-DD).",
@@ -45,8 +43,8 @@ export const AgentRunResponseSchema = z.object({
   toolCalls: z.array(AgentToolCallTraceSchema).meta({
     description: "Ordered trace of tools invoked by the agent during this turn.",
   }),
-  activeOrder: CreatedOrderSchema.nullable().meta({
-    description: "Latest order created, modified, or inspected during this turn, if any.",
+  activeProposal: ProposalSchema.nullable().meta({
+    description: "The proposal created, revised, ordered or inspected during this turn, if any.",
   }),
 });
 

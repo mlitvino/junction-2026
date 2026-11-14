@@ -10,10 +10,17 @@ const prefs = (over: Partial<Preferences> = {}): Preferences => ({
   minDeliveryReliability: null,
   preferredOriginCountries: [],
   excludedAllergens: [],
+  dietaryRestrictions: [],
+  allowedCategories: [],
+  blockedCategories: [],
+  allowedProductIds: [],
+  blockedProductIds: [],
   preferredVendors: [],
   blockedVendors: [],
   preferredBrands: [],
   maxOrderValue: null,
+  maxUnitPrice: null,
+  maxLineQuantity: null,
   autoApproveBelow: null,
   autonomy: "suggest_only",
   allowSubstitutes: false,
@@ -157,4 +164,36 @@ test("DENY on availability beats approval on the total", () => {
   const r = evaluatePolicy(autonomous(), [line({ quantity: 40, availability: avail({ salesBlock: true }) })], at);
   assert.equal(r.outcome, "DENY");
   assert.deepEqual(codes(r), ["ABOVE_AUTO_APPROVAL", "SALES_BLOCKED"]);
+});
+
+// ----- Organization limits per line (from the former guardrails) -----
+test("allergen names and codes are the same rule", () => {
+  const byName = evaluatePolicy(autonomous({ excludedAllergens: ["milk"] }), [line()]);
+  const byCode = evaluatePolicy(autonomous({ excludedAllergens: ["am"] }), [line()]);
+  assert.deepEqual(codes(byName), ["EXCLUDED_ALLERGEN"]);
+  assert.deepEqual(codes(byCode), ["EXCLUDED_ALLERGEN"]);
+  const lactose = evaluatePolicy(autonomous({ excludedAllergens: ["milk"] }), [
+    line({ product: { vendorName: "X", allergens: ["ML"], co2PerKg: null, deliveryReliability: null } }),
+  ]);
+  assert.deepEqual(codes(lactose), ["EXCLUDED_ALLERGEN"]);
+});
+
+test("unit price and line quantity caps need approval", () => {
+  const r = evaluatePolicy(autonomous({ maxUnitPrice: 8, maxLineQuantity: 10 }), [line()]);
+  assert.equal(r.outcome, "REQUIRE_APPROVAL");
+  assert.deepEqual(codes(r), ["LINE_QUANTITY_TOO_HIGH", "UNIT_PRICE_TOO_HIGH"]);
+});
+
+test("category and product lists need approval; blocked wins over allowed", () => {
+  const product = { vendorName: "Arla Oy", category: "MILK", allergens: [], co2PerKg: null, deliveryReliability: null };
+  const blocked = evaluatePolicy(autonomous({ blockedCategories: ["milk"] }), [line({ product })]);
+  assert.deepEqual(codes(blocked), ["CATEGORY_BLOCKED"]);
+  const outside = evaluatePolicy(autonomous({ allowedCategories: ["CHEESE"] }), [line({ product })]);
+  assert.deepEqual(codes(outside), ["CATEGORY_NOT_ALLOWED"]);
+  const inside = evaluatePolicy(autonomous({ allowedCategories: ["MILK"] }), [line({ product })]);
+  assert.equal(inside.outcome, "ALLOW");
+  const productBlocked = evaluatePolicy(autonomous({ blockedProductIds: ["469330"], allowedProductIds: ["469330"] }), [line({ product })]);
+  assert.deepEqual(codes(productBlocked), ["PRODUCT_BLOCKED"]);
+  const notListed = evaluatePolicy(autonomous({ allowedProductIds: ["1"] }), [line({ product })]);
+  assert.deepEqual(codes(notListed), ["PRODUCT_NOT_ALLOWED"]);
 });

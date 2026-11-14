@@ -3,16 +3,32 @@
 What is done and what is left, per part. One line each: what, and why it matters.
 Challenge core: lookup, inquiry → order at fixed prices, permissions and human approval. Optional: delivery/sustainability comparison, substitutions, audit trail.
 
+State: one purchasing system after the merges of `dev-agent` (#6, #8) and `feat/integrate-frontend` (#7) and the unification commits. Since #8 the agent needs Gemini unless `TEST_MODE=TRUE`. Prompts, recipes and the agent end in a normal proposal; one rule source (layered preferences); one order model (`proposal` → `approval` → `purchase_order`); organization-wide audit log; default-deny API. `pnpm check` and `pnpm test` pass.
+
+## Before pushing to `main` (deploys)
+
+- [ ] Production `.env` on the server has `GOOGLE_GENERATIVE_AI_API_KEY` (or `TEST_MODE=TRUE` for a demo without Gemini). Since #8, `/api/agent/run`, `/api/extract` and `/api/proposals/from-prompt` fail without one of them.
+- [ ] Local `.env`: same choice. The live check script's agent step expects the deterministic flow, so run it with `TEST_MODE=TRUE`.
+- [ ] Tell the frontend dev about the contract changes: `agent` (`proposalId`, `activeProposal`), recipe response (`proposal`, `selection`, `message`), `intelligence` recurring check (`proposalId`), `catalog` nutrition nullable, removed `orders.ts`/`guardrails.ts` contracts, new `selection.ts`/`allergens.ts`. Nothing in the UI uses them yet, but the next integration will.
+
 ## Static API (backend, no AI)
 
 Done
-
-- [x] Products and offers: `GET /api/products`, `/api/products/{id}`, `/offer`, `POST /api/offers`. Core lookup for agents and UI.
+- [x] Products and offers: `GET /api/products`, `/api/products/{id}`, `/offer`, `POST /api/offers`. Core lookup on real Valio data.
+- [x] Catalog search with allergen (names or GS1) and dietary filters, product details, substitutions: `/api/catalog/*`. Agent-oriented lookup and exception handling.
+- [x] Fixed-price inquiry: `POST /api/inquiries`. Structured price + availability answer for narrowed-down products.
 - [x] Organizations, roles (buyer, approver) and members. Who may do what.
-- [x] Layered preferences (base → buyer/approver, locks). The rules the policy applies.
-- [x] Policy check `POST /api/policy/evaluate`, incl. availability (blocked, late, short stock). Core guardrails model.
-- [x] Proposals, approvals, orders with hash binding and idempotent orders. Core inquiry → commitment flow.
-- [x] Fixed prices: 24 h quote expiry and order-time price/availability re-check. "Based on fixed prices, not negotiated quotes".
+- [x] Layered preferences, incl. the former guardrails (unit price and line caps, category and product lists, dietary restrictions). One rule source.
+- [x] Policy check `POST /api/policy/evaluate`, incl. availability and the new caps/lists. Guardrails model with reasons.
+- [x] Proposals, approvals, orders: hash binding, idempotent orders, 24 h quote, order-time price re-check. Inquiry → commitment at fixed prices.
+- [x] Agent-made proposals: `/api/proposals/from-prompt`, `/from-recipe`, `/{id}/revise`, with the selection trace and warnings on the proposal. Same rules as any proposal.
+- [x] Organization-wide audit log: `GET /api/audit`, `GET /api/proposals/{id}/audit` (selection steps, policy, approval, order, refused orders, preference and member changes). Readable record of what happened and why.
+- [x] Proposal verification `GET /api/proposals/{id}/verify` and receipts `GET /api/orders/{id}/receipt`. Claims checkable without a manual lookup.
+- [x] Usernames in proposal, approval and order responses. Approvers see "alice", not an id.
+- [x] Default-deny API, role guards everywhere, no rule overrides in request bodies. No anonymous access to organization data.
+- [x] Catalog data honesty: synthetic products only with `SYN-` ids and only without a real catalog; no invented prices, stock, nutrition or labels.
+- [x] Recipes, inventory and intelligence (stock-out alerts, recurring-order drift check, proactive recommendations) on the unified flow. Challenge example scenarios.
+- [x] Partial stock: `autoResolvePartialStock` splits a line over compliant alternatives. "Response logic" for partial stock.
 - [x] Unit tests in CI (`pnpm test`). Rules can't silently break.
 
 Left
@@ -29,10 +45,11 @@ Left
 - [ ] Provenance: snapshot id + `fetchedAt` on every price/stock answer; optionally signed proposal hashes. Trust protocol: verify claims without a manual check.
 - [ ] Approval expiry and a pending-count endpoint for a badge. Approvals shouldn't wait forever or go unnoticed.
 - [ ] Apply migrations without restarting the dev server (`ensureDatabase` runs once per process). Teammates get 500s after pulling a migration.
-- [ ] Merge `feat/integrate-frontend` into `main`. Only `main` deploys.
 - [ ] Remove the `server/valio/types.ts` re-export shim. Legacy indirection.
-- [ ] Stretch: standing orders with drift detection. Flag cost/quantity creep before auto-renewal.
-- [ ] Stretch: MCP-style interface over the existing endpoints. Makes the same API directly agent-readable.
+- [ ] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) stay unused; drop them only in a later cleanup once rollbacks to old images are no longer needed. Migrations are additive.
+- [ ] Map agent configuration and model errors to a clear response: a missing `GOOGLE_GENERATIVE_AI_API_KEY` throws a plain `Error`, and since #8 a failed model call in extraction or proposal revision is no longer caught, so both become `500 Internal error`. Return e.g. 503 "agent not configured" / 502 "model failed" with a message.
+- [ ] README "LLM (Gemini)" still says the agent falls back to a mock model without a key; since #8 it requires the key unless `TEST_MODE=TRUE`. Update README and the root AGENTS.md agent notes.
+- [ ] Stretch: MCP-style interface over the endpoints. Makes the API directly agent-readable.
 
 ## Frontend
 

@@ -1,14 +1,7 @@
 import { z } from "zod";
 
-import { ExtractedProductItemSchema } from "./extract";
-import { CustomerPreferencesSchema, PartialAgentGuardrailsSchema } from "./guardrails";
 import { InventoryItemSchema, UpsertInventoryItemRequestSchema } from "./inventory";
-import {
-  CreatedOrderSchema,
-  ItemProcurementTraceSchema,
-  PreviousOrderRecordSchema,
-  SuggestedAlternativeSchema,
-} from "./orders";
+import { ProposalSchema, ProposalSelectionSchema } from "./purchasing";
 
 /** Origin of a recipe in the system */
 export const RecipeSourceSchema = z.enum(["valio_recipe_book", "customer"]).meta({
@@ -158,7 +151,7 @@ export type RecipeIngredientReconciliation = z.infer<
   typeof RecipeIngredientReconciliationSchema
 >;
 
-/** POST /api/orders/from-recipe — request body */
+/** POST /api/proposals/from-recipe — request body. The organization's rules always apply; no overrides. */
 export const CreateOrderFromRecipeRequestSchema = z.object({
   recipeId: z.string().trim().min(1).optional().meta({
     description: "ID of a saved recipe (e.g. 'recipe-salmon-soup').",
@@ -189,22 +182,6 @@ export const CreateOrderFromRecipeRequestSchema = z.object({
     description:
       "Optional customer inventory snapshot override (defaults to saved organization/mock kitchen stock).",
   }),
-  preferences: CustomerPreferencesSchema.optional().meta({
-    description: "Optional customer preferences override.",
-  }),
-  budgetEur: z.number().positive().optional().meta({
-    description: "Optional customer budget in EUR override.",
-    example: 2500,
-  }),
-  guardrails: PartialAgentGuardrailsSchema.optional().meta({
-    description: "Optional agent permission guardrails override.",
-  }),
-  previousOrders: z.array(PreviousOrderRecordSchema).optional().meta({
-    description: "Optional previous orders override.",
-  }),
-  requireApproval: z.boolean().optional().meta({
-    description: "If true, pauses the created order in pending_approval for human review.",
-  }),
   autoResolvePartialStock: z.boolean().optional().meta({
     description:
       "If true, splits insufficient-stock lines across allergen-safe substitutes automatically.",
@@ -213,7 +190,7 @@ export const CreateOrderFromRecipeRequestSchema = z.object({
 
 export type CreateOrderFromRecipeRequest = z.infer<typeof CreateOrderFromRecipeRequestSchema>;
 
-/** POST /api/orders/from-recipe — response body */
+/** POST /api/proposals/from-recipe — response body */
 export const CreateOrderFromRecipeResponseSchema = z.object({
   recipeUsed: RecipeSchema,
   requestedServings: z.number(),
@@ -223,18 +200,13 @@ export const CreateOrderFromRecipeResponseSchema = z.object({
   }),
   inventoryUsed: z.array(InventoryItemSchema),
   ingredientReconciliation: z.array(RecipeIngredientReconciliationSchema).meta({
-    description:
-      "Per-ingredient calculation of total needed minus inventory stock (Steps 1–3).",
+    description: "Per-ingredient calculation of total needed minus inventory stock.",
   }),
-  extractedItems: z.array(ExtractedProductItemSchema).meta({
-    description:
-      "Net remaining ingredients (actuallyNeeded > 0) sent into the catalog procurement pipeline.",
+  proposal: ProposalSchema.nullable().meta({
+    description: "The proposal for the ingredients still needed; null when stock covers everything or nothing matched.",
   }),
-  preferencesUsed: CustomerPreferencesSchema,
-  previousOrdersUsed: z.array(PreviousOrderRecordSchema),
-  pipeline: z.array(ItemProcurementTraceSchema),
-  suggestedAlternatives: z.array(SuggestedAlternativeSchema),
-  order: CreatedOrderSchema,
-});
+  selection: ProposalSelectionSchema,
+  message: z.string(),
+})
 
 export type CreateOrderFromRecipeResponse = z.infer<typeof CreateOrderFromRecipeResponseSchema>;

@@ -4,8 +4,7 @@ import { Agent } from "@mastra/core/agent";
 import { createMockModel } from "@mastra/core/test-utils/llm-mock";
 import { z } from "zod";
 
-const GEMINI_MODEL = "google/gemini-3.8-flash";
-const useGemini = Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+import { isAgentTestMode, resolveAgentModel } from "./mode";
 
 export const ParsedOrderChangeSchema = z.object({
   replacements: z.array(
@@ -45,18 +44,18 @@ const mockModel = createMockModel({
 
 export const orderChangeAgent = new Agent({
   id: "order-change-agent",
-  name: useGemini ? "Order modification parser" : "Order modification parser (mock)",
+  name: isAgentTestMode() ? "Order modification parser (test)" : "Order modification parser",
   instructions:
     "You translate free-form customer change requests on an existing procurement order into structured actions. " +
     "You are given the current order lines and available candidate products along with the customer's prompt. " +
     "Extract any product swaps (e.g. 'change product X on product Y', 'swap X for Y', 'replace X with Y'), " +
     "quantity updates (e.g. 'change quantity of X to 300', 'reduce to 250 kg'), and line removals (e.g. 'remove X'). " +
     "Prefer exact product IDs when they match a known line or candidate.",
-  model: useGemini ? GEMINI_MODEL : mockModel,
+  model: () => resolveAgentModel(mockModel),
 });
 
 /**
- * Deterministic fallback parser for natural-language order change prompts when GOOGLE_GENERATIVE_AI_API_KEY is unset.
+ * Deterministic fallback parser for natural-language order change prompts when TEST_MODE=TRUE.
  */
 export function parseOrderChangeDeterministically(prompt: string): ParsedOrderChange {
   const replacements: ParsedOrderChange["replacements"] = [];

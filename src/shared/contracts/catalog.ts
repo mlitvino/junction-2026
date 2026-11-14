@@ -1,6 +1,16 @@
 import { z } from "zod";
 
-import { NutritionProfileSchema } from "./guardrails";
+/** Nutritional profile per 100g */
+export const NutritionProfileSchema = z.object({
+  caloriesPer100g: z.number().meta({ description: "Energy in kcal per 100g.", example: 340 }),
+  fatPer100g: z.number().meta({ description: "Fat in grams per 100g.", example: 28 }),
+  sugarPer100g: z.number().meta({ description: "Sugars in grams per 100g.", example: 0.5 }),
+  saltPer100g: z.number().meta({ description: "Salt in grams per 100g.", example: 1.4 }),
+  proteinPer100g: z.number().meta({ description: "Protein in grams per 100g.", example: 23 }),
+});
+
+export type NutritionProfile = z.infer<typeof NutritionProfileSchema>;
+
 
 /** Source of price and availability data */
 export const CatalogDataSourceSchema = z.enum(["valio", "mock"]).meta({
@@ -63,7 +73,7 @@ export const CatalogProductDetailSchema = CatalogProductSummarySchema.extend({
       max: z.number().nullable(),
     })
     .nullable(),
-  nutrition: NutritionProfileSchema,
+  nutrition: NutritionProfileSchema.nullable().meta({ description: "Per 100 g. Null when the catalog has no nutrition data for the product." }),
   substitutes: z.array(CatalogProductSummarySchema).meta({
     description: "Suggested substitute products within Valio Aimo's assortment.",
   }),

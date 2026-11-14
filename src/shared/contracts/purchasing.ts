@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { ExtractedProductItemSchema } from "./extract";
+import { ItemProcurementTraceSchema, PreviousOrderRecordSchema, SuggestedAlternativeSchema } from "./selection";
 import { PolicyOutcomeSchema, PolicyReasonSchema } from "./policy";
 import { DataSourceSchema } from "./products";
 
@@ -59,16 +61,37 @@ export const ApprovalSchema = z.object({
   proposalHash: z.string().meta({ description: "The exact proposal content this approval is for." }),
   status: ApprovalStatusSchema,
   requestedBy: z.string(),
+  requestedByName: z.string().nullable().meta({ description: "Username of the requester.", example: "alice" }),
   requestedAt: isoDateTime,
   decidedBy: z.string().nullable(),
+  decidedByName: z.string().nullable().meta({ description: "Username of the approver who decided.", example: "bob" }),
   decidedAt: isoDateTime.nullable(),
   comment: z.string().nullable(),
+});
+
+export const ProposalSourceSchema = z.enum(["buyer", "agent", "recipe"]).meta({
+  description: "`buyer`: lines given directly. `agent`: chosen by the purchasing agent from a prompt. `recipe`: from a recipe.",
+});
+
+/** How the agent chose the lines: per requested item, the candidates, filters and ranking. */
+export const ProposalSelectionSchema = z.object({
+  prompt: z.string().nullable().meta({ description: "The request the lines were chosen for." }),
+  extractedItems: z.array(ExtractedProductItemSchema),
+  pipeline: z.array(ItemProcurementTraceSchema),
+  suggestedAlternatives: z.array(SuggestedAlternativeSchema),
+  previousOrdersUsed: z.array(PreviousOrderRecordSchema),
+  warnings: z.array(z.string()).meta({
+    description: "Things a human should check, e.g. quantity unit differs from the sales unit, unusual quantity vs history.",
+  }),
 });
 
 export const ProposalSchema = z.object({
   id,
   status: ProposalStatusSchema,
   createdBy: z.string().meta({ description: "User id of the buyer who created it." }),
+  createdByName: z.string().nullable().meta({ description: "Username of the buyer.", example: "alice" }),
+  source: ProposalSourceSchema.nullable(),
+  selection: ProposalSelectionSchema.nullable().meta({ description: "Null when the lines were given directly." }),
   createdAt: isoDateTime,
   updatedAt: isoDateTime,
   lines: z.array(ProposalLineSchema),
@@ -93,6 +116,7 @@ export const OrderSchema = z.object({
   status: z.literal("SIMULATED_CONFIRMED"),
   source: z.literal("LOCAL_SIMULATOR").meta({ description: "Not sent to Valio: there is no ordering API." }),
   createdBy: z.string(),
+  createdByName: z.string().nullable(),
   createdAt: isoDateTime,
   idempotencyKey: z.string(),
   proposalHash: z.string(),
@@ -166,3 +190,114 @@ export type PlaceOrderRequest = z.infer<typeof PlaceOrderRequestSchema>;
 export type ListApprovalsQuery = z.infer<typeof ListApprovalsQuerySchema>;
 export type DecideApprovalRequest = z.infer<typeof DecideApprovalRequestSchema>;
 export type ApprovalWithProposal = z.infer<typeof ApprovalWithProposalSchema>;
+
+// ---------- Agent-prepared proposals ----------
+
+export const CreateProposalFromPromptRequestSchema = z.object({
+  prompt: z.string().trim().min(1).max(4000).meta({
+    description: "Natural-language request; the agent extracts items, picks products and creates a proposal.",
+    example: "100 litres of lactose-free milk for Friday",
+  }),
+  date: z.iso.date().optional().meta({ description: "Delivery date the goods are needed. Defaults to today (Helsinki)." }),
+  autoResolvePartialStock: z.boolean().optional().meta({
+    description: "Split a line across compliant alternatives when known stock is short.",
+  }),
+});
+
+export const ProposalFromPromptResponseSchema = z.object({
+  proposal: ProposalSchema.nullable().meta({ description: "Null when no product matched; see `message`." }),
+  selection: ProposalSelectionSchema,
+  message: z.string().meta({ description: "What happened and what to do next, for a human or an agent." }),
+});
+
+const ReplacementSchema = z.object({
+  fromProductId: productId,
+  toProductId: productId,
+  quantity: z.number().positive().optional(),
+});
+
+export const ReviseProposalRequestSchema = z.object({
+  prompt: z.string().trim().min(1).max(2000).optional().meta({
+    description: "Natural-language change, e.g. 'Change 469330 to 469386 and set 30 cases'.",
+  }),
+  replacements: z.array(ReplacementSchema).optional(),
+  quantityUpdates: z.array(z.object({ productId, quantity: z.number().positive() })).optional(),
+  removeProductIds: z.array(productId).optional(),
+  addItems: z.array(z.object({ productId, quantity: z.number().positive() })).optional(),
+  date: z.iso.date().optional().meta({ description: "New delivery date (re-prices everything)." }),
+});
+
+export const ReviseProposalResponseSchema = z.object({
+  previousProposalId: id,
+  appliedChanges: z.array(z.string()),
+  proposal: ProposalSchema,
+});
+
+// ---------- Receipts and verification ----------
+
+export const OrderReceiptSchema = z.object({
+  orderId: id,
+  proposalId: id,
+  issuedAt: isoDateTime,
+  organizationName: z.string(),
+  orderedByName: z.string().nullable(),
+  approvedByName: z.string().nullable().meta({ description: "Null when no approval was needed." }),
+  deliveryDate: z.iso.date(),
+  lines: z.array(ProposalLineSchema),
+  totalExclVat: z.number().nullable(),
+  currency: z.string(),
+  status: z.literal("SIMULATED_CONFIRMED"),
+  source: z.literal("LOCAL_SIMULATOR"),
+  proposalHash: z.string(),
+});
+
+export const ProposalVerificationSchema = z.object({
+  proposalId: id,
+  storedHash: z.string(),
+  recomputedHash: z.string(),
+  hashValid: z.boolean().meta({ description: "True when the stored content still produces the stored hash." }),
+  lines: z.array(
+    z.object({
+      productId,
+      unitPriceExclVat: z.number().nullable(),
+      snapshotFound: z.boolean().meta({ description: "A Valio price snapshot with this price exists for the date." }),
+      snapshotFetchedAt: isoDateTime.nullable(),
+      source: DataSourceSchema.nullable(),
+    }),
+  ),
+  verifiedAt: isoDateTime,
+});
+
+// ---------- Audit log ----------
+
+export const AuditEventSchema = z.object({
+  id,
+  actorType: z.enum(["user", "agent", "system"]),
+  actorId: z.string().nullable(),
+  actorName: z.string().nullable(),
+  action: z.string().meta({ example: "proposal.created" }),
+  resourceType: z.string().meta({ example: "proposal" }),
+  resourceId: z.string(),
+  summary: z.string(),
+  details: z.record(z.string(), z.unknown()),
+  createdAt: isoDateTime,
+});
+
+export const AuditQuerySchema = z.object({
+  resourceType: z.string().optional(),
+  resourceId: z.string().optional(),
+  limit: z.coerce.number().int().min(1).max(500).default(100),
+});
+
+export const AuditListSchema = z.object({ items: z.array(AuditEventSchema) });
+
+export type ProposalSource = z.infer<typeof ProposalSourceSchema>;
+export type ProposalSelection = z.infer<typeof ProposalSelectionSchema>;
+export type CreateProposalFromPromptRequest = z.infer<typeof CreateProposalFromPromptRequestSchema>;
+export type ProposalFromPromptResponse = z.infer<typeof ProposalFromPromptResponseSchema>;
+export type ReviseProposalRequest = z.infer<typeof ReviseProposalRequestSchema>;
+export type ReviseProposalResponse = z.infer<typeof ReviseProposalResponseSchema>;
+export type OrderReceipt = z.infer<typeof OrderReceiptSchema>;
+export type ProposalVerification = z.infer<typeof ProposalVerificationSchema>;
+export type AuditEvent = z.infer<typeof AuditEventSchema>;
+export type AuditQuery = z.infer<typeof AuditQuerySchema>;

@@ -33,6 +33,7 @@ export const ProductSummarySchema = z.object({
     description: "Share of deliveries delivered as ordered, 0–1. Null = unknown.",
   }),
   hasImage: z.boolean(),
+  allergens: z.array(z.string()).meta({ description: "GS1 allergen codes (see shared/contracts/allergens.ts).", example: ["AM"] }),
 });
 
 export const ProductUnitSchema = z.object({

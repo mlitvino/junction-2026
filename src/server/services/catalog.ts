@@ -49,6 +49,7 @@ const summaryColumns = {
   co2PerKg: valioProduct.co2PerKg,
   deliveryReliability: valioProduct.deliveryReliability,
   hasImage: valioProduct.hasImage,
+  allergens: valioProduct.allergens,
 } as const;
 
 async function db() {

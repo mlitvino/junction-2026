@@ -3,8 +3,15 @@ import "server-only";
 import { createRoute, z } from "@hono/zod-openapi";
 
 import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import { CreateOrderFromRecipeRequestSchema, CreateOrderFromRecipeResponseSchema } from "@/shared/contracts/recipes";
 import {
+  AuditListSchema,
+  CreateProposalFromPromptRequestSchema,
   CreateProposalRequestSchema,
+  ProposalFromPromptResponseSchema,
+  ProposalVerificationSchema,
+  ReviseProposalRequestSchema,
+  ReviseProposalResponseSchema,
   ListProposalsQuerySchema,
   OrderSchema,
   PlaceOrderRequestSchema,
@@ -125,4 +132,88 @@ export const placeOrderRoute = createRoute({
     ...notAllowed,
     502: json(ErrorResponseSchema, "The Valio API failed or is unreachable (price re-check)."),
   },
+});
+
+const badRequest = { 400: json(PurchasingErrorSchema, "The request can't be applied (e.g. unknown product, no change recognized).") };
+const valioDown = { 502: json(ErrorResponseSchema, "The Valio API failed or is unreachable.") };
+
+export const createProposalFromPromptRoute = createRoute({
+  method: "post",
+  path: "/proposals/from-prompt",
+  tags: ["Purchasing"],
+  summary: "Create a proposal from a request in words",
+  description:
+    "The purchasing agent's pipeline: extract items from the text, pick catalog products that fit the organization's " +
+    "dietary and allergen rules (preferring past orders), then create a normal proposal (priced, availability-checked, " +
+    "policy-decided). `selection` explains every choice and lists warnings to check, e.g. when the requested unit " +
+    "differs from the sales unit. `proposal` is null when nothing matched.",
+  security,
+  request: { body: { content: { "application/json": { schema: CreateProposalFromPromptRequestSchema } }, required: true } },
+  responses: { 201: json(ProposalFromPromptResponseSchema, "Created (or nothing matched)."), ...auth, ...valioDown },
+});
+
+export const createProposalFromRecipeRoute = createRoute({
+  method: "post",
+  path: "/proposals/from-recipe",
+  tags: ["Purchasing"],
+  summary: "Create a proposal for a recipe",
+  description:
+    "Scales a recipe, subtracts kitchen stock and creates a proposal for what is still needed (same pipeline and " +
+    "rules as from-prompt). The organization's rules always apply; a request can't override them.",
+  security,
+  request: { body: { content: { "application/json": { schema: CreateOrderFromRecipeRequestSchema } }, required: true } },
+  responses: {
+    201: json(CreateOrderFromRecipeResponseSchema, "Created (or nothing to order)."),
+    ...badRequest,
+    ...auth,
+    404: json(PurchasingErrorSchema, "No such recipe."),
+    ...valioDown,
+  },
+});
+
+export const reviseProposalRoute = createRoute({
+  method: "post",
+  path: "/proposals/{id}/revise",
+  tags: ["Purchasing"],
+  summary: "Change a proposal",
+  description:
+    "Swap products, change quantities, remove or add lines, move the date, structured or in words (`prompt`). " +
+    "Proposals never change: this creates a new, re-priced and re-checked proposal and cancels the old one. Creator only.",
+  security,
+  request: {
+    params: IdParam,
+    body: { content: { "application/json": { schema: ReviseProposalRequestSchema } }, required: true },
+  },
+  responses: {
+    201: json(ReviseProposalResponseSchema, "The new proposal."),
+    ...badRequest,
+    ...auth,
+    ...notFound,
+    ...conflict,
+    ...valioDown,
+  },
+});
+
+export const getProposalAuditRoute = createRoute({
+  method: "get",
+  path: "/proposals/{id}/audit",
+  tags: ["Purchasing"],
+  summary: "History of a proposal",
+  description: "Everything that happened to the proposal and why: agent selection steps, policy decision, approval, order.",
+  security,
+  request: { params: IdParam },
+  responses: { 200: json(AuditListSchema, "Events, oldest first."), ...auth, ...notFound },
+});
+
+export const verifyProposalRoute = createRoute({
+  method: "get",
+  path: "/proposals/{id}/verify",
+  tags: ["Purchasing"],
+  summary: "Verify a proposal",
+  description:
+    "Recomputes the SHA-256 content hash and checks each frozen price against the Valio price snapshots we recorded, " +
+    "so a buyer, approver or agent can trust the numbers without a manual check.",
+  security,
+  request: { params: IdParam },
+  responses: { 200: json(ProposalVerificationSchema, "Verification result."), ...auth, ...notFound },
 });

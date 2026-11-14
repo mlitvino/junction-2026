@@ -43,6 +43,13 @@
       "when": 1794679493154,
       "tag": "0005_purchasing",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794681521671,
+      "tag": "0006_audit_selection",
+      "breakpoints": true
     }
   ]
 }
