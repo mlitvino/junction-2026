@@ -10,6 +10,7 @@ import { createRouter } from "./router";
 import { healthRouter } from "./routes/health/health";
 import { meRouter } from "./routes/me/me";
 import { organizationRouter } from "./routes/organization/organization";
+import { policyRouter } from "./routes/policy/policy";
 import { preferencesRouter } from "./routes/preferences/preferences";
 import { productsRouter } from "./routes/products/products";
 
@@ -32,6 +33,7 @@ app.route("/", meRouter);
 app.route("/", organizationRouter);
 app.route("/", preferencesRouter);
 app.route("/", productsRouter);
+app.route("/", policyRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {

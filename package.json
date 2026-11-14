@@ -22,6 +22,7 @@
     "bootstrap": "pnpm install && pnpm db:up && pnpm data:fetch --if-missing && pnpm data:import",
     "data:fetch": "node --env-file-if-exists=.env scripts/fetch-valio-data.mjs",
     "data:import": "node --env-file-if-exists=.env --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/import-valio-data.ts",
+    "test:server": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"src/server/**/*.test.ts\"",
     "data:analyze": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analyze-valio-data.ts",
     "docker:build": "docker build -t junction-2026 .",
     "docker:run": "docker run --rm -p 3000:3000 junction-2026"
