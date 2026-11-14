@@ -4,7 +4,7 @@ import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
 import { getAuth } from "@/server/auth/auth";
-import { ensureAuthSchema } from "@/server/auth/migrate";
+import { ensureDatabase } from "@/server/db/migrate";
 
 import { createRouter } from "./router";
 import { healthRouter } from "./routes/health/health";
@@ -21,7 +21,7 @@ export const app = createRouter().basePath("/api");
 
 // Better Auth: sign-up, sign-in, sign-out, session, its own OpenAPI reference (/api/auth/reference).
 app.on(["GET", "POST"], "/auth/*", async (c) => {
-  await ensureAuthSchema();
+  await ensureDatabase();
   return getAuth().handler(c.req.raw);
 });
 

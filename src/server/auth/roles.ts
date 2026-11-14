@@ -1,11 +1,11 @@
 import "server-only";
 
-import type { PoolClient } from "pg";
+import { eq, TransactionRollbackError } from "drizzle-orm";
 
-import { getPool } from "@/server/db/pool";
+import { getDb, type Db } from "@/server/db/client";
+import { ensureDatabase } from "@/server/db/migrate";
+import { organization, organizationMember } from "@/server/db/schema";
 import type { Organization, Role } from "@/shared/contracts/me";
-
-import { ensureOrganizationSchema } from "./organization-schema";
 
 // Roles are per organization; a user can hold several:
 // - buyer: searches products and places orders
@@ -27,14 +27,13 @@ export function sortRoles(roles: Iterable<string>): Role[] {
   return FOUNDER_ROLES.filter((r) => set.has(r));
 }
 
-async function findMembership(db: { query: PoolClient["query"] }, userId: string): Promise<Membership | null> {
-  const { rows } = await db.query<{ id: string; name: string; roles: string[] }>(
-    `SELECT o.id, o.name, m.roles FROM organization_member m
-     JOIN organization o ON o.id = m.organization_id WHERE m.user_id = $1`,
-    [userId],
-  );
-  const r = rows[0];
-  return r ? { organization: { id: r.id, name: r.name }, roles: sortRoles(r.roles) } : null;
+async function findMembership(db: Db, userId: string): Promise<Membership | null> {
+  const [row] = await db
+    .select({ id: organization.id, name: organization.name, roles: organizationMember.roles })
+    .from(organizationMember)
+    .innerJoin(organization, eq(organization.id, organizationMember.organizationId))
+    .where(eq(organizationMember.userId, userId));
+  return row ? { organization: { id: row.id, name: row.name }, roles: sortRoles(row.roles) } : null;
 }
 
 /**
@@ -43,32 +42,31 @@ async function findMembership(db: { query: PoolClient["query"] }, userId: string
  * Accounts created by an approver always have a membership, so they never get one of their own.
  */
 export async function getOrCreateMembership(userId: string, username: string): Promise<Membership> {
-  await ensureOrganizationSchema();
-  const pool = getPool();
-  const existing = await findMembership(pool, userId);
+  await ensureDatabase();
+  const db = getDb();
+  const existing = await findMembership(db, userId);
   if (existing) return existing;
 
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const { rows } = await client.query<{ id: string }>(
-      "INSERT INTO organization (name) VALUES ($1) RETURNING id",
-      [`${username}'s organization`],
-    );
-    const inserted = await client.query(
-      `INSERT INTO organization_member (organization_id, user_id, roles) VALUES ($1, $2, $3)
-       ON CONFLICT (user_id) DO NOTHING`,
-      [rows[0]!.id, userId, FOUNDER_ROLES],
-    );
-    // A parallel first request already created the membership: drop our organization, use theirs.
-    await client.query(inserted.rowCount === 1 ? "COMMIT" : "ROLLBACK");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
-  const membership = await findMembership(pool, userId);
+  await db
+    .transaction(async (tx) => {
+      const [org] = await tx
+        .insert(organization)
+        .values({ name: `${username}'s organization` })
+        .returning({ id: organization.id });
+      const inserted = await tx
+        .insert(organizationMember)
+        .values({ organizationId: org!.id, userId, roles: FOUNDER_ROLES })
+        .onConflictDoNothing({ target: organizationMember.userId })
+        .returning({ userId: organizationMember.userId });
+      // A parallel first request already created the membership: drop our organization, use theirs.
+      if (inserted.length === 0) tx.rollback();
+    })
+    .catch((err: unknown) => {
+      // tx.rollback() throws on purpose; anything else is a real error.
+      if (!(err instanceof TransactionRollbackError)) throw err;
+    });
+
+  const membership = await findMembership(db, userId);
   if (!membership) throw new Error(`No organization for user ${userId} after creating one`);
   return membership;
 }
