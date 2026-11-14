@@ -22,6 +22,25 @@ export type PolicyLineFacts = {
   product: PolicyProductFacts | null;
   /** EUR excl. VAT per sales unit. Null: Valio has no price. */
   unitPriceExclVat: number | null;
+  /** The unit the price and quantity are in (e.g. KI). */
+  salesUnit?: string | null;
+  /** Valio's availability for the requested date. Null: Valio gave no answer. Absent: not checked. */
+  availability?: PolicyAvailabilityFacts | null;
+};
+
+export type PolicyAvailabilityFacts = {
+  orderable: boolean;
+  salesBlock: boolean;
+  /** Earliest delivery date (YYYY-MM-DD…); may be later than requested. */
+  availableDate: string | null;
+  /** Null: unknown (terminal products) or nothing available. */
+  availableQuantity: number | null;
+  salesUnit: string | null;
+};
+
+export type PolicyOptions = {
+  /** The delivery date the goods are needed (YYYY-MM-DD). */
+  requestedDate?: string;
 };
 
 export type PolicyResult = {
@@ -39,7 +58,7 @@ export function lineTotal(line: PolicyLineFacts): number | null {
   return line.product && line.unitPriceExclVat !== null ? round(line.unitPriceExclVat * line.quantity) : null;
 }
 
-export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[]): PolicyResult {
+export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], options: PolicyOptions = {}): PolicyResult {
   const reasons: PolicyReason[] = [];
   const deny = (r: Omit<PolicyReason, "outcome">) => reasons.push({ ...r, outcome: "DENY" });
   const approve = (r: Omit<PolicyReason, "outcome">) => reasons.push({ ...r, outcome: "REQUIRE_APPROVAL" });
@@ -77,6 +96,42 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[]): Po
         setting: "minDeliveryReliability",
         productId,
         message: `Delivery reliability ${product.deliveryReliability} is below the minimum of ${prefs.minDeliveryReliability}.`,
+      });
+  }
+
+  // ----- Availability on the requested date -----
+  for (const line of lines) {
+    const { productId, availability } = line;
+    if (!line.product || availability === undefined) continue;
+    if (availability === null) {
+      approve({
+        code: "AVAILABILITY_UNKNOWN",
+        productId,
+        message: `Valio gave no availability for product ${productId}, so delivery can't be confirmed.`,
+      });
+      continue;
+    }
+    if (availability.salesBlock) {
+      deny({ code: "SALES_BLOCKED", productId, message: `Product ${productId} is blocked from sale.` });
+      continue;
+    }
+    if (!availability.orderable) {
+      deny({ code: "NOT_ORDERABLE", productId, message: `Product ${productId} can't be delivered on any date.` });
+      continue;
+    }
+    const earliest = availability.availableDate?.slice(0, 10) ?? null;
+    if (options.requestedDate && earliest && earliest > options.requestedDate)
+      approve({
+        code: "LATE_DELIVERY",
+        productId,
+        message: `Product ${productId} can be delivered on ${earliest} at the earliest, after the requested ${options.requestedDate}.`,
+      });
+    const sameUnit = !line.salesUnit || !availability.salesUnit || line.salesUnit === availability.salesUnit;
+    if (availability.availableQuantity !== null && sameUnit && availability.availableQuantity < line.quantity)
+      approve({
+        code: "INSUFFICIENT_STOCK",
+        productId,
+        message: `Only ${availability.availableQuantity}${availability.salesUnit ? ` ${availability.salesUnit}` : ""} of product ${productId} available, ${line.quantity} requested.`,
       });
   }
 

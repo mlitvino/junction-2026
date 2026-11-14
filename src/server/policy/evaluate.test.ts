@@ -92,3 +92,69 @@ test("unknown product and missing price: DENY, no total", () => {
   assert.deepEqual(codes(r), ["PRICE_UNKNOWN", "UNKNOWN_PRODUCT"]);
   assert.equal(r.totalExclVat, null);
 });
+
+// ----- Availability -----
+const avail = (over: Partial<NonNullable<PolicyLineFacts["availability"]>> = {}) => ({
+  orderable: true,
+  salesBlock: false,
+  availableDate: "2026-11-16",
+  availableQuantity: null,
+  salesUnit: "KI",
+  ...over,
+});
+const at = { requestedDate: "2026-11-20" };
+
+test("available in time, unknown quantity: no availability rule", () => {
+  const r = evaluatePolicy(autonomous(), [line({ salesUnit: "KI", availability: avail() })], at);
+  assert.equal(r.outcome, "ALLOW");
+});
+
+test("sales block and not orderable: DENY", () => {
+  const r = evaluatePolicy(
+    autonomous(),
+    [
+      line({ quantity: 1, availability: avail({ salesBlock: true, orderable: false }) }),
+      line({ productId: "b", quantity: 1, availability: avail({ orderable: false, availableDate: null }) }),
+    ],
+    at,
+  );
+  assert.equal(r.outcome, "DENY");
+  assert.deepEqual(codes(r), ["NOT_ORDERABLE", "SALES_BLOCKED"]);
+});
+
+test("later than requested: approval, with the dates in the message", () => {
+  const r = evaluatePolicy(autonomous(), [line({ availability: avail({ availableDate: "2026-11-23" }) })], at);
+  assert.equal(r.outcome, "REQUIRE_APPROVAL");
+  assert.deepEqual(codes(r), ["LATE_DELIVERY"]);
+  assert.match(r.reasons[0]!.message, /2026-11-23.*2026-11-20/);
+});
+
+test("same day as requested is in time; date-time strings compare by date", () => {
+  const r = evaluatePolicy(autonomous(), [line({ availability: avail({ availableDate: "2026-11-20T00:00:00+0200" }) })], at);
+  assert.equal(r.outcome, "ALLOW");
+});
+
+test("known stock below quantity: approval (same unit only)", () => {
+  const short = evaluatePolicy(autonomous(), [line({ salesUnit: "KI", availability: avail({ availableQuantity: 5 }) })], at);
+  assert.deepEqual(codes(short), ["INSUFFICIENT_STOCK"]);
+  const otherUnit = evaluatePolicy(
+    autonomous(),
+    [line({ salesUnit: "KI", availability: avail({ availableQuantity: 5, salesUnit: "ST" }) })],
+    at,
+  );
+  assert.equal(otherUnit.outcome, "ALLOW");
+  const enough = evaluatePolicy(autonomous(), [line({ salesUnit: "KI", availability: avail({ availableQuantity: 20 }) })], at);
+  assert.equal(enough.outcome, "ALLOW");
+});
+
+test("no availability answer: approval", () => {
+  const r = evaluatePolicy(autonomous(), [line({ availability: null })], at);
+  assert.equal(r.outcome, "REQUIRE_APPROVAL");
+  assert.deepEqual(codes(r), ["AVAILABILITY_UNKNOWN"]);
+});
+
+test("DENY on availability beats approval on the total", () => {
+  const r = evaluatePolicy(autonomous(), [line({ quantity: 40, availability: avail({ salesBlock: true }) })], at);
+  assert.equal(r.outcome, "DENY");
+  assert.deepEqual(codes(r), ["ABOVE_AUTO_APPROVAL", "SALES_BLOCKED"]);
+});

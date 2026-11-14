@@ -23,7 +23,8 @@ export const PolicyEvaluateRequestSchema = z.object({
     .min(1)
     .max(50),
   date: z.iso.date().optional().meta({
-    description: "Delivery date for pricing, YYYY-MM-DD. Defaults to today (Europe/Helsinki).",
+    description:
+      "The delivery date the goods are needed, YYYY-MM-DD. Prices and availability are checked for it. Defaults to today (Europe/Helsinki).",
     example: "2026-11-20",
   }),
 });
@@ -41,6 +42,11 @@ export const PolicyReasonCodeSchema = z.enum([
   "CO2_TOO_HIGH",
   "RELIABILITY_TOO_LOW",
   "ORDER_VALUE_TOO_HIGH",
+  "SALES_BLOCKED",
+  "NOT_ORDERABLE",
+  "LATE_DELIVERY",
+  "INSUFFICIENT_STOCK",
+  "AVAILABILITY_UNKNOWN",
   "SUGGEST_ONLY",
   "NO_AUTO_APPROVAL",
   "ABOVE_AUTO_APPROVAL",
@@ -61,6 +67,9 @@ export const PolicyLineSchema = z.object({
   salesUnit: z.string().nullable(),
   unitPriceExclVat: z.number().nullable().meta({ description: "Null when Valio has no price." }),
   lineTotalExclVat: z.number().nullable(),
+  orderable: z.boolean().nullable().meta({ description: "Null when Valio gave no availability answer." }),
+  availableDate: z.string().nullable().meta({ description: "Earliest delivery date; may be later than requested." }),
+  availableQuantity: z.number().nullable().meta({ description: "In salesUnit. Null when unknown (terminal products)." }),
 });
 
 export const PolicyDecisionSchema = z.object({

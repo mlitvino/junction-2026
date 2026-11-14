@@ -19,8 +19,9 @@ export const evaluatePolicyRoute = createRoute({
   summary: "Check a draft order against the organization's rules",
   description:
     "Applies the buyer's effective preferences (blocked vendors, excluded allergens, CO2, delivery reliability, " +
-    "max order value, auto-approval, autonomy) to the given products and quantities. Prices come from Valio on the " +
-    "server; amounts are EUR excluding VAT. Returns `ALLOW`, `REQUIRE_APPROVAL` or `DENY` with every reason that " +
+    "max order value, auto-approval, autonomy) and Valio's availability for the requested delivery `date` (sales " +
+    "block, not deliverable, later than requested, too little known stock) to the given products and quantities. " +
+    "Prices come from Valio on the server; amounts are EUR excluding VAT. Returns `ALLOW`, `REQUIRE_APPROVAL` or `DENY` with every reason that " +
     "applied. Nothing is stored. Missing product data (no CO2, allergens or reliability) never triggers a rule.",
   security: [{ sessionCookie: [] }],
   request: {
