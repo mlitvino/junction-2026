@@ -121,7 +121,7 @@ Settings that steer the purchasing agent and the approval flow, per organization
 - **Locking:** the base layer can lock settings; role layers can't set them (409 on write; a stored value is ignored when resolving).
 - **Who:** approvers edit all three layers (`GET /api/preferences/layers`, `PUT /api/preferences/layers/{scope}`); any member reads their own effective settings (`GET /api/preferences/effective`). Buyers edit nothing.
 - **Rules:** `autoApproveBelow ≤ maxOrderValue` in every effective set (422 otherwise); `locked` only on `base` (422).
-- **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. Nothing consumes them yet.
+- **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. The first consumer is the **policy check** (`POST /api/policy/evaluate`): it applies the buyer's effective preferences to a draft order and returns `ALLOW` / `REQUIRE_APPROVAL` / `DENY` with reasons.
 
 ## Database (Drizzle)
 
@@ -144,6 +144,7 @@ Settings that steer the purchasing agent and the approval flow, per organization
 - `pnpm lint`: ESLint
 - `pnpm typecheck`: `tsc --noEmit`
 - `pnpm check`: lint + typecheck
+- `pnpm test:server`: backend unit tests (`src/server/**/*.test.ts`, plain Node; relative `.ts` imports, type-only imports from `@/`)
 - `pnpm format`: Prettier
 - `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
 - `pnpm db:psql`: psql shell in the local DB

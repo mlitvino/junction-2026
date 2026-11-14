@@ -50,4 +50,12 @@ Full request and response shapes: `/api/docs`.
 
 ## Status
 
-Backend only. The agent and the approval flow don't read these settings yet; they will call `getEffectiveFor(organizationId, role)` in `src/server/services/preferences.ts`.
+Backend only. The **policy check** (`POST /api/policy/evaluate`) applies the buyer's effective settings to a draft order (products + quantities; the server prices them):
+
+| Outcome | When |
+| --- | --- |
+| `DENY` | unknown product, no price, blocked vendor, excluded allergen, CO2 above `maxCo2PerKg`, reliability below `minDeliveryReliability`, total above `maxOrderValue` |
+| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it |
+| `ALLOW` | none of the above |
+
+Missing product data (no CO2, allergens or reliability) never triggers a rule. Preferred origins, vendors and brands aren't checked: they are for ranking, which the agent will do.
