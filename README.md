@@ -22,7 +22,7 @@ NEXT_PUBLIC_USE_MOCKS=true
 ```
 and run `pnpm dev:app` (no Docker needed). `src/client/api-client.ts` will then return data from `src/client/mocks/` instead of calling `/api/*`, and a Demo Buyer / Demo Approver selector in the account menu replaces sign-in. Mocks are checked against the same Zod contracts, so they can't drift from the real API.
 
-**Connected mode** (the default, `pnpm dev`) is mixed: you sign in for real, and your username, organization and roles (buyer, approver) come from `GET /api/me`. The purchasing flow (chat, proposals, approvals, orders) has no backend yet, so it still runs on the local simulator, labelled "Simulated purchasing data". Its data stays in your browser tab, per user: to try an approval end to end, use one account with both roles (every self-signed-up user has both).
+**Connected mode** (the default, `pnpm dev`) is mixed: you sign in for real, and your username, organization and roles (buyer, approver) come from `GET /api/me`. Products, prices and availability in the demo scenarios are real (`GET /api/products/{id}`, `POST /api/offers`). The agent, policy, proposals, approvals and orders have no backend yet, so they run on the local simulator ("Real catalog prices · Simulated agent and orders"). Its data stays in your browser tab, per user: to try an approval end to end, use one account with both roles (every self-signed-up user has both).
 
 ## Database (Postgres + pgvector)
 
