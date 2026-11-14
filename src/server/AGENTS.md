@@ -10,7 +10,8 @@ Every file here starts with `import "server-only";`. See the root AGENTS.md for 
 
 - `server/api/app.ts` is the whole `/api` surface: registers routers, serves `/api/openapi.json` and `/api/docs`, JSON 404 and 500 (no stack traces).
 - `server/api/router.ts`: `createRouter()` gives every router the same validation error shape, `400 { error: issues }`. Always create routers with it.
-- `server/api/routes/<name>.ts`: one router per area, `createRoute` + handler calling `server/services`. Reference: `routes/health.ts`.
+- `server/api/routes/<name>.docs.ts`: the OpenAPI `createRoute` definitions for one area (paths, summaries, descriptions, request/response docs). Keep all documentation here.
+- `server/api/routes/<name>.ts`: the router for that area, `createRouter().openapi(route, handler)`; handlers only call `server/services`. Reference: `routes/health.docs.ts` + `routes/health.ts`.
 
 ## Agents and database
 

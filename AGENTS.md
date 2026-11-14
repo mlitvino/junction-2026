@@ -60,7 +60,7 @@ src/
 1. **Frontend** (`app/` except `app/api/`, `components/`, `features/`, `client/`) never imports from `src/server/`. It talks to the backend only through `src/client/api-client.ts`.
 2. **Backend** (`app/api/`, `server/`) never imports from `components/`, `features/`, `client/`.
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
-4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints are `createRoute` modules in `src/server/api/routes/`: request/response schemas from `shared/contracts`, the handler calls a function from `server/services`. No logic in route modules.
+4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints live in `src/server/api/routes/` as two files per area: `<name>.docs.ts` (OpenAPI `createRoute` definitions using schemas from `shared/contracts`) and `<name>.ts` (router + handlers that call `server/services`). No logic in either.
 5. Every file in `src/server/` starts with `import "server-only";`.
 6. `api-client.ts` is typed by `shared/contracts` and serves data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready.
 
@@ -72,13 +72,16 @@ Step 1 is joint, steps 2–3 belong to the backend dev, steps 4–5 to the front
 
 1. `src/shared/contracts/<name>.ts`: request/response schemas + `z.infer` types. **Contract changes need explicit approval from both developers.**
 2. `src/server/services/<name>.ts`: `import "server-only";` + plain functions with the logic.
-3. `src/server/api/routes/<name>.ts`: a router from `createRouter()` with one `createRoute` per endpoint, then register it in `src/server/api/app.ts` (`app.route("/", <name>Router)`). Never add files under `src/app/api/`. Example (see `routes/health.ts`):
+3. Two files in `src/server/api/routes/`, then register the router in `src/server/api/app.ts` (`app.route("/", <name>Router)`). Never add files under `src/app/api/`. Example (see `health.docs.ts` + `health.ts`):
    ```ts
-   const createThingRoute = createRoute({
+   // things.docs.ts: OpenAPI only
+   export const createThingRoute = createRoute({
      method: "post", path: "/things", tags: ["Things"], summary: "Create a thing",
      request: { body: { content: { "application/json": { schema: CreateThingRequestSchema } } } },
      responses: { 200: { description: "Created", content: { "application/json": { schema: CreateThingResponseSchema } } } },
    });
+
+   // things.ts: router + handlers only
    export const thingsRouter = createRouter().openapi(createThingRoute, async (c) =>
      c.json(await createThing(c.req.valid("json")), 200),
    );
