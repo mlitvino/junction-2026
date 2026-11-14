@@ -17,6 +17,7 @@ import {
   RecurringOrderCheckResponseSchema,
   StockoutAlertsResponseSchema,
 } from "@/shared/contracts/intelligence";
+import type { SessionUser } from "@/shared/contracts/me";
 
 export const evaluateSubstitutionsTool = createTool({
   id: "evaluate-product-substitutions",
@@ -32,8 +33,10 @@ export const evaluateSubstitutionsTool = createTool({
     deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
   }),
   outputSchema: ProductSubstitutionResponseSchema,
-  execute: async ({ productId, requestedQuantity, deliveryDate }) =>
-    evaluateProductSubstitutions({ productId, requestedQuantity, deliveryDate }),
+  execute: async ({ productId, requestedQuantity, deliveryDate }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return evaluateProductSubstitutions({ productId, requestedQuantity, deliveryDate }, actor);
+  },
 });
 
 export const getStockoutAlertsTool = createTool({
@@ -44,7 +47,10 @@ export const getStockoutAlertsTool = createTool({
     deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
   }),
   outputSchema: StockoutAlertsResponseSchema,
-  execute: async ({ deliveryDate }) => getProactiveStockoutAlerts(deliveryDate),
+  execute: async ({ deliveryDate }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return getProactiveStockoutAlerts(deliveryDate, actor);
+  },
 });
 
 export const checkRecurringAnomaliesTool = createTool({
@@ -55,7 +61,10 @@ export const checkRecurringAnomaliesTool = createTool({
     orderId: z.string().describe("Order ID to evaluate against historical baseline."),
   }),
   outputSchema: RecurringOrderCheckResponseSchema,
-  execute: async ({ orderId }) => checkRecurringOrderAnomalies({ orderId }),
+  execute: async ({ orderId }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return checkRecurringOrderAnomalies({ orderId }, actor);
+  },
 });
 
 export const getProactiveRecommendationsTool = createTool({
@@ -64,7 +73,10 @@ export const getProactiveRecommendationsTool = createTool({
     "Suggest seasonal Nordic products, newly available items, low-carbon switches, and kitchen par-level replenishments tailored to customer preferences.",
   inputSchema: z.object({}),
   outputSchema: ProactiveRecommendationsResponseSchema,
-  execute: async () => getProactiveRecommendations(),
+  execute: async (_input, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return getProactiveRecommendations(actor);
+  },
 });
 
 export const verifyOrderTrustTool = createTool({
@@ -75,5 +87,8 @@ export const verifyOrderTrustTool = createTool({
     orderId: z.string().describe("Order ID to cryptographically verify."),
   }),
   outputSchema: OrderVerificationResponseSchema,
-  execute: async ({ orderId }) => verifyOrderTrustClaims(orderId),
+  execute: async ({ orderId }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return verifyOrderTrustClaims(orderId, actor);
+  },
 });

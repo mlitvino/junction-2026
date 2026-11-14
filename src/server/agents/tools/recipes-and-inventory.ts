@@ -6,6 +6,7 @@ import { z } from "zod";
 import { listInventory } from "@/server/services/inventory";
 import { createOrderFromRecipe, listRecipes } from "@/server/services/recipes";
 import { InventoryListResponseSchema } from "@/shared/contracts/inventory";
+import type { SessionUser } from "@/shared/contracts/me";
 import {
   CreateOrderFromRecipeResponseSchema,
   RecipeListResponseSchema,
@@ -20,7 +21,10 @@ export const listRecipesTool = createTool({
     tag: z.string().optional().describe("Optional recipe tag filter."),
   }),
   outputSchema: RecipeListResponseSchema,
-  execute: async ({ query, tag }) => listRecipes({ q: query, tag }),
+  execute: async ({ query, tag }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return listRecipes({ q: query, tag }, actor);
+  },
 });
 
 export const getInventoryTool = createTool({
@@ -29,7 +33,10 @@ export const getInventoryTool = createTool({
     "Inspect current customer kitchen/canteen ingredient stock levels and par levels before ordering.",
   inputSchema: z.object({}),
   outputSchema: InventoryListResponseSchema,
-  execute: async () => listInventory(),
+  execute: async (_input, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return listInventory(actor);
+  },
 });
 
 export const createOrderFromRecipeTool = createTool({
@@ -55,20 +62,21 @@ export const createOrderFromRecipeTool = createTool({
       .describe("If true, splits insufficient-stock items across allergen-safe substitutes."),
   }),
   outputSchema: CreateOrderFromRecipeResponseSchema,
-  execute: async ({
-    recipeId,
-    dishQuery,
-    servings,
-    deliveryDate,
-    budgetEur,
-    autoResolvePartialStock,
-  }) =>
-    createOrderFromRecipe({
-      recipeId,
-      dishQuery,
-      servings,
-      deliveryDate,
-      budgetEur,
-      autoResolvePartialStock,
-    }),
+  execute: async (
+    { recipeId, dishQuery, servings, deliveryDate, budgetEur, autoResolvePartialStock },
+    context,
+  ) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return createOrderFromRecipe(
+      {
+        recipeId,
+        dishQuery,
+        servings,
+        deliveryDate,
+        budgetEur,
+        autoResolvePartialStock,
+      },
+      actor,
+    );
+  },
 });

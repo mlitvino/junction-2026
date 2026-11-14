@@ -3,14 +3,27 @@ import "server-only";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
+import { RequestContext } from "@mastra/core/request-context";
 
 import { app } from "@/server/api/app";
+import { checkRecurringAnomaliesTool } from "@/server/agents/tools/procurement-intelligence";
+import { listRecipesTool } from "@/server/agents/tools/recipes-and-inventory";
+import {
+  DEFAULT_AGENT_GUARDRAILS,
+  DEFAULT_MOCK_PREFERENCES,
+  evaluateOrderGuardrails,
+} from "@/server/services/guardrails";
 import { canonicalizeJson } from "@/server/services/intelligence";
+import { MOCK_CATALOG_PRODUCTS } from "@/server/services/mock-catalog";
+import {
+  countLayeredPreferenceMatches,
+  evaluateCustomerPreferences,
+} from "@/server/services/orders";
+import { DEFAULT_PREFERENCES, resolvePreferences } from "@/server/services/preferences";
+import type { SessionUser } from "@/shared/contracts/me";
+import type { Preferences } from "@/shared/contracts/preferences";
 
-async function jsonReq<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<{ status: number; body: T }> {
+async function jsonReq<T>(path: string, init?: RequestInit): Promise<{ status: number; body: T }> {
   const res = await app.request(path, {
     ...init,
     headers: {
@@ -24,9 +37,7 @@ async function jsonReq<T>(
 
 describe("Trusted Trade Agents — Missing Core & Optional Backend Features", () => {
   it("exposes all new routes in OpenAPI 3.1 specification", async () => {
-    const { status, body } = await jsonReq<{ paths: Record<string, unknown> }>(
-      "/api/openapi.json",
-    );
+    const { status, body } = await jsonReq<{ paths: Record<string, unknown> }>("/api/openapi.json");
     assert.equal(status, 200);
     const expectedPaths = [
       "/api/inventory",
@@ -165,9 +176,7 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.equal(res.status, 200);
     assert.equal(res.body.scaleFactor, 3);
 
-    const byName = new Map(
-      res.body.ingredientReconciliation.map((r) => [r.productName, r]),
-    );
+    const byName = new Map(res.body.ingredientReconciliation.map((r) => [r.productName, r]));
 
     // Duplicate butter lines (150g + 50g = 0.2kg base -> 0.6kg needed; 0.8kg in stock -> 0 needed!)
     const butter = byName.get("Unsalted butter");
@@ -372,9 +381,7 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     });
     assert.equal(splitOrder.status, 200);
     assert.equal(splitOrder.body.order.lines.length, 2);
-    assert.ok(
-      splitOrder.body.order.auditTrail.some((e) => e.eventType === "partial_stock_split"),
-    );
+    assert.ok(splitOrder.body.order.auditTrail.some((e) => e.eventType === "partial_stock_split"));
   });
 
   it("verifies cryptographic SHA-256 trust claims, proactive stock-out alerts, recurring anomalies, recommendations, and agent orchestration", async () => {
@@ -458,5 +465,179 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.equal(agentRes.status, 200);
     assert.ok(agentRes.body.toolCalls.some((t) => t.toolName === "createOrderFromRecipe"));
     assert.ok(agentRes.body.activeOrder?.orderId);
+  });
+
+  it("enforces 3-layer organization preferences across evaluation, ranking, and substitute guardrails", async () => {
+    const baseProduct = MOCK_CATALOG_PRODUCTS[0]!;
+    const layered: Preferences = {
+      ...DEFAULT_PREFERENCES,
+      maxCo2PerKg: 2.5,
+      minDeliveryReliability: 0.95,
+      preferredOriginCountries: ["FI"],
+      excludedAllergens: ["CRUSTACEANS", "FISH"],
+      preferredVendors: ["Valio Oy"],
+      blockedVendors: ["Blocked Supplier Oy"],
+      preferredBrands: ["Valio"],
+      allowSubstitutes: false,
+    };
+
+    const compliantCandidate = {
+      ...baseProduct,
+      name: "Valio Whole Milk 1L",
+      brand: "Valio",
+      vendorName: "Valio Oy",
+      countryOfOrigin: "FI",
+      co2PerKg: 1.1,
+      deliveryReliability: 0.985,
+      allergens: ["milk"],
+      dietaryTags: ["gluten-free", "vegetarian"],
+      category: "Dairy",
+      isOrganic: false,
+    };
+    assert.deepEqual(
+      evaluateCustomerPreferences(compliantCandidate, DEFAULT_MOCK_PREFERENCES, layered),
+      [],
+    );
+    assert.deepEqual(countLayeredPreferenceMatches(compliantCandidate, layered), {
+      originMatch: true,
+      vendorMatch: true,
+      brandMatch: true,
+      matchCount: 3,
+    });
+
+    const violatingCandidate = {
+      ...baseProduct,
+      name: "Tiger Shrimp 1kg",
+      brand: "Other",
+      vendorName: "Blocked Supplier Oy",
+      countryOfOrigin: "TH",
+      co2PerKg: 6.4,
+      deliveryReliability: 0.89,
+      allergens: ["crustaceans"],
+      dietaryTags: [],
+      category: "Seafood",
+      isOrganic: false,
+    };
+    const violations = evaluateCustomerPreferences(
+      violatingCandidate,
+      DEFAULT_MOCK_PREFERENCES,
+      layered,
+    );
+    assert.ok(violations.some((v) => v.includes("CO2 footprint")));
+    assert.ok(violations.some((v) => v.includes("Delivery reliability")));
+    assert.ok(violations.some((v) => v.includes("is blocked by organization preferences")));
+    assert.ok(violations.some((v) => v.includes("crustaceans")));
+    assert.equal(countLayeredPreferenceMatches(violatingCandidate, layered).matchCount, 0);
+
+    // allowSubstitutes=false with usedSubstitutes=true must trigger human approval
+    const sampleOrder = await jsonReq<{
+      order: {
+        lines: Parameters<typeof evaluateOrderGuardrails>[0]["lines"];
+        totalPriceEur: number;
+      };
+    }>("/api/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "I want 5 kg of creamy cheese",
+        requireApproval: false,
+      }),
+    });
+    assert.equal(sampleOrder.status, 200);
+
+    const subEval = evaluateOrderGuardrails({
+      lines: sampleOrder.body.order.lines,
+      totalPriceEur: sampleOrder.body.order.totalPriceEur,
+      guardrails: {
+        ...DEFAULT_AGENT_GUARDRAILS,
+        requireCustomerConfirmation: false,
+        autoApproveLimitEur: 500,
+      },
+      allowSubstitutes: false,
+      usedSubstitutes: true,
+    });
+    assert.equal(subEval.requiresHumanApproval, true);
+    assert.equal(subEval.authorizedForAutoConfirm, false);
+    assert.ok(
+      subEval.violations.some((v) =>
+        v.message.includes("Organization preferences disallow automatic substitutes"),
+      ),
+    );
+
+    // Verify layered lock & null-override resolution
+    const resolvedBuyer = resolvePreferences(
+      "buyer",
+      {
+        values: {
+          maxCo2PerKg: 2.0,
+          excludedAllergens: ["NUTS"],
+        },
+        locked: ["maxCo2PerKg", "excludedAllergens"],
+        updatedAt: null,
+      },
+      {
+        values: {
+          maxCo2PerKg: 10.0, // ignored because locked in base
+          excludedAllergens: [], // ignored because locked in base
+          maxOrderValue: null, // explicitly unlimited in buyer layer
+        },
+        locked: [],
+        updatedAt: null,
+      },
+    );
+    assert.equal(resolvedBuyer.values.maxCo2PerKg, 2.0);
+    assert.deepEqual(resolvedBuyer.values.excludedAllergens, ["NUTS"]);
+    assert.equal(resolvedBuyer.values.maxOrderValue, null);
+  });
+
+  it("routes deterministic anomaly queries and forwards RequestContext actor to Mastra tools", async () => {
+    const orderRes = await jsonReq<{
+      order: { orderId: string };
+    }>("/api/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt: "I want 5 kg of creamy cheese",
+        requireApproval: false,
+      }),
+    });
+    assert.equal(orderRes.status, 200);
+    const orderId = orderRes.body.order.orderId;
+
+    const agentAnomalyRes = await jsonReq<{
+      mode: string;
+      reply: string;
+      toolCalls: Array<{ toolName: string }>;
+    }>("/api/agent/run", {
+      method: "POST",
+      body: JSON.stringify({
+        message: `Check order ${orderId} for recurring anomalies against historical baseline`,
+        orderId,
+      }),
+    });
+    assert.equal(agentAnomalyRes.status, 200);
+    assert.equal(agentAnomalyRes.body.mode, "deterministic");
+    assert.ok(agentAnomalyRes.body.toolCalls.some((t) => t.toolName === "checkRecurringAnomalies"));
+    assert.match(agentAnomalyRes.body.reply, /Recurring-order anomaly check/);
+
+    // Invoke Mastra tools directly with a RequestContext containing actor
+    const mockActor: SessionUser = {
+      id: "user-test-1",
+      username: "buyer_test",
+      organization: { id: "org-test-1", name: "Test Kitchen Oy" },
+      roles: ["buyer"],
+    };
+    const requestContext = new RequestContext();
+    requestContext.set("actor", mockActor);
+
+    assert.ok(listRecipesTool.execute);
+    const recipesOut = await listRecipesTool.execute({}, { requestContext });
+    assert.ok(recipesOut && typeof recipesOut === "object" && "recipes" in recipesOut);
+    assert.ok(Array.isArray(recipesOut.recipes));
+    assert.ok(recipesOut.recipes.length > 0);
+
+    assert.ok(checkRecurringAnomaliesTool.execute);
+    const anomalyOut = await checkRecurringAnomaliesTool.execute({ orderId }, { requestContext });
+    assert.ok(anomalyOut && typeof anomalyOut === "object" && "safeToAutoRepeat" in anomalyOut);
+    assert.equal(typeof anomalyOut.safeToAutoRepeat, "boolean");
+    assert.ok(Array.isArray(anomalyOut.anomalies));
   });
 });

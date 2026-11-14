@@ -19,7 +19,7 @@ import {
   DEFAULT_MOCK_BUDGET_EUR,
   DEFAULT_MOCK_PREFERENCES,
   evaluateOrderGuardrails,
-  getProcurementSettings,
+  getProcurementContext,
   mergeGuardrails,
 } from "@/server/services/guardrails";
 import {
@@ -35,13 +35,16 @@ import {
   inferDietaryAndAllergensFromProduct,
   inferSustainabilityCertificates,
   MOCK_CATALOG_PRODUCTS,
+  normalizeAllergenList,
   roundCurrency,
   synthesizeNutritionFromSeed,
   type UnifiedCatalogRecord,
 } from "@/server/services/mock-catalog";
+import { getEffectiveFor } from "@/server/services/preferences";
 import type { ExtractedProductItem } from "@/shared/contracts/extract";
 import type { AgentGuardrails } from "@/shared/contracts/guardrails";
 import type { SessionUser } from "@/shared/contracts/me";
+import type { Preferences } from "@/shared/contracts/preferences";
 import {
   type ApproveOrderRequest,
   type ApproveOrderResponse,
@@ -174,12 +177,51 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
 }
 
 /**
- * Checks a candidate against customer preferences (Dietary restrictions, Allergens, Nutritions).
+ * Checks how many organization layered preference criteria (`preferredOriginCountries`,
+ * `preferredVendors`, `preferredBrands`) a candidate matches.
+ */
+export function countLayeredPreferenceMatches(
+  candidate: {
+    vendorName?: string | null;
+    brand?: string | null;
+    countryOfOrigin?: string | null;
+  },
+  layeredPrefs?: Preferences | null,
+): { originMatch: boolean; vendorMatch: boolean; brandMatch: boolean; matchCount: number } {
+  if (!layeredPrefs) {
+    return { originMatch: false, vendorMatch: false, brandMatch: false, matchCount: 0 };
+  }
+  const originNorm = candidate.countryOfOrigin?.trim().toLowerCase();
+  const originMatch = Boolean(
+    originNorm &&
+    layeredPrefs.preferredOriginCountries.some((c) => c.trim().toLowerCase() === originNorm),
+  );
+  const vendorNorm = candidate.vendorName?.trim().toLowerCase();
+  const vendorMatch = Boolean(
+    vendorNorm && layeredPrefs.preferredVendors.some((v) => v.trim().toLowerCase() === vendorNorm),
+  );
+  const brandNorm = candidate.brand?.trim().toLowerCase();
+  const brandMatch = Boolean(
+    brandNorm && layeredPrefs.preferredBrands.some((b) => b.trim().toLowerCase() === brandNorm),
+  );
+  const matchCount = (originMatch ? 1 : 0) + (vendorMatch ? 1 : 0) + (brandMatch ? 1 : 0);
+  return { originMatch, vendorMatch, brandMatch, matchCount };
+}
+
+/**
+ * Checks a candidate against customer preferences (Dietary restrictions, Allergens, Nutritions)
+ * and optional 3-layer organization preferences (CO2, delivery reliability, blocked vendors, allergens).
  * Returns an array of mismatch reasons (empty array = matches preferences).
  */
 export function evaluateCustomerPreferences(
-  candidate: Pick<UnifiedCatalogRecord, "dietaryTags" | "allergens" | "nutrition">,
+  candidate: Pick<UnifiedCatalogRecord, "dietaryTags" | "allergens" | "nutrition"> & {
+    vendorName?: string;
+    countryOfOrigin?: string | null;
+    co2PerKg?: number | null;
+    deliveryReliability?: number | null;
+  },
   preferences: CustomerPreferences,
+  layeredPrefs?: Preferences | null,
 ): string[] {
   const reasons: string[] = [];
 
@@ -190,8 +232,19 @@ export function evaluateCustomerPreferences(
     }
   }
 
+  const excludedAllergens = [...preferences.excludedAllergens];
+  if (layeredPrefs) {
+    const seen = new Set(excludedAllergens.map((a) => a.trim().toLowerCase()));
+    for (const norm of normalizeAllergenList(layeredPrefs.excludedAllergens)) {
+      if (!seen.has(norm)) {
+        seen.add(norm);
+        excludedAllergens.push(norm);
+      }
+    }
+  }
+
   const candidateAllergens = new Set(candidate.allergens.map((a) => a.toLowerCase()));
-  for (const excluded of preferences.excludedAllergens) {
+  for (const excluded of excludedAllergens) {
     if (candidateAllergens.has(excluded.toLowerCase())) {
       reasons.push(`Contains excluded allergen: ${excluded}`);
     }
@@ -227,6 +280,35 @@ export function evaluateCustomerPreferences(
     reasons.push(
       `Protein (${actual.proteinPer100g}g/100g) is below minimum (${limits.minProteinPer100g}g/100g)`,
     );
+  }
+
+  if (layeredPrefs) {
+    if (
+      layeredPrefs.maxCo2PerKg !== null &&
+      candidate.co2PerKg != null &&
+      candidate.co2PerKg > layeredPrefs.maxCo2PerKg
+    ) {
+      reasons.push(
+        `CO2 footprint (${candidate.co2PerKg} kg CO2e/kg) exceeds maximum (${layeredPrefs.maxCo2PerKg} kg CO2e/kg)`,
+      );
+    }
+
+    if (
+      layeredPrefs.minDeliveryReliability !== null &&
+      candidate.deliveryReliability != null &&
+      candidate.deliveryReliability < layeredPrefs.minDeliveryReliability
+    ) {
+      reasons.push(
+        `Delivery reliability (${(candidate.deliveryReliability * 100).toFixed(1)}%) is below minimum (${(layeredPrefs.minDeliveryReliability * 100).toFixed(1)}%)`,
+      );
+    }
+
+    if (layeredPrefs.blockedVendors.length > 0 && candidate.vendorName) {
+      const vendorLower = candidate.vendorName.trim().toLowerCase();
+      if (layeredPrefs.blockedVendors.some((v) => v.trim().toLowerCase() === vendorLower)) {
+        reasons.push(`Vendor '${candidate.vendorName}' is blocked by organization preferences`);
+      }
+    }
   }
 
   return reasons;
@@ -716,6 +798,7 @@ export async function executeCoreOrderCreation(params: {
   extractedItems: ExtractedProductItem[];
   deliveryDate: string;
   preferences: CustomerPreferences;
+  layeredPreferences?: Preferences | null;
   guardrails: AgentGuardrails;
   previousOrders: PreviousOrderRecord[];
   requireApproval?: boolean;
@@ -730,6 +813,7 @@ export async function executeCoreOrderCreation(params: {
     extractedItems,
     deliveryDate,
     preferences,
+    layeredPreferences,
     guardrails,
     previousOrders,
     requireApproval,
@@ -753,6 +837,7 @@ export async function executeCoreOrderCreation(params: {
   const hasPreviousOrders = previousOrders.length > 0;
 
   const pipeline: ItemProcurementTrace[] = [];
+  let usedSubstitutes = false;
   const draftSelections: Array<{
     selected: CandidateProduct;
     requestedProductName: string;
@@ -763,6 +848,7 @@ export async function executeCoreOrderCreation(params: {
   for (const item of extractedItems) {
     // Step 2: Get list of products by [Product type]
     const rawByType = await getCandidatesByProductType(item.productType, deliveryDate);
+    const recordById = new Map<string, UnifiedCatalogRecord>(rawByType.map((r) => [r.id, r]));
     const { quantity, unit } = parseQuantityAndUnit(item.productQuantity, "KG");
 
     auditTrail.push(
@@ -807,7 +893,12 @@ export async function executeCoreOrderCreation(params: {
     const removedByPreferences: RemovedCandidate[] = [];
 
     for (const candidate of scoredByName) {
-      const reasons = evaluateCustomerPreferences(candidate, preferences);
+      const rawRecord = recordById.get(candidate.id);
+      const reasons = evaluateCustomerPreferences(
+        { ...candidate, countryOfOrigin: rawRecord?.countryOfOrigin ?? null },
+        preferences,
+        layeredPreferences,
+      );
       if (reasons.length > 0) {
         removedByPreferences.push({
           id: candidate.id,
@@ -836,7 +927,7 @@ export async function executeCoreOrderCreation(params: {
       }),
     );
 
-    // Step 5: Sort by previous order history (product, then brand, then nameMatchScore)
+    // Step 5: Sort by previous order history (product, then brand), org preference matches, then nameMatchScore
     const sortedCandidates = [...survivingCandidates].sort((a, b) => {
       if (hasPreviousOrders) {
         if (a.previouslyOrderedProduct !== b.previouslyOrderedProduct) {
@@ -844,6 +935,27 @@ export async function executeCoreOrderCreation(params: {
         }
         if (a.previouslyOrderedBrand !== b.previouslyOrderedBrand) {
           return a.previouslyOrderedBrand ? -1 : 1;
+        }
+      }
+      if (layeredPreferences) {
+        const aPref = countLayeredPreferenceMatches(
+          {
+            vendorName: a.vendorName,
+            brand: a.brand,
+            countryOfOrigin: recordById.get(a.id)?.countryOfOrigin ?? null,
+          },
+          layeredPreferences,
+        ).matchCount;
+        const bPref = countLayeredPreferenceMatches(
+          {
+            vendorName: b.vendorName,
+            brand: b.brand,
+            countryOfOrigin: recordById.get(b.id)?.countryOfOrigin ?? null,
+          },
+          layeredPreferences,
+        ).matchCount;
+        if (bPref !== aPref) {
+          return bPref - aPref;
         }
       }
       if (b.nameMatchScore !== a.nameMatchScore) {
@@ -937,6 +1049,12 @@ export async function executeCoreOrderCreation(params: {
             if (firstDraft) {
               firstDraft.quantity = roundCurrency(firstDraft.quantity + remaining);
             }
+          }
+          if (
+            splitAllocations.length > 1 ||
+            (splitAllocations.length === 1 && splitAllocations[0]!.productId !== selectedProduct.id)
+          ) {
+            usedSubstitutes = true;
           }
           auditTrail.push(
             makeAuditEvent({
@@ -1113,6 +1231,8 @@ export async function executeCoreOrderCreation(params: {
     totalPriceEur,
     guardrails,
     forceApproval: requireApproval,
+    allowSubstitutes: layeredPreferences?.allowSubstitutes,
+    usedSubstitutes,
   });
 
   auditTrail.push(
@@ -1242,7 +1362,8 @@ export async function createOrderFromPrompt(
   input: CreateOrderFromPromptRequest,
   actor?: SessionUser | null,
 ): Promise<CreateOrderFromPromptResponse> {
-  const savedSettings = await getProcurementSettings(actor);
+  const ctx = await getProcurementContext(actor, "buyer");
+  const savedSettings = ctx.settings;
   const preferences: CustomerPreferences = input.preferences ?? savedSettings.preferences;
   const guardrails = mergeGuardrails(savedSettings.guardrails, input.guardrails, input.budgetEur);
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
@@ -1281,6 +1402,7 @@ export async function createOrderFromPrompt(
     extractedItems,
     deliveryDate,
     preferences,
+    layeredPreferences: ctx.layered,
     guardrails,
     previousOrders,
     requireApproval: input.requireApproval,
@@ -1567,6 +1689,7 @@ export async function modifyOrder(
     );
   }
 
+  const { layered: layeredPreferences } = await getProcurementContext(actor);
   const prevProductIds = new Set(existing.previousOrdersUsed.map((o) => o.productId.toLowerCase()));
   const prevBrands = new Set(existing.previousOrdersUsed.map((o) => o.brand.trim().toLowerCase()));
 
@@ -1590,7 +1713,11 @@ export async function modifyOrder(
       );
     }
 
-    const prefViolations = evaluateCustomerPreferences(targetRecord, existing.preferencesUsed);
+    const prefViolations = evaluateCustomerPreferences(
+      targetRecord,
+      existing.preferencesUsed,
+      layeredPreferences,
+    );
     if (prefViolations.length > 0 && !input.allowPreferenceOverride) {
       throw new OrderServiceError(
         `Cannot replace with '${targetRecord.name}' (${targetRecord.id}) because it violates customer preferences: ${prefViolations.join("; ")}. Set allowPreferenceOverride=true to force with human approval.`,
@@ -1670,7 +1797,11 @@ export async function modifyOrder(
     if (!record) {
       throw new OrderServiceError(`Product '${add.productId}' does not exist in catalog.`, 400);
     }
-    const prefViolations = evaluateCustomerPreferences(record, existing.preferencesUsed);
+    const prefViolations = evaluateCustomerPreferences(
+      record,
+      existing.preferencesUsed,
+      layeredPreferences,
+    );
     if (prefViolations.length > 0 && !input.allowPreferenceOverride) {
       throw new OrderServiceError(
         `Cannot add '${record.name}' (${record.id}) because it violates customer preferences: ${prefViolations.join("; ")}.`,
@@ -1876,6 +2007,24 @@ export async function decideOrderApproval(
       `Order '${orderId}' has no fulfillable items and cannot be approved.`,
       409,
     );
+  }
+
+  if (actor && input.decision === "approve" && process.env.DATABASE_URL) {
+    try {
+      const effective = await getEffectiveFor(actor.organization.id, "approver");
+      if (
+        effective.values.maxOrderValue !== null &&
+        existing.order.totalPriceEur > effective.values.maxOrderValue
+      ) {
+        throw new OrderServiceError(
+          `Order total (${existing.order.totalPriceEur.toFixed(2)} EUR) exceeds approver maxOrderValue (${effective.values.maxOrderValue.toFixed(2)} EUR).`,
+          403,
+        );
+      }
+    } catch (err) {
+      if (err instanceof OrderServiceError) throw err;
+      // Ignore DB reachability errors when loading approver preferences.
+    }
   }
 
   const nowIso = new Date().toISOString();

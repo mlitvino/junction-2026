@@ -1,9 +1,12 @@
 import "server-only";
 
+import { RequestContext } from "@mastra/core/request-context";
+
 import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { getMastra } from "@/server/mastra";
 import { createPriceAvailabilityInquiry, searchCatalogProducts } from "@/server/services/inquiry";
 import {
+  checkRecurringOrderAnomalies,
   evaluateProductSubstitutions,
   getProactiveRecommendations,
   getProactiveStockoutAlerts,
@@ -17,6 +20,7 @@ import {
   listOrders,
   modifyOrder,
 } from "@/server/services/orders";
+import { getEffectiveFor } from "@/server/services/preferences";
 import {
   createOrderFromRecipe,
   findRecipeByDishQuery,
@@ -52,9 +56,25 @@ export async function runPurchasingAgent(
       ? getMastra().getAgentById("purchasing-agent")
       : purchasingAgent;
 
+    let preferredLanguage: "en" | "fi" | "sv" = "en";
+    if (actor && process.env.DATABASE_URL) {
+      try {
+        const effective = await getEffectiveFor(
+          actor.organization.id,
+          actor.roles.includes("buyer") ? "buyer" : "approver",
+        );
+        preferredLanguage = effective.values.language;
+      } catch {
+        // Fall back to default language when preferences cannot be loaded.
+      }
+    }
+
     const contextualMessage = [
       referencedOrderId ? `Active orderId context: ${referencedOrderId}` : null,
       input.deliveryDate ? `Target deliveryDate: ${input.deliveryDate}` : null,
+      preferredLanguage === "fi" || preferredLanguage === "sv"
+        ? `Preferred response language: ${preferredLanguage}`
+        : null,
       `Buyer message: ${input.message}`,
     ]
       .filter(Boolean)
@@ -63,8 +83,12 @@ export async function runPurchasingAgent(
     const beforeOrders = await listOrders(actor);
     const beforeLatestId = beforeOrders.orders[0]?.orderId ?? null;
 
+    const requestContext = new RequestContext();
+    requestContext.set("actor", actor ?? null);
+
     const result = await agent.generate(contextualMessage, {
       maxSteps: 6,
+      requestContext,
     });
 
     const toolCalls: AgentToolCallTrace[] = [];
@@ -177,6 +201,35 @@ export async function runPurchasingAgent(
       mode: "deterministic",
       toolCalls,
       activeOrder: detail.order,
+    };
+  }
+
+  // 3a. Recurring-order anomaly check on an active order
+  if (referencedOrderId && /\b(anomal\w*|recurring|spike|baseline)\b/i.test(input.message)) {
+    const anomalyRes = await checkRecurringOrderAnomalies(
+      { orderId: referencedOrderId, deliveryDate: input.deliveryDate },
+      actor,
+    );
+    toolCalls.push({
+      toolName: "checkRecurringAnomalies",
+      args: { orderId: referencedOrderId, deliveryDate: input.deliveryDate },
+      summary: `Checked ${referencedOrderId} against ${anomalyRes.historicalOrderCount} historical order(s) (safeToAutoRepeat=${anomalyRes.safeToAutoRepeat}, anomalies=${anomalyRes.anomalies.length}).`,
+    });
+    const anomalyLines =
+      anomalyRes.anomalies.length > 0
+        ? anomalyRes.anomalies
+            .map((a) => `- [${a.severity.toUpperCase()}] ${a.anomalyType}: ${a.explanation}`)
+            .join("\n")
+        : "No anomalies detected against historical baselines.";
+    return {
+      reply:
+        `Recurring-order anomaly check for ${referencedOrderId}: ` +
+        `safeToAutoRepeat=${anomalyRes.safeToAutoRepeat}, ` +
+        `proposedTotalEur=${anomalyRes.proposedTotalEur.toFixed(2)} EUR, ` +
+        `anomalies=${anomalyRes.anomalies.length}.\n${anomalyLines}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
     };
   }
 
@@ -315,8 +368,9 @@ export async function runPurchasingAgent(
   ) {
     const matchedRecipe = await findRecipeByDishQuery(input.message, actor);
     if (matchedRecipe) {
-      const servingsMatch =
-        /(\d+(?:[.,]\d+)?)\s*(?:servings?|portions?|people|persons?)\b/i.exec(input.message);
+      const servingsMatch = /(\d+(?:[.,]\d+)?)\s*(?:servings?|portions?|people|persons?)\b/i.exec(
+        input.message,
+      );
       const servings = servingsMatch
         ? Number.parseFloat(servingsMatch[1]!.replace(",", "."))
         : undefined;

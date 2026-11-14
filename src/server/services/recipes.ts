@@ -7,7 +7,7 @@ import { asc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { procurementRecipe } from "@/server/db/schema";
-import { getProcurementSettings, mergeGuardrails } from "@/server/services/guardrails";
+import { getProcurementContext, mergeGuardrails } from "@/server/services/guardrails";
 import { todayIsoDate } from "@/server/services/inquiry";
 import {
   listInventory,
@@ -417,10 +417,7 @@ export async function createOrderFromRecipe(
   } else if (input.dishQuery) {
     recipe = await findRecipeByDishQuery(input.dishQuery, actor);
     if (!recipe) {
-      throw new RecipeServiceError(
-        `No matching recipe found for dish '${input.dishQuery}'.`,
-        404,
-      );
+      throw new RecipeServiceError(`No matching recipe found for dish '${input.dishQuery}'.`, 404);
     }
   } else {
     throw new RecipeServiceError(
@@ -473,7 +470,8 @@ export async function createOrderFromRecipe(
       productQuantity: `${rec.actuallyNeededQuantity} ${rec.normalizedUnit}`,
     }));
 
-  const savedSettings = await getProcurementSettings(actor);
+  const ctx = await getProcurementContext(actor, "buyer");
+  const savedSettings = ctx.settings;
   const preferences: CustomerPreferences = input.preferences ?? savedSettings.preferences;
   const guardrails = mergeGuardrails(savedSettings.guardrails, input.guardrails, input.budgetEur);
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
@@ -515,8 +513,7 @@ export async function createOrderFromRecipe(
     }),
   ];
 
-  const allCoveredByStock =
-    ingredientReconciliation.length > 0 && extractedItems.length === 0;
+  const allCoveredByStock = ingredientReconciliation.length > 0 && extractedItems.length === 0;
 
   const syntheticPrompt = `Recipe order: ${recipe.name} (${requestedServings} servings)`;
 
@@ -526,6 +523,7 @@ export async function createOrderFromRecipe(
     extractedItems,
     deliveryDate,
     preferences,
+    layeredPreferences: ctx.layered,
     guardrails,
     previousOrders,
     requireApproval: input.requireApproval,

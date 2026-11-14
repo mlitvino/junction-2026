@@ -2,6 +2,11 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { inArray } from "drizzle-orm";
+
+import { getDb } from "@/server/db/client";
+import { ensureDatabase } from "@/server/db/migrate";
+import { valioProduct } from "@/server/db/schema";
 import { getAvailability, getPrices, getProduct, searchProducts } from "@/server/services/catalog";
 import {
   hashSeed,
@@ -156,11 +161,25 @@ export async function searchCatalogProducts(
         limit: Math.min(100, query.limit + query.offset + 20),
         offset: 0,
       });
-      for (const item of dbResult.items) {
-        if (!merged.has(item.id)) {
-          const summary = toSummaryFromDb(item);
-          if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
-            merged.set(summary.id, summary);
+      if (dbResult.items.length > 0) {
+        const missingIds = dbResult.items.map((item) => item.id).filter((id) => !merged.has(id));
+        const allergensMap = new Map<string, string[]>();
+        if (missingIds.length > 0) {
+          await ensureDatabase();
+          const allergenRows = await getDb()
+            .select({ id: valioProduct.id, allergens: valioProduct.allergens })
+            .from(valioProduct)
+            .where(inArray(valioProduct.id, missingIds));
+          for (const row of allergenRows) {
+            allergensMap.set(row.id, row.allergens);
+          }
+        }
+        for (const item of dbResult.items) {
+          if (!merged.has(item.id)) {
+            const summary = toSummaryFromDb(item, allergensMap.get(item.id) ?? []);
+            if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
+              merged.set(summary.id, summary);
+            }
           }
         }
       }

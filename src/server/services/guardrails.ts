@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { organizationProcurementSettings } from "@/server/db/schema";
+import { normalizeAllergenList } from "@/server/services/mock-catalog";
+import { getEffectiveFor, getLayers } from "@/server/services/preferences";
 import {
   type AgentGuardrails,
   AgentGuardrailsSchema,
@@ -18,6 +20,7 @@ import {
 } from "@/shared/contracts/guardrails";
 import type { SessionUser } from "@/shared/contracts/me";
 import type { OrderLineItem } from "@/shared/contracts/orders";
+import type { Preferences } from "@/shared/contracts/preferences";
 
 export class ProcurementPermissionError extends Error {
   readonly status: 403;
@@ -87,13 +90,34 @@ export function mergeGuardrails(
   return merged;
 }
 
-/** Reads saved customer preferences and agent guardrails for the caller's organization (or default scope). */
-export async function getProcurementSettings(
-  actor?: SessionUser | null,
-): Promise<ProcurementSettings> {
-  const orgId = actor?.organization.id ?? null;
+export type ProcurementPreferencesContext = {
+  settings: ProcurementSettings;
+  layered: Preferences | null;
+};
 
-  if (orgId && process.env.DATABASE_URL) {
+/**
+ * Reads customer preferences, agent guardrails, and effective 3-layer organization preferences
+ * for the caller's organization (or unauthenticated default scope).
+ */
+export async function getProcurementContext(
+  actor?: SessionUser | null,
+  roleOverride?: "buyer" | "approver",
+): Promise<ProcurementPreferencesContext> {
+  if (!actor) {
+    return {
+      settings: fallbackSettingsStore.get(DEFAULT_SCOPE_KEY) ?? defaultSettings(null),
+      layered: null,
+    };
+  }
+
+  const orgId = actor.organization.id;
+  const actingRole: "buyer" | "approver" =
+    roleOverride ?? (actor.roles.includes("buyer") ? "buyer" : "approver");
+
+  let settings: ProcurementSettings | null = null;
+  let hasOrgSettingsRow = false;
+
+  if (process.env.DATABASE_URL) {
     try {
       await ensureDatabase();
       const db = getDb();
@@ -103,12 +127,17 @@ export async function getProcurementSettings(
         .where(eq(organizationProcurementSettings.organizationId, orgId));
 
       if (row) {
+        hasOrgSettingsRow = true;
         const parsedPrefs = CustomerPreferencesSchema.safeParse(row.preferences);
         const parsedGuardrails = AgentGuardrailsSchema.safeParse(row.guardrails);
-        return {
+        settings = {
           organizationId: orgId,
-          preferences: parsedPrefs.success ? parsedPrefs.data : DEFAULT_MOCK_PREFERENCES,
-          guardrails: parsedGuardrails.success ? parsedGuardrails.data : DEFAULT_AGENT_GUARDRAILS,
+          preferences: parsedPrefs.success
+            ? structuredClone(parsedPrefs.data)
+            : structuredClone(DEFAULT_MOCK_PREFERENCES),
+          guardrails: parsedGuardrails.success
+            ? structuredClone(parsedGuardrails.data)
+            : structuredClone(DEFAULT_AGENT_GUARDRAILS),
           updatedAt: row.updatedAt.toISOString(),
         };
       }
@@ -117,8 +146,67 @@ export async function getProcurementSettings(
     }
   }
 
-  const key = orgId ?? DEFAULT_SCOPE_KEY;
-  return fallbackSettingsStore.get(key) ?? defaultSettings(orgId);
+  settings ??= structuredClone(fallbackSettingsStore.get(orgId) ?? defaultSettings(orgId));
+
+  let layered: Preferences | null = null;
+  let hasSavedLayers = false;
+
+  if (process.env.DATABASE_URL) {
+    try {
+      const [effective, layers] = await Promise.all([
+        getEffectiveFor(orgId, actingRole),
+        getLayers(orgId),
+      ]);
+      layered = effective.values;
+      hasSavedLayers =
+        layers.base.updatedAt !== null ||
+        layers.buyer.updatedAt !== null ||
+        layers.approver.updatedAt !== null;
+    } catch {
+      // Gracefully fall back to null layered preferences when DB is unreachable.
+    }
+  }
+
+  if (layered) {
+    const existingLower = new Set(
+      settings.preferences.excludedAllergens.map((a) => a.trim().toLowerCase()),
+    );
+    const mergedExcluded = [...settings.preferences.excludedAllergens];
+    for (const norm of normalizeAllergenList(layered.excludedAllergens)) {
+      if (!existingLower.has(norm)) {
+        existingLower.add(norm);
+        mergedExcluded.push(norm);
+      }
+    }
+    settings.preferences.excludedAllergens = mergedExcluded;
+
+    if (hasSavedLayers || !hasOrgSettingsRow) {
+      if (layered.maxOrderValue !== null) {
+        settings.guardrails.budgetEur = hasOrgSettingsRow
+          ? Math.min(settings.guardrails.budgetEur, layered.maxOrderValue)
+          : layered.maxOrderValue;
+      }
+      if (layered.autonomy === "suggest_only" || layered.autoApproveBelow === null) {
+        settings.guardrails.requireCustomerConfirmation = true;
+        settings.guardrails.autoApproveLimitEur = 0;
+      } else if (layered.autonomy === "order_within_limits" && layered.autoApproveBelow !== null) {
+        settings.guardrails.autoApproveLimitEur = Math.min(
+          layered.autoApproveBelow,
+          settings.guardrails.budgetEur,
+        );
+        settings.guardrails.requireCustomerConfirmation = false;
+      }
+    }
+  }
+
+  return { settings, layered };
+}
+
+/** Reads saved customer preferences and agent guardrails for the caller's organization (or default scope). */
+export async function getProcurementSettings(
+  actor?: SessionUser | null,
+): Promise<ProcurementSettings> {
+  return (await getProcurementContext(actor)).settings;
 }
 
 /**
@@ -191,8 +279,18 @@ export function evaluateOrderGuardrails(params: {
   guardrails: AgentGuardrails;
   forceApproval?: boolean;
   preferenceOverrideReasons?: string[];
+  allowSubstitutes?: boolean;
+  usedSubstitutes?: boolean;
 }): GuardrailEvaluation {
-  const { lines, totalPriceEur, guardrails, forceApproval, preferenceOverrideReasons } = params;
+  const {
+    lines,
+    totalPriceEur,
+    guardrails,
+    forceApproval,
+    preferenceOverrideReasons,
+    allowSubstitutes,
+    usedSubstitutes,
+  } = params;
   const violations: GuardrailViolation[] = [];
 
   if (totalPriceEur > guardrails.budgetEur) {
@@ -315,6 +413,15 @@ export function evaluateOrderGuardrails(params: {
       severity: "approval_required",
       productId: null,
       message: `Manual product override triggered preference review: ${preferenceOverrideReasons.join("; ")}`,
+    });
+  }
+
+  if (allowSubstitutes === false && usedSubstitutes) {
+    violations.push({
+      rule: "customer_confirmation_required",
+      severity: "approval_required",
+      productId: null,
+      message: "Organization preferences disallow automatic substitutes; human approval required.",
     });
   }
 

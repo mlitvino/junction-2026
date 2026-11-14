@@ -17,6 +17,7 @@ import {
   OrderProductReplacementSchema,
   OrderQuantityUpdateSchema,
 } from "@/shared/contracts/orders";
+import type { SessionUser } from "@/shared/contracts/me";
 
 export const createProcurementOrderTool = createTool({
   id: "create-procurement-order",
@@ -28,12 +29,17 @@ export const createProcurementOrderTool = createTool({
     budgetEur: z.number().positive().optional().describe("Optional budget override in EUR."),
   }),
   outputSchema: CreateOrderFromPromptResponseSchema,
-  execute: async ({ prompt, deliveryDate, budgetEur }) =>
-    createOrderFromPrompt({
-      prompt,
-      deliveryDate,
-      budgetEur,
-    }),
+  execute: async ({ prompt, deliveryDate, budgetEur }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return createOrderFromPrompt(
+      {
+        prompt,
+        deliveryDate,
+        budgetEur,
+      },
+      actor,
+    );
+  },
 });
 
 export const modifyOrderTool = createTool({
@@ -51,13 +57,22 @@ export const modifyOrderTool = createTool({
     removeProductIds: z.array(z.string()).optional(),
   }),
   outputSchema: ModifyOrderResponseSchema,
-  execute: async ({ orderId, prompt, replacements, quantityUpdates, removeProductIds }) =>
-    modifyOrder(orderId, {
-      prompt,
-      replacements,
-      quantityUpdates,
-      removeProductIds,
-    }),
+  execute: async (
+    { orderId, prompt, replacements, quantityUpdates, removeProductIds },
+    context,
+  ) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return modifyOrder(
+      orderId,
+      {
+        prompt,
+        replacements,
+        quantityUpdates,
+        removeProductIds,
+      },
+      actor,
+    );
+  },
 });
 
 export const checkoutOrderTool = createTool({
@@ -70,11 +85,17 @@ export const checkoutOrderTool = createTool({
     deliveryNotes: z.string().optional().describe("Optional delivery instructions."),
   }),
   outputSchema: CheckoutOrderResponseSchema,
-  execute: async ({ orderId, customerReference, deliveryNotes }) =>
-    checkoutOrder(orderId, {
-      customerReference,
-      deliveryNotes,
-    }),
+  execute: async ({ orderId, customerReference, deliveryNotes }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return checkoutOrder(
+      orderId,
+      {
+        customerReference,
+        deliveryNotes,
+      },
+      actor,
+    );
+  },
 });
 
 export const getOrderDetailsTool = createTool({
@@ -85,5 +106,8 @@ export const getOrderDetailsTool = createTool({
     orderId: z.string().describe("Order ID to inspect."),
   }),
   outputSchema: OrderDetailResponseSchema,
-  execute: async ({ orderId }) => getOrderDetail(orderId),
+  execute: async ({ orderId }, context) => {
+    const actor = context?.requestContext?.get("actor") as SessionUser | null | undefined;
+    return getOrderDetail(orderId, actor);
+  },
 });
