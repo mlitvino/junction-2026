@@ -358,6 +358,7 @@ export async function getPrices({ productIds, date }: PricesRequest): Promise<Pr
         validFrom: r.validFrom,
         validTo: r.validTo,
         fetchedAt: r.fetchedAt.toISOString(),
+        snapshotId: String(r.id),
       },
     ];
   });
@@ -435,6 +436,7 @@ export async function getAvailability({ productIds, date }: AvailabilityRequest)
         orderCutoff: r.closingTime,
         salesUnit: r.salesUnit,
         fetchedAt: r.fetchedAt.toISOString(),
+        snapshotId: String(r.id),
       },
     ];
   });

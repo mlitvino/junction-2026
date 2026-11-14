@@ -1145,6 +1145,8 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
       pricePerContent: r.pricePerContent,
       availableDate: r.availableDate,
       availableQuantity: r.availableQuantity,
+      priceSnapshotId: priceBy.get(r.id)?.snapshotId ?? null,
+      availabilitySnapshotId: availBy.get(r.id)?.snapshotId ?? null,
       reasons: r.reasons,
     };
   };

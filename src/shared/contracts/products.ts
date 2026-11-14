@@ -150,6 +150,7 @@ export const PriceQuoteSchema = z.object({
   validFrom: z.string().nullable(),
   validTo: z.string().nullable(),
   fetchedAt: z.iso.datetime().meta({ description: "When this price was fetched from Valio (cached up to 5 minutes)." }),
+  snapshotId: z.string().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure.", example: "18342" }),
 });
 
 export const PricesResponseSchema = z.object({
@@ -178,6 +179,7 @@ export const AvailabilitySchema = z.object({
   orderCutoff: z.string().nullable().meta({ description: "Order by this time to receive goods on availableDate." }),
   salesUnit: z.string().nullable(),
   fetchedAt: z.iso.datetime(),
+  snapshotId: z.string().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure.", example: "18342" }),
 });
 
 export const AvailabilityResponseSchema = z.object({
@@ -264,6 +266,8 @@ export const RankedProductSchema = z.object({
   pricePerContent: z.object({ value: z.number(), unit: z.enum(["L", "KG"]) }).nullable(),
   availableDate: z.string().nullable(),
   availableQuantity: z.number().nullable(),
+  priceSnapshotId: z.string().nullable().meta({ description: "Snapshot id of the price used." }),
+  availabilitySnapshotId: z.string().nullable().meta({ description: "Snapshot id of the availability used." }),
   reasons: z.array(z.string()).meta({ description: "Why it ranks where it does, per factor." }),
 });
 
