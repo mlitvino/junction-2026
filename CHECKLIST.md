@@ -43,9 +43,9 @@ Left
 - [x] Approval expiry (`EXPIRED` with the quote, audited, 409 `APPROVAL_EXPIRED`) and `GET /api/approvals/pending-count` for a badge (migration 0008).
 - [x] Migrations without restart: `pnpm dev` applies pending ones on start, and a running dev server applies new ones on the next request.
 - [x] Removed the `server/valio/types.ts` re-export shim.
-- [ ] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) stay unused; drop them only in a later cleanup once rollbacks to old images are no longer needed. Migrations are additive.
-- [ ] Map agent configuration and model errors to a clear response: a missing `GOOGLE_GENERATIVE_AI_API_KEY` throws a plain `Error`, and since #8 a failed model call in extraction or proposal revision is no longer caught, so both become `500 Internal error`. Return e.g. 503 "agent not configured" / 502 "model failed" with a message.
-- [ ] README "LLM (Gemini)" still says the agent falls back to a mock model without a key; since #8 it requires the key unless `TEST_MODE=TRUE`. Update README and the root AGENTS.md agent notes.
+- [x] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) dropped in migration 0010; images older than `9077a91` can't be rolled back to.
+- [x] Agent errors: 503 `AGENT_NOT_CONFIGURED` without a Gemini key (and no `TEST_MODE=TRUE`), 502 `MODEL_FAILED` when a model call fails, instead of a plain 500.
+- [x] README "LLM (Gemini)", root AGENTS.md and deploy README: the agent needs a Gemini key unless `TEST_MODE=TRUE`.
 - [ ] Stretch: MCP-style interface over the endpoints. Makes the API directly agent-readable.
 
 ## Frontend
