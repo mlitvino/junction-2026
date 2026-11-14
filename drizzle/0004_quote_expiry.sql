@@ -1,1 +1,0 @@
-ALTER TABLE "proposal" ADD COLUMN "quote_expires_at" timestamp with time zone;

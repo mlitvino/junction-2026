@@ -26,15 +26,22 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1794674626013,
-      "tag": "0003_purchasing",
+      "when": 1794671934250,
+      "tag": "0003_procurement",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "7",
-      "when": 1794678437264,
-      "tag": "0004_quote_expiry",
+      "when": 1794671934610,
+      "tag": "0004_recipes_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794679493154,
+      "tag": "0005_purchasing",
       "breakpoints": true
     }
   ]

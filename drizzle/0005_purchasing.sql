@@ -27,6 +27,7 @@ CREATE TABLE "proposal" (
 	"decision" jsonb NOT NULL,
 	"hash" text NOT NULL,
 	"note" text,
+	"quote_expires_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "proposal_status_check" CHECK ("proposal"."status" IN ('READY', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'BLOCKED', 'ORDERED', 'CANCELLED')),
