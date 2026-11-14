@@ -57,6 +57,7 @@ The agent features (`POST /api/agent/run`, `/api/extract`, `/api/proposals/from-
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check` | lint + typecheck. Run it before every commit |
 | `pnpm test:server` | Backend unit tests (`src/server/**/*.test.ts`, plain Node) |
+| `pnpm test:e2e` | End-to-end scenarios against the running app (`pnpm dev` first; see `e2e/README.md`) |
 | `pnpm format` | Prettier |
 | `pnpm db:up` / `db:down` | Start (waits until ready) / stop the local Postgres (`compose.dev.yml`) |
 | `pnpm db:psql` | psql shell in the local DB |

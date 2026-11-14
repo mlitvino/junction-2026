@@ -22,7 +22,7 @@ Two developers, each working with their own AI agent. **Edit only the zone of th
 
 | Owner | Paths |
 | --- | --- |
-| Backend/infra dev | `src/server/`, `src/app/api/`, `src/proxy.ts`, `deploy/`, `.github/`, `.claude/`, `Dockerfile`, `compose.dev.yml`, `next.config.ts`, `package.json` dependencies |
+| Backend/infra dev | `src/server/`, `src/app/api/`, `src/proxy.ts`, `e2e/`, `deploy/`, `.github/`, `.claude/`, `Dockerfile`, `compose.dev.yml`, `next.config.ts`, `package.json` dependencies |
 | Frontend dev | `src/app/` (except `src/app/api/`), `src/components/`, `src/features/`, `src/client/` |
 | Joint, by agreement only | `src/shared/contracts/` |
 
@@ -165,6 +165,7 @@ The organization's single set of rules for the agent and the approval flow: prod
 - `pnpm typecheck`: `tsc --noEmit`
 - `pnpm check`: lint + typecheck
 - `pnpm test:server`: backend unit tests (`src/server/**/*.test.ts`, plain Node; relative `.ts` imports, type-only imports from `@/`)
+- `pnpm test:e2e`: end-to-end scenarios over HTTP against a running app (`E2E_BASE_URL`, default http://localhost:3000): sign-up → members → preferences → proposals → approvals → orders → audit. Needs the imported catalog; `DATABASE_URL` for the expiry scenario and cleanup; `TEST_MODE=TRUE` (or a Gemini key) for the agent scenario. Not part of `pnpm test`; CI runs it in the `e2e` job. See `e2e/README.md`.
 - `pnpm format`: Prettier
 - `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
 - `pnpm db:psql`: psql shell in the local DB
