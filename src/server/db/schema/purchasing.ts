@@ -60,6 +60,10 @@ export const proposal = pgTable(
     note: text("note"),
     /** Frozen prices can be approved and ordered until then. Null on rows from before it existed. */
     quoteExpiresAt: timestamp("quote_expires_at", tz),
+    /** Who prepared it: `buyer` (lines given directly), `agent` (from a prompt) or `recipe`. */
+    source: text("source"),
+    /** How the agent chose the lines (candidates, filters, ranking, warnings); null for direct lines. */
+    selection: jsonb("selection").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", tz).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", tz).notNull().defaultNow(),
   },
@@ -128,3 +132,33 @@ export const purchaseOrder = pgTable(
 export type ProposalRow = typeof proposal.$inferSelect;
 export type ApprovalRow = typeof approval.$inferSelect;
 export type PurchaseOrderRow = typeof purchaseOrder.$inferSelect;
+
+/**
+ * Organization-wide audit log: who did what to which resource, and why. Insert-only; written in
+ * the same transaction as the change it records. Shared with Valio Aimo as the readable record.
+ */
+export const auditEvent = pgTable(
+  "audit_event",
+  {
+    id: uuid(),
+    organizationId: org(),
+    /** `user` (a person), `agent` (the purchasing agent acting for a user) or `system`. */
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id"),
+    actorName: text("actor_name"),
+    /** e.g. `proposal.created`, `approval.decided`, `order.placed`, `preferences.updated`. */
+    action: text("action").notNull(),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id").notNull(),
+    summary: text("summary").notNull(),
+    details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", tz).notNull().defaultNow(),
+  },
+  (t) => [
+    index("audit_event_org_created_idx").on(t.organizationId, t.createdAt.desc()),
+    index("audit_event_resource_idx").on(t.resourceType, t.resourceId, t.createdAt),
+    check("audit_event_actor_type_check", sql`${t.actorType} IN ('user', 'agent', 'system')`),
+  ],
+);
+
+export type AuditEventRow = typeof auditEvent.$inferSelect;
