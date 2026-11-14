@@ -16,6 +16,7 @@
     "db:reset": "docker compose -f compose.dev.yml down -v && pnpm db:up",
     "db:psql": "docker compose -f compose.dev.yml exec db psql -U app -d app",
     "db:logs": "docker compose -f compose.dev.yml logs -f db",
+    "bootstrap": "pnpm install && pnpm db:up && pnpm data:fetch --if-missing && pnpm data:import",
     "data:fetch":"node --env-file-if-exists=.env scripts/fetch-valio-data.mjs",
     "data:import": "node --env-file-if-exists=.env --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/import-valio-data.ts",
     "data:analyze":"node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analyze-valio-data.ts",
