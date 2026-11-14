@@ -35,6 +35,12 @@ export type UnifiedCatalogRecord = {
   /** Earliest delivery date from Valio for the requested date; absent for synthetic products. */
   availableDate?: string | null;
   salesBlock?: boolean;
+  /**
+   * Valio's own verdict for the date (not sales-blocked and something deliverable). False also when
+   * the stock is unknown-but-zero, which `availableQuantity: null` can't tell apart from "unknown".
+   * Absent for synthetic products.
+   */
+  orderable?: boolean | null;
   /** Packaging label ids (shared/contracts/labels.ts). */
   labels?: string[];
   sustainabilityCertificates?: string[];

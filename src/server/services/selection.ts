@@ -352,7 +352,7 @@ export async function getCandidatesByProductType(
         const priceMap = new Map<string, { price: number; vat: number }>();
         const availMap = new Map<
           string,
-          { available: number | null; model: "stock" | "terminal"; salesBlock: boolean; date: string | null }
+          { available: number | null; model: "stock" | "terminal"; salesBlock: boolean; orderable: boolean; date: string | null }
         >();
         try {
           const [prices, availability] = await Promise.all([
@@ -372,6 +372,7 @@ export async function getCandidatesByProductType(
               available: a.salesBlock ? 0 : a.availableQuantity,
               model: a.logisticModel ?? "stock",
               salesBlock: a.salesBlock,
+              orderable: a.orderable,
               date: a.availableDate,
             });
           }
@@ -409,6 +410,7 @@ export async function getCandidatesByProductType(
             logisticModel: availInfo?.model ?? "stock",
             availableDate: availInfo?.date ?? null,
             salesBlock: availInfo?.salesBlock ?? false,
+            orderable: availInfo ? availInfo.orderable : null,
             labels: r.labels,
             deliveryReliability: r.deliveryReliability,
             co2PerKg: r.co2PerKg,
@@ -646,7 +648,9 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
           perSalesUnit: conv?.perSalesUnit ?? null,
           quantity: conv?.quantity ?? quantity,
           converted: unit ? (conv?.converted ?? false) : true,
-          orderable: r.availableQuantity === null ? null : r.availableQuantity > 0 || r.logisticModel === "terminal",
+          // Valio's verdict when we have it (same as the policy check uses), else derived from the stock.
+          orderable:
+            r.orderable ?? (r.availableQuantity === null ? null : r.availableQuantity > 0 || r.logisticModel === "terminal"),
           salesBlock: r.salesBlock ?? false,
           availableDate: r.availableDate ?? null,
           availableQuantity: r.availableQuantity,

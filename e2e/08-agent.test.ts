@@ -44,7 +44,13 @@ describe("agent", () => {
       );
       assert.equal(line.substituteFor, null, "converted, so not a substitute");
     }
-    assert.equal(res.proposal.decision.outcome, "REQUIRE_APPROVAL", "the agent's proposals follow the same rules");
+    // Default rules: everything needs approval. A DENY here means the agent picked something the
+    // policy can't accept (e.g. not deliverable), i.e. selection and policy disagree.
+    assert.equal(
+      res.proposal.decision.outcome,
+      "REQUIRE_APPROVAL",
+      `the agent's pick passes the same rules; reasons: ${res.proposal.decision.reasons.map((r) => `${r.code} (${r.message})`).join("; ")}`,
+    );
   });
 
   it("agent/run acts for the signed-in buyer and returns the proposal it worked on", async (t) => {
