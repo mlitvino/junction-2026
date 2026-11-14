@@ -1,11 +1,13 @@
 import "server-only";
 
+import { and, asc, eq, sql } from "drizzle-orm";
 import { APIError } from "better-auth/api";
 
 import { getAuth } from "@/server/auth/auth";
-import { ensureOrganizationSchema } from "@/server/auth/organization-schema";
 import { sortRoles } from "@/server/auth/roles";
-import { getPool } from "@/server/db/pool";
+import { getDb } from "@/server/db/client";
+import { ensureDatabase } from "@/server/db/migrate";
+import { organizationMember, user } from "@/server/db/schema";
 import type { Role } from "@/shared/contracts/me";
 import type { CreateMemberRequest, Member } from "@/shared/contracts/organization";
 
@@ -22,25 +24,32 @@ export class OrganizationError extends Error {
   }
 }
 
-type MemberRow = { user_id: string; username: string; roles: string[] };
+const memberColumns = {
+  userId: organizationMember.userId,
+  username: sql<string>`coalesce(${user.username}, ${user.name})`,
+  roles: organizationMember.roles,
+};
 
-const toMember = (r: MemberRow): Member => ({ userId: r.user_id, username: r.username, roles: sortRoles(r.roles) });
-
-const MEMBER_SELECT = `SELECT m.user_id, coalesce(u.username, u.name) AS username, m.roles
-  FROM organization_member m JOIN "user" u ON u.id = m.user_id`;
+const toMember = (r: { userId: string; username: string; roles: string[] }): Member => ({
+  userId: r.userId,
+  username: r.username,
+  roles: sortRoles(r.roles),
+});
 
 export async function listMembers(organizationId: string): Promise<Member[]> {
-  await ensureOrganizationSchema();
-  const { rows } = await getPool().query<MemberRow>(
-    `${MEMBER_SELECT} WHERE m.organization_id = $1 ORDER BY username`,
-    [organizationId],
-  );
+  await ensureDatabase();
+  const rows = await getDb()
+    .select(memberColumns)
+    .from(organizationMember)
+    .innerJoin(user, eq(user.id, organizationMember.userId))
+    .where(eq(organizationMember.organizationId, organizationId))
+    .orderBy(asc(memberColumns.username));
   return rows.map(toMember);
 }
 
 /** Creates a login (username + password) that belongs to `organizationId` with the given roles. */
 export async function createMember(organizationId: string, input: CreateMemberRequest): Promise<Member> {
-  await ensureOrganizationSchema();
+  await ensureDatabase();
   const login = input.username.toLowerCase();
 
   let userId: string;
@@ -57,14 +66,12 @@ export async function createMember(organizationId: string, input: CreateMemberRe
     throw err;
   }
 
+  const db = getDb();
   try {
-    await getPool().query(
-      "INSERT INTO organization_member (organization_id, user_id, roles) VALUES ($1, $2, $3)",
-      [organizationId, userId, sortRoles(input.roles)],
-    );
+    await db.insert(organizationMember).values({ organizationId, userId, roles: sortRoles(input.roles) });
   } catch (err) {
     // Without a membership the account would get an organization of its own on first sign-in.
-    await getPool().query('DELETE FROM "user" WHERE id = $1', [userId]);
+    await db.delete(user).where(eq(user.id, userId));
     throw err;
   }
   return { userId, username: login, roles: sortRoles(input.roles) };
@@ -72,39 +79,31 @@ export async function createMember(organizationId: string, input: CreateMemberRe
 
 /** Replaces a member's roles. Refuses to leave the organization without an approver. */
 export async function updateMemberRoles(organizationId: string, userId: string, roles: Role[]): Promise<Member> {
-  await ensureOrganizationSchema();
-  const client = await getPool().connect();
-  try {
-    await client.query("BEGIN");
+  await ensureDatabase();
+  return getDb().transaction(async (tx) => {
     // Lock the organization's members so two approvers can't demote each other at the same time.
-    const { rows } = await client.query<{ user_id: string; roles: string[] }>(
-      "SELECT user_id, roles FROM organization_member WHERE organization_id = $1 FOR UPDATE",
-      [organizationId],
-    );
-    if (!rows.some((r) => r.user_id === userId)) {
+    const members = await tx
+      .select({ userId: organizationMember.userId, roles: organizationMember.roles })
+      .from(organizationMember)
+      .where(eq(organizationMember.organizationId, organizationId))
+      .for("update");
+    if (!members.some((m) => m.userId === userId)) {
       throw new OrganizationError(404, "No such member in your organization");
     }
-    const approversAfter = rows.filter((r) =>
-      r.user_id === userId ? roles.includes("approver") : r.roles.includes("approver"),
+    const approversAfter = members.filter((m) =>
+      m.userId === userId ? roles.includes("approver") : m.roles.includes("approver"),
     ).length;
     if (approversAfter === 0) {
       throw new OrganizationError(409, "The organization must keep at least one approver");
     }
-    await client.query("UPDATE organization_member SET roles = $1 WHERE organization_id = $2 AND user_id = $3", [
-      sortRoles(roles),
-      organizationId,
-      userId,
-    ]);
-    const { rows: updated } = await client.query<MemberRow>(
-      `${MEMBER_SELECT} WHERE m.organization_id = $1 AND m.user_id = $2`,
-      [organizationId, userId],
-    );
-    await client.query("COMMIT");
-    return toMember(updated[0]!);
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
+
+    const memberOf = and(eq(organizationMember.organizationId, organizationId), eq(organizationMember.userId, userId));
+    await tx.update(organizationMember).set({ roles: sortRoles(roles) }).where(memberOf);
+    const [updated] = await tx
+      .select(memberColumns)
+      .from(organizationMember)
+      .innerJoin(user, eq(user.id, organizationMember.userId))
+      .where(memberOf);
+    return toMember(updated!);
+  });
 }

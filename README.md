@@ -54,6 +54,9 @@ Put your Gemini API key in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.e
 | `pnpm db:psql` | psql shell in the local DB |
 | `pnpm db:reset` | Delete all local DB data and start fresh |
 | `pnpm db:logs` | Follow the local Postgres logs |
+| `pnpm db:generate` | Create a SQL migration from schema changes (`src/server/db/schema/` → `drizzle/`) |
+| `pnpm db:migrate` | Apply pending migrations (the app also does it on first use) |
+| `pnpm db:studio` | Browse the database in Drizzle Studio |
 | `pnpm bootstrap` | First-time setup: install, start Postgres, `data:fetch` (if files missing), `data:import` |
 | `pnpm data:fetch` | Download the static Valio files into `data/valio/` |
 | `pnpm data:import` | Load `data/valio/` into Postgres (run after `data:fetch`; safe to repeat) |
