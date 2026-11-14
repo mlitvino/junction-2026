@@ -30,6 +30,10 @@ Every file here starts with `import "server-only";`. See the root AGENTS.md for 
 - The purchasing agent runs on **Gemini** (`google/gemini-3.8-flash`) when `GOOGLE_GENERATIVE_AI_API_KEY` is set, and on a **mock model** (fixed answer) when it isn't, so CI, builds and frontend work need no key. Mastra reads the key from the environment itself; never pass it in code.
 - To expose an agent to the frontend: contract in `shared/contracts` (needs approval) → service in `server/services` → route folder in `server/api/routes/<name>/`.
 
+## Preferences
+
+Model, rules and endpoints: root AGENTS.md, "Preferences". Code: layers table `preference_layer` (`server/db/schema/preferences.ts`, sparse `settings` jsonb + `locked`), `server/services/preferences.ts` (`resolvePreferences` is pure; `updateLayer` runs in a transaction under a per-organization advisory lock and validates the effective sets of both roles), routes in `server/api/routes/preferences/`. To add a setting: add it to `PreferencesSchema` (shared contract, needs agreement) and `DEFAULT_PREFERENCES`; no migration needed (settings are JSON).
+
 ## Valio data
 
 Two folders with different jobs:
