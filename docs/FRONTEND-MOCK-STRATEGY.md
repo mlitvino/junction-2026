@@ -259,6 +259,8 @@ Use visually labelled **demo identities** only in mock mode:
 
 A small demo identity selector may appear inside the account menu in mock mode. In connected mode it disappears and roles come only from `/api/v1/auth/me` (HttpOnly cookie). This selector is for UI testing and is **not** a security boundary. Do not issue real credentials or persist them in the frontend.
 
+> **Implemented (connected mode):** identity comes from the existing `GET /api/me` (not `/api/v1/auth/me`): username, organization and roles `buyer`/`approver`, mapped to `BUYER`/`APPROVER` in `src/client/viewer.ts`. There is no admin role on the backend: approvers manage AI settings, so admin screens are shown to approvers. The procurement flow still runs on the local simulator in connected mode (`mode: "simulated"`), acting for the signed-in user with their real roles and storing its data per user (`aimo-procurement-demo-v1:<userId>` in sessionStorage).
+
 Show permission-denied UX on forbidden actions; disabled buttons and hidden navigation are helpful but **not a substitute** for server authorization.
 
 ## 9. Visual behavior and screen map
