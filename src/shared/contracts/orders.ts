@@ -1,61 +1,27 @@
 import { z } from "zod";
 
+import { PriceAvailabilityInquirySchema, StockStatusSchema } from "./catalog";
 import { ExtractedProductItemSchema } from "./extract";
+import {
+  AgentGuardrailsSchema,
+  CustomerPreferencesSchema,
+  GuardrailEvaluationSchema,
+  type CustomerPreferences,
+  type NutritionPreferences,
+  NutritionPreferencesSchema,
+  type NutritionProfile,
+  NutritionProfileSchema,
+  PartialAgentGuardrailsSchema,
+} from "./guardrails";
 
-/** Nutritional profile per 100g */
-export const NutritionProfileSchema = z.object({
-  caloriesPer100g: z.number().meta({ description: "Energy in kcal per 100g.", example: 340 }),
-  fatPer100g: z.number().meta({ description: "Fat in grams per 100g.", example: 28 }),
-  sugarPer100g: z.number().meta({ description: "Sugars in grams per 100g.", example: 0.5 }),
-  saltPer100g: z.number().meta({ description: "Salt in grams per 100g.", example: 1.4 }),
-  proteinPer100g: z.number().meta({ description: "Protein in grams per 100g.", example: 23 }),
-});
-
-export type NutritionProfile = z.infer<typeof NutritionProfileSchema>;
-
-/** Customer nutritional constraints (per 100g) */
-export const NutritionPreferencesSchema = z.object({
-  maxCaloriesPer100g: z.number().optional().meta({
-    description: "Maximum allowed kcal per 100g.",
-    example: 450,
-  }),
-  maxFatPer100g: z.number().optional().meta({
-    description: "Maximum allowed fat (g) per 100g.",
-    example: 38,
-  }),
-  maxSugarPer100g: z.number().optional().meta({
-    description: "Maximum allowed sugar (g) per 100g.",
-    example: 15,
-  }),
-  maxSaltPer100g: z.number().optional().meta({
-    description: "Maximum allowed salt (g) per 100g.",
-    example: 2.5,
-  }),
-  minProteinPer100g: z.number().optional().meta({
-    description: "Minimum required protein (g) per 100g.",
-    example: 5,
-  }),
-});
-
-export type NutritionPreferences = z.infer<typeof NutritionPreferencesSchema>;
-
-/** Customer dietary, allergen, and nutritional preferences */
-export const CustomerPreferencesSchema = z.object({
-  dietaryRestrictions: z.array(z.string()).meta({
-    description:
-      "Required dietary classifications (e.g., 'vegetarian', 'lactose-free', 'gluten-free').",
-    example: ["vegetarian", "gluten-free"],
-  }),
-  excludedAllergens: z.array(z.string()).meta({
-    description: "Allergens that must not be present in selected products.",
-    example: ["peanuts", "tree-nuts", "soy", "crustaceans"],
-  }),
-  nutrition: NutritionPreferencesSchema.meta({
-    description: "Nutritional thresholds per 100g.",
-  }),
-});
-
-export type CustomerPreferences = z.infer<typeof CustomerPreferencesSchema>;
+export {
+  CustomerPreferencesSchema,
+  NutritionPreferencesSchema,
+  NutritionProfileSchema,
+  type CustomerPreferences,
+  type NutritionPreferences,
+  type NutritionProfile,
+};
 
 /** Historical order entry used for sorting by previously ordered product and brand */
 export const PreviousOrderRecordSchema = z.object({
@@ -79,6 +45,13 @@ export const CandidateProductSchema = z.object({
   vendorName: z.string().meta({ example: "Valio Oy" }),
   salesUnit: z.string().meta({ example: "KG" }),
   unitPriceEur: z.number().meta({ example: 5.4 }),
+  unitPriceInclVatEur: z.number().optional().meta({ example: 6.16 }),
+  vatRatePct: z.number().nullable().optional().meta({ example: 14 }),
+  availableQuantity: z.number().nullable().optional().meta({ example: 500 }),
+  stockStatus: StockStatusSchema.optional(),
+  earliestAvailableDate: z.string().nullable().optional().meta({ example: "2026-11-16" }),
+  deliveryReliability: z.number().min(0).max(1).nullable().optional().meta({ example: 0.98 }),
+  co2PerKg: z.number().nullable().optional().meta({ example: 4.8 }),
   dietaryTags: z.array(z.string()).meta({ example: ["vegetarian", "gluten-free", "lactose-free"] }),
   allergens: z.array(z.string()).meta({ example: ["milk"] }),
   nutrition: NutritionProfileSchema,
@@ -140,12 +113,31 @@ export const OrderLineItemSchema = z.object({
   productId: z.string().meta({ example: "460101" }),
   productName: z.string().meta({ example: "Valio Oltermanni Creamy Cheese 1kg" }),
   brand: z.string().nullable().meta({ example: "Valio" }),
+  category: z.string().meta({ example: "CHEESE" }),
   productType: z.string().meta({ example: "Cheese" }),
   requestedProductName: z.string().meta({ example: "Creamy cheese" }),
   quantity: z.number().meta({ example: 420 }),
   unit: z.string().meta({ example: "KG" }),
-  unitPriceEur: z.number().meta({ example: 5.4 }),
-  lineTotalEur: z.number().meta({ example: 2268 }),
+  unitPriceEur: z.number().meta({
+    description: "Fixed unit price excluding VAT in EUR confirmed by inquiry.",
+    example: 5.4,
+  }),
+  unitPriceInclVatEur: z.number().meta({
+    description: "Fixed unit price including VAT in EUR confirmed by inquiry.",
+    example: 6.16,
+  }),
+  vatRatePct: z.number().meta({ example: 14 }),
+  lineTotalEur: z.number().meta({
+    description: "Line total excluding VAT in EUR.",
+    example: 2268,
+  }),
+  lineTotalInclVatEur: z.number().meta({
+    description: "Line total including VAT in EUR.",
+    example: 2585.52,
+  }),
+  availableQuantity: z.number().nullable().meta({ example: 500 }),
+  stockStatus: StockStatusSchema,
+  earliestAvailableDate: z.string().nullable().meta({ example: "2026-11-16" }),
   nameMatchScore: z.number().meta({ example: 0.85 }),
   previouslyOrderedProduct: z.boolean(),
   previouslyOrderedBrand: z.boolean(),
@@ -174,19 +166,166 @@ export const BudgetComparisonSchema = z.object({
 
 export type BudgetComparison = z.infer<typeof BudgetComparisonSchema>;
 
-/** Created order object */
-export const CreatedOrderSchema = z.object({
-  orderId: z.string().meta({ example: "ORD-20261114-001" }),
-  status: z.enum(["confirmed", "pending_approval", "unfulfilled"]).meta({
+/** Order lifecycle statuses */
+export const OrderStatusSchema = z
+  .enum(["confirmed", "pending_approval", "approved", "rejected", "checked_out", "unfulfilled"])
+  .meta({
     description:
-      "'confirmed' when within budget, 'pending_approval' when total exceeds customer budget, 'unfulfilled' when no matching products remain.",
+      "'confirmed': authorized within agent permissions/budget and ready for checkout; " +
+      "'pending_approval': paused awaiting human approver sign-off or order edits; " +
+      "'approved': explicitly signed off by a human approver and ready for checkout; " +
+      "'rejected': rejected by a human approver; " +
+      "'checked_out': submitted to Valio Aimo with an issued receipt; " +
+      "'unfulfilled': no valid products matched the request.",
     example: "confirmed",
+  });
+
+export type OrderStatus = z.infer<typeof OrderStatusSchema>;
+
+/** Human approval state attached to an order */
+export const OrderApprovalSchema = z.object({
+  status: z.enum(["pending", "approved", "rejected"]),
+  requiredReasons: z.array(z.string()).meta({
+    description: "Reasons why human approval was requested.",
   }),
+  decidedAt: z.iso.datetime().nullable(),
+  decidedByUserId: z.string().nullable(),
+  decidedByName: z.string().nullable(),
+  comment: z.string().nullable(),
+});
+
+export type OrderApproval = z.infer<typeof OrderApprovalSchema>;
+
+/** Line item on an issued checkout receipt */
+export const ReceiptLineItemSchema = z.object({
+  productId: z.string().meta({ example: "460101" }),
+  productName: z.string().meta({ example: "Valio Oltermanni Creamy Cheese 1kg" }),
+  quantity: z.number().meta({ example: 420 }),
+  unit: z.string().meta({ example: "KG" }),
+  fixedUnitPriceExclVat: z.number().meta({ example: 5.4 }),
+  vatRatePct: z.number().meta({ example: 14 }),
+  lineTotalExclVat: z.number().meta({ example: 2268 }),
+  lineVatAmount: z.number().meta({ example: 317.52 }),
+  lineTotalInclVat: z.number().meta({ example: 2585.52 }),
+  stockStatus: StockStatusSchema,
+});
+
+export type ReceiptLineItem = z.infer<typeof ReceiptLineItemSchema>;
+
+/** Official receipt returned after order checkout */
+export const OrderReceiptSchema = z.object({
+  receiptId: z.string().meta({ example: "RCP-20261114-A1B2C3" }),
+  orderId: z.string().meta({ example: "ORD-8A7B6C5D" }),
+  supplierConfirmationId: z.string().meta({ example: "VALIO-CONF-948271" }),
+  issuedAt: z.iso.datetime(),
+  inquiryId: z.string().nullable().meta({
+    description: "Reference to the fixed-price inquiry quote honored at checkout.",
+    example: "INQ-9F3A1B2C",
+  }),
+  deliveryDate: z.iso.date().meta({ example: "2026-11-16" }),
+  buyerOrganizationId: z.string().nullable(),
+  checkedOutByName: z.string().nullable(),
+  customerReference: z.string().nullable(),
+  deliveryNotes: z.string().nullable(),
+  authorizationSummary: z.string().meta({
+    example: "Authorized autonomously within agent spending limit (2500 EUR).",
+  }),
+  paymentTerms: z.string().meta({ example: "Net 14 days (Valio Aimo B2B Fixed-Price Quote)" }),
+  currency: z.literal("EUR"),
+  subtotalExclVatEur: z.number().meta({ example: 2268 }),
+  totalVatEur: z.number().meta({ example: 317.52 }),
+  totalInclVatEur: z.number().meta({ example: 2585.52 }),
+  lines: z.array(ReceiptLineItemSchema),
+});
+
+export type OrderReceipt = z.infer<typeof OrderReceiptSchema>;
+
+/** Actor category in the procurement audit trail */
+export const AuditActorTypeSchema = z.enum(["agent", "buyer", "approver", "system"]);
+
+export type AuditActorType = z.infer<typeof AuditActorTypeSchema>;
+
+/** Event types recorded in the human-readable procurement audit trail */
+export const AuditEventTypeSchema = z.enum([
+  "prompt_extracted",
+  "catalog_searched",
+  "preferences_filtered",
+  "candidates_ranked",
+  "price_availability_inquired",
+  "guardrails_evaluated",
+  "order_created",
+  "approval_requested",
+  "order_modified",
+  "order_approved",
+  "order_rejected",
+  "order_checked_out",
+]);
+
+export type AuditEventType = z.infer<typeof AuditEventTypeSchema>;
+
+/** Human-readable and machine-structured audit trail entry */
+export const AuditTrailEventSchema = z.object({
+  id: z.string().meta({ example: "AUD-1A2B3C4D" }),
+  orderId: z.string().meta({ example: "ORD-8A7B6C5D" }),
+  timestamp: z.iso.datetime(),
+  actorType: AuditActorTypeSchema,
+  actorId: z.string().nullable(),
+  actorName: z.string().nullable(),
+  eventType: AuditEventTypeSchema,
+  summary: z.string().meta({
+    description: "Human-readable explanation of what happened and why.",
+    example:
+      "Selected 'Valio Oltermanni Creamy Cheese 1kg' (460101) at 5.40 EUR/KG after filtering 3 non-compliant candidates and ranking by previous order history.",
+  }),
+  details: z.record(z.string(), z.unknown()).meta({
+    description: "Structured audit evidence for verification.",
+  }),
+});
+
+export type AuditTrailEvent = z.infer<typeof AuditTrailEventSchema>;
+
+/** Suggested alternative candidate for swapping a line item in Step 8 */
+export const SuggestedAlternativeSchema = z.object({
+  forProductId: z.string().meta({ example: "460101" }),
+  forProductName: z.string().meta({ example: "Valio Oltermanni Creamy Cheese 1kg" }),
+  alternatives: z.array(CandidateProductSchema).meta({
+    description:
+      "Preference-compliant alternative products that can replace this line via PATCH /api/orders/{orderId}.",
+  }),
+});
+
+export type SuggestedAlternative = z.infer<typeof SuggestedAlternativeSchema>;
+
+/** Created / persisted procurement order object */
+export const CreatedOrderSchema = z.object({
+  orderId: z.string().meta({ example: "ORD-8A7B6C5D" }),
+  organizationId: z.string().nullable().meta({ example: null }),
+  createdByUserId: z.string().nullable().meta({ example: null }),
+  status: OrderStatusSchema,
   createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  deliveryDate: z.iso.date().meta({ example: "2026-11-16" }),
   lines: z.array(OrderLineItemSchema),
-  totalPriceEur: z.number().meta({ example: 2268 }),
+  totalPriceEur: z.number().meta({
+    description: "Total order amount excluding VAT in EUR.",
+    example: 2268,
+  }),
+  totalPriceInclVatEur: z.number().meta({
+    description: "Total order amount including VAT in EUR.",
+    example: 2585.52,
+  }),
   currency: z.literal("EUR"),
   budgetComparison: BudgetComparisonSchema,
+  guardrailsUsed: AgentGuardrailsSchema,
+  guardrailEvaluation: GuardrailEvaluationSchema,
+  inquiry: PriceAvailabilityInquirySchema.nullable(),
+  approval: OrderApprovalSchema.nullable(),
+  receipt: OrderReceiptSchema.nullable(),
+  customerReviewPrompt: z.string().meta({
+    description:
+      "Human-readable prompt explaining next actions (approve, swap product X for Y, or checkout).",
+  }),
+  auditTrail: z.array(AuditTrailEventSchema),
 });
 
 export type CreatedOrder = z.infer<typeof CreatedOrderSchema>;
@@ -197,16 +336,26 @@ export const CreateOrderFromPromptRequestSchema = z.object({
     description: "Free-form natural-language purchasing request from the user.",
     example: "I want to buy 420 kg of creamy cheese",
   }),
+  deliveryDate: z.iso.date().optional().meta({
+    description: "Desired delivery date (YYYY-MM-DD). Defaults to today's date.",
+    example: "2026-11-16",
+  }),
   preferences: CustomerPreferencesSchema.optional().meta({
-    description: "Optional customer preferences override (defaults to mock customer preferences).",
+    description: "Optional customer preferences override (defaults to saved org/mock preferences).",
   }),
   budgetEur: z.number().positive().optional().meta({
-    description:
-      "Optional customer budget in EUR override (defaults to mock customer budget of 2500 EUR).",
+    description: "Optional customer budget in EUR override.",
     example: 2500,
   }),
+  guardrails: PartialAgentGuardrailsSchema.optional().meta({
+    description: "Optional agent permission guardrails override.",
+  }),
   previousOrders: z.array(PreviousOrderRecordSchema).optional().meta({
-    description: "Optional previous orders override (defaults to mock historical order data).",
+    description: "Optional previous orders override (defaults to historical order data).",
+  }),
+  requireApproval: z.boolean().optional().meta({
+    description:
+      "If true, pauses the created order in pending_approval so the user must explicitly approve or modify before checkout.",
   }),
 });
 
@@ -219,7 +368,160 @@ export const CreateOrderFromPromptResponseSchema = z.object({
   preferencesUsed: CustomerPreferencesSchema,
   previousOrdersUsed: z.array(PreviousOrderRecordSchema),
   pipeline: z.array(ItemProcurementTraceSchema),
+  suggestedAlternatives: z.array(SuggestedAlternativeSchema),
   order: CreatedOrderSchema,
 });
 
 export type CreateOrderFromPromptResponse = z.infer<typeof CreateOrderFromPromptResponseSchema>;
+
+/** GET /api/orders — response body */
+export const OrderListResponseSchema = z.object({
+  orders: z.array(CreatedOrderSchema),
+});
+
+export type OrderListResponse = z.infer<typeof OrderListResponseSchema>;
+
+/** GET /api/orders/{orderId} — response body */
+export const OrderDetailResponseSchema = z.object({
+  prompt: z.string(),
+  extractedItems: z.array(ExtractedProductItemSchema),
+  preferencesUsed: CustomerPreferencesSchema,
+  previousOrdersUsed: z.array(PreviousOrderRecordSchema),
+  pipeline: z.array(ItemProcurementTraceSchema),
+  suggestedAlternatives: z.array(SuggestedAlternativeSchema),
+  order: CreatedOrderSchema,
+});
+
+export type OrderDetailResponse = z.infer<typeof OrderDetailResponseSchema>;
+
+/** Product swap instruction (change product X to product Y) */
+export const OrderProductReplacementSchema = z.object({
+  fromProductId: z.string().trim().min(1).meta({
+    description: "Existing product ID in the order to replace.",
+    example: "460101",
+  }),
+  toProductId: z.string().trim().min(1).meta({
+    description: "Replacement product ID to use instead.",
+    example: "460301",
+  }),
+  quantity: z.number().positive().optional().meta({
+    description: "Optional new quantity; keeps the existing line's quantity when omitted.",
+    example: 420,
+  }),
+});
+
+export type OrderProductReplacement = z.infer<typeof OrderProductReplacementSchema>;
+
+/** Quantity change instruction on an existing order line */
+export const OrderQuantityUpdateSchema = z.object({
+  productId: z.string().trim().min(1).meta({ example: "460101" }),
+  quantity: z.number().positive().meta({ example: 300 }),
+});
+
+export type OrderQuantityUpdate = z.infer<typeof OrderQuantityUpdateSchema>;
+
+/** Add line instruction on an existing order */
+export const OrderAddItemSchema = z.object({
+  productId: z.string().trim().min(1).meta({ example: "460202" }),
+  quantity: z.number().positive().meta({ example: 50 }),
+});
+
+export type OrderAddItem = z.infer<typeof OrderAddItemSchema>;
+
+/** PATCH /api/orders/{orderId} — modify order lines via structured instructions or natural language */
+export const ModifyOrderRequestSchema = z.object({
+  prompt: z.string().trim().min(1).optional().meta({
+    description:
+      "Optional natural-language modification request, e.g. 'Change product 460101 to 460301 and set quantity to 350 kg'.",
+    example: "Change Valio Oltermanni to Arla Creamy Havarti",
+  }),
+  replacements: z.array(OrderProductReplacementSchema).optional().meta({
+    description: "Explicit product X -> product Y replacements.",
+  }),
+  quantityUpdates: z.array(OrderQuantityUpdateSchema).optional().meta({
+    description: "Explicit quantity adjustments for existing order lines.",
+  }),
+  removeProductIds: z.array(z.string().trim().min(1)).optional().meta({
+    description: "Product IDs to remove from the order.",
+  }),
+  addItems: z.array(OrderAddItemSchema).optional().meta({
+    description: "Additional product IDs and quantities to add to the order.",
+  }),
+  deliveryDate: z.iso.date().optional().meta({
+    description: "Optional updated delivery date (re-runs fixed-price & availability inquiry).",
+  }),
+  allowPreferenceOverride: z.boolean().optional().meta({
+    description:
+      "If true, permits swapping in a product even if it violates saved dietary/allergen/nutrition preferences (forces pending_approval).",
+    example: false,
+  }),
+});
+
+export type ModifyOrderRequest = z.infer<typeof ModifyOrderRequestSchema>;
+
+/** PATCH /api/orders/{orderId} — response body */
+export const ModifyOrderResponseSchema = z.object({
+  appliedChangesSummary: z.array(z.string()).meta({
+    description: "Human-readable descriptions of every modification applied to the order.",
+  }),
+  suggestedAlternatives: z.array(SuggestedAlternativeSchema),
+  order: CreatedOrderSchema,
+});
+
+export type ModifyOrderResponse = z.infer<typeof ModifyOrderResponseSchema>;
+
+/** POST /api/orders/{orderId}/approval — human sign-off or rejection */
+export const ApproveOrderRequestSchema = z.object({
+  decision: z.enum(["approve", "reject"]).meta({
+    description: "'approve' authorizes the order for checkout; 'reject' cancels it.",
+    example: "approve",
+  }),
+  comment: z.string().trim().max(500).optional().meta({
+    description: "Optional note from the human approver recorded in the audit trail.",
+    example: "Approved extra cheese volume for weekend catering event.",
+  }),
+  approverName: z.string().trim().max(120).optional().meta({
+    description: "Optional display name when approving without a session cookie.",
+    example: "Head Chef Maria",
+  }),
+});
+
+export type ApproveOrderRequest = z.infer<typeof ApproveOrderRequestSchema>;
+
+/** POST /api/orders/{orderId}/approval — response body */
+export const ApproveOrderResponseSchema = z.object({
+  order: CreatedOrderSchema,
+});
+
+export type ApproveOrderResponse = z.infer<typeof ApproveOrderResponseSchema>;
+
+/** POST /api/orders/{orderId}/checkout — submit authorized order and issue receipt */
+export const CheckoutOrderRequestSchema = z.object({
+  customerReference: z.string().trim().max(120).optional().meta({
+    description: "Optional PO number or kitchen reference printed on the receipt.",
+    example: "PO-2026-KITCHEN-42",
+  }),
+  deliveryNotes: z.string().trim().max(500).optional().meta({
+    description: "Optional unloading or delivery instructions.",
+    example: "Deliver to loading dock B before 09:00.",
+  }),
+});
+
+export type CheckoutOrderRequest = z.infer<typeof CheckoutOrderRequestSchema>;
+
+/** POST /api/orders/{orderId}/checkout — response body */
+export const CheckoutOrderResponseSchema = z.object({
+  order: CreatedOrderSchema,
+  receipt: OrderReceiptSchema,
+});
+
+export type CheckoutOrderResponse = z.infer<typeof CheckoutOrderResponseSchema>;
+
+/** GET /api/orders/{orderId}/audit — response body */
+export const OrderAuditResponseSchema = z.object({
+  orderId: z.string(),
+  status: OrderStatusSchema,
+  auditTrail: z.array(AuditTrailEventSchema),
+});
+
+export type OrderAuditResponse = z.infer<typeof OrderAuditResponseSchema>;

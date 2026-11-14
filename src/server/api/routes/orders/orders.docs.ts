@@ -1,14 +1,28 @@
 import "server-only";
 
-import { createRoute } from "@hono/zod-openapi";
+import { createRoute, z } from "@hono/zod-openapi";
 
 import { ErrorResponseSchema } from "@/shared/contracts/errors";
 import {
+  ApproveOrderRequestSchema,
+  ApproveOrderResponseSchema,
+  CheckoutOrderRequestSchema,
+  CheckoutOrderResponseSchema,
   CreateOrderFromPromptRequestSchema,
   CreateOrderFromPromptResponseSchema,
+  ModifyOrderRequestSchema,
+  ModifyOrderResponseSchema,
+  OrderAuditResponseSchema,
+  OrderDetailResponseSchema,
+  OrderListResponseSchema,
+  OrderReceiptSchema,
 } from "@/shared/contracts/orders";
 
-// OpenAPI definitions for prompt-driven procurement order routes. Handlers live in ./orders.ts.
+// OpenAPI definitions for procurement order lifecycle routes. Handlers live in ./orders.ts.
+
+const orderIdParams = z.object({
+  orderId: z.string().min(1).meta({ example: "ORD-8A7B6C5D" }),
+});
 
 export const postOrdersRoute = createRoute({
   method: "post",
@@ -16,10 +30,10 @@ export const postOrdersRoute = createRoute({
   tags: ["Orders"],
   summary: "Create a procurement order from a free-text user prompt",
   description:
-    "Extracts product items from the user prompt, fetches candidate products by productType, " +
-    "scores and sorts candidates by productName match, filters out products violating customer " +
-    "preferences (dietary restrictions, allergens, nutrition), re-sorts by previous order history " +
-    "(product and brand), compares total price against the customer budget, and creates an order.",
+    "Runs the end-to-end procurement pipeline: extracts items from prompt, searches products by " +
+    "productType, scores by productName, filters by dietary/allergen/nutrition preferences, ranks " +
+    "by previous order history, executes a fixed-price & availability inquiry, evaluates budget and " +
+    "agent permission guardrails, logs a human-readable audit trail, and creates the order.",
   request: {
     body: {
       required: true,
@@ -30,11 +44,199 @@ export const postOrdersRoute = createRoute({
   },
   responses: {
     200: {
-      description: "Created order with full procurement pipeline trace and budget comparison.",
+      description: "Created order with pipeline trace, inquiry quote, guardrails, and audit trail.",
       content: { "application/json": { schema: CreateOrderFromPromptResponseSchema } },
     },
     500: {
       description: "Order creation failed.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const listOrdersRoute = createRoute({
+  method: "get",
+  path: "/orders",
+  tags: ["Orders"],
+  summary: "List procurement orders",
+  description:
+    "Lists procurement orders ordered newest-first (scoped to the caller's organization when signed in).",
+  responses: {
+    200: {
+      description: "List of orders.",
+      content: { "application/json": { schema: OrderListResponseSchema } },
+    },
+  },
+});
+
+export const getOrderDetailRoute = createRoute({
+  method: "get",
+  path: "/orders/{orderId}",
+  tags: ["Orders"],
+  summary: "Get full order details, candidate alternatives, inquiry quote, and audit trail",
+  request: {
+    params: orderIdParams,
+  },
+  responses: {
+    200: {
+      description: "Order detail with procurement trace and suggested product swaps.",
+      content: { "application/json": { schema: OrderDetailResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const patchOrderRoute = createRoute({
+  method: "patch",
+  path: "/orders/{orderId}",
+  tags: ["Orders"],
+  summary:
+    "Modify an order (swap product X for product Y, adjust quantities, or natural-language edit)",
+  description:
+    "Applies customer changes to an un-submitted order (e.g. swapping product X to product Y or " +
+    "changing quantities), validates preferences, re-runs fixed-price & availability inquiry, " +
+    "re-evaluates guardrails, and records the change in the audit trail.",
+  request: {
+    params: orderIdParams,
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: ModifyOrderRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated order with refreshed inquiry quote and guardrail evaluation.",
+      content: { "application/json": { schema: ModifyOrderResponseSchema } },
+    },
+    400: {
+      description: "Invalid replacement, unknown product, or preference violation.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "Order is already checked out or rejected.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const approveOrderRoute = createRoute({
+  method: "post",
+  path: "/orders/{orderId}/approval",
+  tags: ["Orders"],
+  summary: "Approve or reject an order awaiting human sign-off",
+  description:
+    "Human approval workflow for orders paused in 'pending_approval' by budget or guardrail checks. " +
+    "When signed in, requires the 'approver' role in the order's organization.",
+  request: {
+    params: orderIdParams,
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: ApproveOrderRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated order with recorded approval or rejection decision.",
+      content: { "application/json": { schema: ApproveOrderResponseSchema } },
+    },
+    403: {
+      description: "Signed-in user lacks the 'approver' role.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "Order cannot transition approval state.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const checkoutOrderRoute = createRoute({
+  method: "post",
+  path: "/orders/{orderId}/checkout",
+  tags: ["Orders"],
+  summary: "Checkout an authorized order and issue an itemized fixed-price receipt",
+  description:
+    "Submits an authorized ('confirmed' or 'approved') order to Valio Aimo using confirmed fixed " +
+    "inquiry prices, transitions status to 'checked_out', and returns the receipt.",
+  request: {
+    params: orderIdParams,
+    body: {
+      required: false,
+      content: {
+        "application/json": { schema: CheckoutOrderRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Checked-out order and official receipt.",
+      content: { "application/json": { schema: CheckoutOrderResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "Order requires human approval or is not eligible for checkout.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const getOrderReceiptRoute = createRoute({
+  method: "get",
+  path: "/orders/{orderId}/receipt",
+  tags: ["Orders"],
+  summary: "Get the issued receipt for a checked-out order",
+  request: {
+    params: orderIdParams,
+  },
+  responses: {
+    200: {
+      description: "Issued Valio Aimo order receipt.",
+      content: { "application/json": { schema: OrderReceiptSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    409: {
+      description: "Order has not been checked out yet.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const getOrderAuditRoute = createRoute({
+  method: "get",
+  path: "/orders/{orderId}/audit",
+  tags: ["Orders"],
+  summary: "Get the human-readable and machine-verifiable audit trail for an order",
+  request: {
+    params: orderIdParams,
+  },
+  responses: {
+    200: {
+      description: "Audit trail events for the order.",
+      content: { "application/json": { schema: OrderAuditResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

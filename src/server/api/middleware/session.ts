@@ -3,9 +3,22 @@ import "server-only";
 import { createMiddleware } from "hono/factory";
 
 import { getSessionUser } from "@/server/auth/session";
-import type { Role } from "@/shared/contracts/me";
+import type { Role, SessionUser } from "@/shared/contracts/me";
 
 import type { ApiEnv } from "../router";
+
+/**
+ * Resolves the signed-in user (with organization and roles) when a session cookie and database
+ * are present, or returns null for unauthenticated / external agent requests.
+ */
+export async function resolveOptionalUser(headers: Headers): Promise<SessionUser | null> {
+  if (!process.env.DATABASE_URL || !headers.get("cookie")) return null;
+  try {
+    return await getSessionUser(headers);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Opt-in session check: the API is open by default (for now). Add this to a router only for
