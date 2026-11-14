@@ -56,7 +56,8 @@ sudo chown "$USER": ~/junction-2026/certs/*.pem && chmod 600 ~/junction-2026/cer
 | Revert    | `git revert <commit> && git push`                                    | 2–4 min |
 
 Tags: Packages page or `git log --oneline`. The next push returns the server to `latest`.
-The database is not rolled back, so migrations must be additive only.
+The database is not rolled back, so migrations must be additive only. Exception: migration 0010 dropped the
+retired procurement tables, so don't roll back to an image older than commit `9077a91`.
 
 ## Maintenance
 

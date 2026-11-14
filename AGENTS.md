@@ -145,10 +145,10 @@ The organization's single set of rules for the agent and the approval flow: prod
 
 ## Database (Drizzle)
 
-- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `purchasing.ts` incl. `audit_event`, `procurement.ts`: inventory and recipes; its `procurement_order`, `procurement_audit_event` and `organization_procurement_settings` tables are retired and unused, kept only because migrations are additive). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
+- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `purchasing.ts` incl. `audit_event`, `procurement.ts`: inventory and recipes; the retired `procurement_order`, `procurement_audit_event` and `organization_procurement_settings` tables were dropped in migration 0010). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
 - Changing the schema: edit `src/server/db/schema/` → `pnpm db:generate` → review the SQL in `drizzle/` → commit both. Never edit a migration that has been applied anywhere; add a new one. Never rename or renumber migrations when merging branches: Drizzle applies only migrations newer than the last applied one, so a renumbered one is silently skipped on databases that ran the old order.
 - Migrations run automatically: `ensureDatabase()` (`src/server/db/migrate.ts`) applies pending ones before the first query (locally, in scripts, in production). Outside production it re-reads `drizzle/meta/_journal.json` (at most every 2 s) and applies new migrations while the dev server runs.
-- Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback.
+- Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback. The one planned exception is `0010_drop_retired_procurement` (tables unused since `9077a91`): images older than that commit can no longer be rolled back to.
 - `drizzle/0000_auth.sql` is hand-edited to be idempotent (Better Auth's tables already existed on older databases). Mastra's `mastra_*` tables are managed by Mastra and excluded from Drizzle.
 
 ## Secrets
