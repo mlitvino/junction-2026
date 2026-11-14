@@ -2,8 +2,8 @@ import "server-only";
 
 import { MeResponseSchema } from "@/shared/contracts/me";
 
-import { requireSession } from "../middleware/session";
-import { createRouter } from "../router";
+import { requireSession } from "../../middleware/session";
+import { createRouter } from "../../router";
 import { getMeRoute } from "./me.docs";
 
 export const meRouter = createRouter();

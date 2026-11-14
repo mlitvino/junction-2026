@@ -7,14 +7,14 @@ import { getAuth } from "@/server/auth/auth";
 import { ensureAuthSchema } from "@/server/auth/migrate";
 
 import { createRouter } from "./router";
-import { healthRouter } from "./routes/health";
-import { meRouter } from "./routes/me";
+import { healthRouter } from "./routes/health/health";
+import { meRouter } from "./routes/me/me";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
- * Add an endpoint: create a router in ./routes/<name>.ts and register it below.
+ * Add an endpoint: create ./routes/<name>/<name>.ts (+ <name>.docs.ts) and register it below.
  * The API is open by default; a route that needs the signed-in user adds `requireSession`
- * from ./middleware/session.ts (see ./routes/me.ts).
+ * from ./middleware/session.ts (see ./routes/me/me.ts).
  */
 export const app = createRouter().basePath("/api");
 

@@ -3,7 +3,7 @@ import "server-only";
 import { getHealth } from "@/server/services/health";
 import { HealthResponseSchema } from "@/shared/contracts/health";
 
-import { createRouter } from "../router";
+import { createRouter } from "../../router";
 import { getHealthRoute } from "./health.docs";
 
 export const healthRouter = createRouter().openapi(getHealthRoute, (c) =>
