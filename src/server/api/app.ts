@@ -7,6 +7,7 @@ import { getAuth } from "@/server/auth/auth";
 import { ensureAuthSchema } from "@/server/auth/migrate";
 
 import { createRouter } from "./router";
+import { extractRouter } from "./routes/extract/extract";
 import { healthRouter } from "./routes/health/health";
 import { meRouter } from "./routes/me/me";
 
@@ -26,6 +27,7 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 
 app.route("/", healthRouter);
 app.route("/", meRouter);
+app.route("/", extractRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
