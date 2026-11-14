@@ -37,11 +37,12 @@ import type { UnitFacts } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
 import { labelName } from "@/shared/contracts/labels";
 import { fetchAvailability, fetchPrices, valioSource } from "@/server/valio/client";
-import type { Offer, OffersResponse } from "@/shared/contracts/products";
 import type {
   Availability,
   AvailabilityRequest,
   AvailabilityResponse,
+  Offer,
+  OffersResponse,
   PriceQuote,
   PricesRequest,
   PricesResponse,
@@ -49,7 +50,7 @@ import type {
   ProductSearchQuery,
   ProductSearchResponse,
   ProductSummary,
-} from "@/server/valio/types";
+} from "@/shared/contracts/products";
 
 // Catalog: static product data from Postgres (pnpm data:import), live prices and availability
 // from the Valio API. Used by the HTTP routes (routes/products) and the purchasing agent's tools.

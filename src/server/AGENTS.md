@@ -62,7 +62,7 @@ Two folders with different jobs:
 | Static files | `server/catalog/valio-data.ts` (`RawProduct`, `CatalogProduct`) | `data/valio/*` as downloaded, parsed and joined (import only) |
 | Live Valio API | `server/valio/api-schemas.ts` | `/api/price`, `/api/availability` exactly as the spec (`docs/valio-aimo-openapi.json`) |
 | Database | `server/db/schema/catalog.ts` | Drizzle tables; row types via `$inferSelect` |
-| Normalized types | `server/valio/types.ts` | products, prices, availability as the server uses them (camelCase). Re-exports `shared/contracts/products.ts`, which the HTTP routes use too |
+| Normalized types | `shared/contracts/products.ts` | products, prices, availability as the server and the HTTP routes use them (camelCase) |
 
 - Tables (Drizzle schema + migrations, additive only): `valio_product`, `valio_product_unit`, `valio_product_substitute` (static, loaded by `pnpm data:import`), and insert-only `valio_price_snapshot` / `valio_availability_snapshot` (every live answer we fetched: the audit trail and a 5-minute cache).
 - `server/valio/client.ts`: `fetchPrices` / `fetchAvailability`. Without `VALIO_API_KEY` it runs in **mock mode** (deterministic fake data, `source: "mock"`). Never call it for the whole catalog: Valio rate-limits; narrow down with the static data first.
