@@ -112,6 +112,17 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - `GET /api/me` returns the user with `organization` and `roles` (`shared/contracts/me.ts`): the frontend shows screens per role from it.
 - Server: guard routes with `requireRole("buyer" | "approver", …)`, and always scope data to `c.var.user.organization.id`.
 
+### Preferences
+
+Settings that steer the purchasing agent and the approval flow, per organization: product criteria (CO2, delivery reliability, origin, allergens), vendor/brand rules, spending and approval (max order value, auto-approve threshold), AI behavior (autonomy, substitutes, language). The full list with docs is `PreferencesSchema` in `shared/contracts/preferences.ts`.
+
+- **Three layers:** `base` (everyone) and one per role (`buyer`, `approver`). The **effective value for a role** = the role layer's value → the base's → the system default (`DEFAULT_PREFERENCES`: suggest only, no substitutes, every order needs approval). A user with both roles gets both effective sets; they are never merged.
+- In a layer an absent key means "inherit"; `null` (nullable settings) means "no limit" and overrides the layer above. Lists replace, they are not merged.
+- **Locking:** the base layer can lock settings; role layers can't set them (409 on write; a stored value is ignored when resolving).
+- **Who:** approvers edit all three layers (`GET /api/preferences/layers`, `PUT /api/preferences/layers/{scope}`); any member reads their own effective settings (`GET /api/preferences/effective`). Buyers edit nothing.
+- **Rules:** `autoApproveBelow ≤ maxOrderValue` in every effective set (422 otherwise); `locked` only on `base` (422).
+- **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. Nothing consumes them yet.
+
 ## Database (Drizzle)
 
 - Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
