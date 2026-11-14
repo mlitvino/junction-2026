@@ -102,6 +102,16 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
 - Its tables (`user`, `session`, `account`, `verification`) are created on first use. Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
 
+### Organizations and roles
+
+- Every user belongs to exactly one **organization**. Roles are per organization, and a user can hold several:
+  - `buyer`: searches products and places orders
+  - `approver`: approves buyers' orders, sets the organization's AI settings and manages its members
+- **Self sign-up** creates a new organization ("<username>'s organization") where the user is buyer + approver.
+- **Colleagues** don't sign up: an approver creates their account with `POST /api/organization/members` (username, password, roles); it belongs only to that organization. Roles change with `PUT /api/organization/members/{userId}/roles`. An organization always keeps at least one approver.
+- `GET /api/me` returns the user with `organization` and `roles` (`shared/contracts/me.ts`): the frontend shows screens per role from it.
+- Server: guard routes with `requireRole("buyer" | "approver", …)`, and always scope data to `c.var.user.organization.id`.
+
 ## Secrets
 
 - Never read, print or edit `.env*` files, except `.env.example`. Ask the developer for the value you need.

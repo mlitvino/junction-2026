@@ -20,6 +20,9 @@ Every file here starts with `import "server-only";`. See the root AGENTS.md for 
 - `server/auth/migrate.ts`: `ensureAuthSchema()` creates Better Auth's tables on first use.
 - `server/auth/session.ts`: `getSessionUser(headers)` for server code.
 - `server/api/middleware/session.ts`: `requireSession`, opt-in per route (the API is open for now). Use it as `createRouter().use("/<path>", requireSession)`; then `c.var.user` is set. Never read `c.var.user` in a route without it.
+- `requireRole(...roles)` (same file): session + at least one of the roles, else 401/403. Example: `router.use("/organization/*", requireRole("approver"))`.
+- Organizations (our tables, not Better Auth's organization plugin): `organization`, `organization_member (organization_id, user_id UNIQUE, roles text[])`, created by `ensureOrganizationSchema()` (`server/auth/organization-schema.ts`). `getSessionUser()` adds `organization` + `roles` and, for a user without a membership (fresh self sign-up), creates their own organization with buyer + approver (`getOrCreateMembership` in `server/auth/roles.ts`).
+- Member management: `server/services/organization.ts` (every function takes the caller's organization id), routes in `server/api/routes/organization/`. Accounts created by an approver get their membership right away, so they never get an organization of their own.
 
 ## Agents and database
 
