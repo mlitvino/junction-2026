@@ -3,6 +3,7 @@ import "server-only";
 import { createRoute, z } from "@hono/zod-openapi";
 
 import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import { OrderVerificationResponseSchema } from "@/shared/contracts/intelligence";
 import {
   ApproveOrderRequestSchema,
   ApproveOrderResponseSchema,
@@ -17,6 +18,10 @@ import {
   OrderListResponseSchema,
   OrderReceiptSchema,
 } from "@/shared/contracts/orders";
+import {
+  CreateOrderFromRecipeRequestSchema,
+  CreateOrderFromRecipeResponseSchema,
+} from "@/shared/contracts/recipes";
 
 // OpenAPI definitions for procurement order lifecycle routes. Handlers live in ./orders.ts.
 
@@ -234,6 +239,65 @@ export const getOrderAuditRoute = createRoute({
     200: {
       description: "Audit trail events for the order.",
       content: { "application/json": { schema: OrderAuditResponseSchema } },
+    },
+    404: {
+      description: "Order not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const postOrderFromRecipeRoute = createRoute({
+  method: "post",
+  path: "/orders/from-recipe",
+  tags: ["Orders"],
+  summary: "Create a procurement order from a dish recipe minus customer inventory stock",
+  description:
+    "Implements the recipe-to-order workflow: loads a recipe (by recipeId, dishQuery like " +
+    "'salmon soup', or inline customRecipe), aggregates & scales ingredient quantities, subtracts " +
+    "customer kitchen inventory stock (`actuallyNeeded = totalNeeded - inventoryStock`), and " +
+    "orders the remaining ingredients through the full preference, inquiry, and guardrail pipeline.",
+  request: {
+    body: {
+      required: true,
+      content: {
+        "application/json": { schema: CreateOrderFromRecipeRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description:
+        "Created recipe order with ingredient inventory reconciliation and procurement trace.",
+      content: { "application/json": { schema: CreateOrderFromRecipeResponseSchema } },
+    },
+    400: {
+      description: "Missing recipe selector.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    404: {
+      description: "Recipe not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const getOrderVerificationRoute = createRoute({
+  method: "get",
+  path: "/orders/{orderId}/verify",
+  tags: ["Orders"],
+  summary: "Cryptographically verify fixed-price, stock, origin, allergen, and audit claims",
+  description:
+    "Open Trust & Verification Layer: returns canonical-JSON SHA-256 proofs over price quotes, " +
+    "stock availability, origin & sustainability labels, allergen compliance, guardrails, and " +
+    "the chronological audit-trail hash chain.",
+  request: {
+    params: orderIdParams,
+  },
+  responses: {
+    200: {
+      description: "SHA-256 verification proofs for all order claims.",
+      content: { "application/json": { schema: OrderVerificationResponseSchema } },
     },
     404: {
       description: "Order not found.",

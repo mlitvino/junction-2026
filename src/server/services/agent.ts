@@ -4,12 +4,24 @@ import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { getMastra } from "@/server/mastra";
 import { createPriceAvailabilityInquiry, searchCatalogProducts } from "@/server/services/inquiry";
 import {
+  evaluateProductSubstitutions,
+  getProactiveRecommendations,
+  getProactiveStockoutAlerts,
+  verifyOrderTrustClaims,
+} from "@/server/services/intelligence";
+import { listInventory } from "@/server/services/inventory";
+import {
   checkoutOrder,
   createOrderFromPrompt,
   getOrderDetail,
   listOrders,
   modifyOrder,
 } from "@/server/services/orders";
+import {
+  createOrderFromRecipe,
+  findRecipeByDishQuery,
+  listRecipes,
+} from "@/server/services/recipes";
 import type {
   AgentRunRequest,
   AgentRunResponse,
@@ -151,7 +163,24 @@ export async function runPurchasingAgent(
     };
   }
 
-  // 3. Inspect / status / audit intent on an active order
+  // 3. Cryptographic trust verification intent on an active order
+  if (referencedOrderId && /\b(verify|verification|proof|sha-?256|trust)\b/i.test(input.message)) {
+    const verification = await verifyOrderTrustClaims(referencedOrderId, actor);
+    const detail = await getOrderDetail(referencedOrderId, actor);
+    toolCalls.push({
+      toolName: "verifyOrderTrust",
+      args: { orderId: referencedOrderId },
+      summary: `Verified ${verification.claims.length} claim(s) on ${referencedOrderId} (allVerified=${verification.allClaimsVerified}).`,
+    });
+    return {
+      reply: `Verification (${verification.verificationMethod}) for ${referencedOrderId}: allClaimsVerified=${verification.allClaimsVerified}, orderDigest=${verification.orderDigestSha256}, auditChainDigest=${verification.auditChainDigestSha256}.`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: detail.order,
+    };
+  }
+
+  // 3b. Inspect / status / audit intent on an active order
   if (
     referencedOrderId &&
     /\b(status|audit|details|inspect|show\s+order|receipt)\b/i.test(input.message)
@@ -168,6 +197,154 @@ export async function runPurchasingAgent(
       toolCalls,
       activeOrder: detail.order,
     };
+  }
+
+  // 3c. Proactive stock-out alerts
+  if (/\b(stock-?out|shortage|shortages|par\s+level|stock\s+alert)\b/i.test(msgLower)) {
+    const alertsRes = await getProactiveStockoutAlerts(input.deliveryDate, actor);
+    toolCalls.push({
+      toolName: "getStockoutAlerts",
+      args: { deliveryDate: input.deliveryDate },
+      summary: `Found ${alertsRes.alerts.length} supplier/kitchen stock shortage alert(s).`,
+    });
+    const alertText = alertsRes.alerts
+      .map(
+        (a) =>
+          `- [${a.severity}] ${a.shortageSummary} Top replacement: ${a.recommendedReplacements[0]?.candidate.name ?? "none"}`,
+      )
+      .join("\n");
+    return {
+      reply: `Detected ${alertsRes.alerts.length} shortage alert(s):\n${alertText}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
+    };
+  }
+
+  // 3d. Proactive supplier recommendations
+  if (/\b(recommend|recommendations|seasonal|new\s+arrival)\b/i.test(msgLower)) {
+    const recRes = await getProactiveRecommendations(actor);
+    toolCalls.push({
+      toolName: "getProactiveRecommendations",
+      args: {},
+      summary: `Generated ${recRes.recommendations.length} tailored recommendation(s).`,
+    });
+    const recText = recRes.recommendations
+      .map(
+        (r) =>
+          `- ${r.headline} (${r.product.id}, ${r.unitPriceEur.toFixed(2)} EUR/${r.product.salesUnit}): ${r.rationale}`,
+      )
+      .join("\n");
+    return {
+      reply: `Proactive Valio Aimo recommendations:\n${recText}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
+    };
+  }
+
+  // 3e. Allergen-safe product substitutions lookup
+  const subSkuMatch = /\b(substitut\w*|alternativ\w*)\b.*?\b(\d{5,8})\b/i.exec(input.message);
+  if (subSkuMatch) {
+    const targetSku = subSkuMatch[2]!;
+    const subRes = await evaluateProductSubstitutions(
+      { productId: targetSku, requestedQuantity: 100, deliveryDate: input.deliveryDate },
+      actor,
+    );
+    toolCalls.push({
+      toolName: "evaluateSubstitutions",
+      args: { productId: targetSku },
+      summary: `Ranked ${subRes.rankedSubstitutes.length} allergen-safe substitute(s) for ${targetSku}.`,
+    });
+    const subLines = subRes.rankedSubstitutes
+      .map(
+        (s) =>
+          `- [${s.tier.toUpperCase()}] ${s.candidate.name} (${s.candidate.id}): ${s.candidate.unitPriceEur.toFixed(2)} EUR/${s.candidate.salesUnit} (${s.tradeOffs.join("; ")})`,
+      )
+      .join("\n");
+    return {
+      reply: `Allergen-safe substitutes for ${subRes.targetProduct.name} (${targetSku}):\n${subLines}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
+    };
+  }
+
+  // 3f. Inspect kitchen inventory or list recipes (without ordering)
+  if (
+    !/\b(buy|order|make|cook|prepare)\b/i.test(msgLower) &&
+    /\b(inventory|kitchen\s+stock)\b/i.test(msgLower)
+  ) {
+    const inv = await listInventory(actor);
+    toolCalls.push({
+      toolName: "getKitchenInventory",
+      args: {},
+      summary: `Loaded ${inv.items.length} kitchen inventory item(s).`,
+    });
+    return {
+      reply: `Current kitchen inventory (${inv.items.length} items):\n${inv.items.map((i) => `- ${i.ingredientName}: ${i.quantityInStock} ${i.unit} (par: ${i.minParLevel ?? "N/A"})`).join("\n")}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
+    };
+  }
+
+  if (
+    !/\b(buy|order|make|cook|prepare)\b/i.test(msgLower) &&
+    /\b(recipes|recipe\s+book|what\s+dishes)\b/i.test(msgLower)
+  ) {
+    const recipes = await listRecipes({}, actor);
+    toolCalls.push({
+      toolName: "listRecipes",
+      args: {},
+      summary: `Found ${recipes.recipes.length} recipe(s).`,
+    });
+    return {
+      reply: `Available recipes (${recipes.recipes.length}):\n${recipes.recipes.map((r) => `- ${r.name} (${r.id}, base ${r.baseServings} servings)`).join("\n")}`,
+      mode: "deterministic",
+      toolCalls,
+      activeOrder: null,
+    };
+  }
+
+  // 3g. Recipe-to-order workflow intent (e.g. "Order products for salmon soup for 40 servings")
+  if (
+    /\b(recipe|salmon\s+soup|lohikeitto|potato\s+gratin|canteen\s+bake|cloudberry\s+quark\s+bowl|make|cook|prepare)\b/i.test(
+      msgLower,
+    )
+  ) {
+    const matchedRecipe = await findRecipeByDishQuery(input.message, actor);
+    if (matchedRecipe) {
+      const servingsMatch =
+        /(\d+(?:[.,]\d+)?)\s*(?:servings?|portions?|people|persons?)\b/i.exec(input.message);
+      const servings = servingsMatch
+        ? Number.parseFloat(servingsMatch[1]!.replace(",", "."))
+        : undefined;
+
+      const recipeOrder = await createOrderFromRecipe(
+        {
+          recipeId: matchedRecipe.id,
+          servings,
+          deliveryDate: input.deliveryDate,
+        },
+        actor,
+      );
+      toolCalls.push({
+        toolName: "createOrderFromRecipe",
+        args: {
+          recipeId: matchedRecipe.id,
+          servings: recipeOrder.requestedServings,
+          deliveryDate: input.deliveryDate,
+        },
+        summary: `Created recipe order ${recipeOrder.order.orderId} for '${matchedRecipe.name}' (${recipeOrder.requestedServings} servings; ${recipeOrder.extractedItems.length} net item(s) ordered after subtracting inventory).`,
+      });
+      return {
+        reply: `Prepared recipe order ${recipeOrder.order.orderId} for '${recipeOrder.recipeUsed.name}' (${recipeOrder.requestedServings} servings): ordered ${recipeOrder.order.lines.length} net ingredient(s) after subtracting kitchen inventory (${recipeOrder.order.totalPriceEur.toFixed(2)} EUR excl. VAT). ${recipeOrder.order.customerReviewPrompt}`,
+        mode: "deterministic",
+        toolCalls,
+        activeOrder: recipeOrder.order,
+      };
+    }
   }
 
   // 4. Pure catalog search / price-and-availability inquiry intent (without buying)

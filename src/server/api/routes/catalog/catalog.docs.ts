@@ -8,6 +8,10 @@ import {
   CatalogSearchResponseSchema,
 } from "@/shared/contracts/catalog";
 import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import {
+  ProductSubstitutionRequestSchema,
+  ProductSubstitutionResponseSchema,
+} from "@/shared/contracts/intelligence";
 
 export const searchCatalogProductsRoute = createRoute({
   method: "get",
@@ -48,6 +52,34 @@ export const getCatalogProductRoute = createRoute({
     },
     404: {
       description: "Product not found.",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+  },
+});
+
+export const postCatalogSubstitutionsRoute = createRoute({
+  method: "post",
+  path: "/catalog/substitutions",
+  tags: ["Catalog"],
+  summary:
+    "Evaluate allergen-safe Good/Better/Best substitutions, partial-stock splits, delivery, and CO2 comparisons",
+  description:
+    "Recommends dietary/allergen/nutrition-safe replacement products ranked into Best/Better/Good " +
+    "tiers with price, carbon-footprint, and delivery trade-offs, plus a multi-SKU split plan when " +
+    "the primary product has partial or zero stock.",
+  request: {
+    body: {
+      required: true,
+      content: { "application/json": { schema: ProductSubstitutionRequestSchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: "Ranked allergen-safe substitutes and partial-availability fulfillment plan.",
+      content: { "application/json": { schema: ProductSubstitutionResponseSchema } },
+    },
+    404: {
+      description: "Target product not found.",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
   },

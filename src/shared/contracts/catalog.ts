@@ -40,6 +40,14 @@ export const CatalogProductSummarySchema = z.object({
     description: "Dietary classifications.",
     example: ["vegetarian", "gluten-free", "lactose-free"],
   }),
+  sustainabilityCertificates: z
+    .array(z.string())
+    .optional()
+    .meta({
+      description:
+        "Sustainability certificates and origin/climate labels present on the product.",
+      example: ["Hyvää Suomesta (Produced in Finland)", "Carbo® Climate-Reduced Milk"],
+    }),
 });
 
 export type CatalogProductSummary = z.infer<typeof CatalogProductSummarySchema>;

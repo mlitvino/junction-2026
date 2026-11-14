@@ -26,6 +26,10 @@ export type UnifiedCatalogRecord = {
   allergens: string[];
   nutrition: NutritionProfile;
   substituteIds: string[];
+  sustainabilityCertificates?: string[];
+  leadTimeDays?: number;
+  isSeasonal?: boolean;
+  isNewArrival?: boolean;
 };
 
 export function roundCurrency(amount: number): number {
@@ -65,11 +69,31 @@ export function normalizeAllergenList(rawAllergens: string[]): string[] {
 
 export function inferDietaryAndAllergensFromProduct(name: string, rawAllergens: string[]) {
   const nameLower = name.toLowerCase();
-  const dietaryTags = ["vegetarian", "gluten-free"];
+  const isPlantBased =
+    nameLower.includes("vegan") ||
+    nameLower.includes("vegaan") ||
+    nameLower.includes("veggie") ||
+    nameLower.includes("plant-based") ||
+    nameLower.includes("oddlygood") ||
+    nameLower.includes("mifu");
+  const isMeatOrFish =
+    !isPlantBased &&
+    /\b(salmon|lohi|trout|kirjolohi|fish|kala|beef|nauta|pork|possu|sika|chicken|broileri|kana|bacon|pekoni)\b/i.test(
+      nameLower,
+    );
+
+  const dietaryTags: string[] = [];
+  if (!isMeatOrFish) {
+    dietaryTags.push("vegetarian");
+  }
+  if (!/\b(wheat|vehnä|barley|ohra|rye|ruis|bread|leipä|pasta)\b/i.test(nameLower)) {
+    dietaryTags.push("gluten-free");
+  }
   if (
     nameLower.includes("lactose-free") ||
     nameLower.includes("laktoositon") ||
-    nameLower.includes("eila")
+    nameLower.includes("eila") ||
+    isPlantBased
   ) {
     dietaryTags.push("lactose-free");
   }
@@ -89,7 +113,33 @@ export function inferDietaryAndAllergensFromProduct(name: string, rawAllergens: 
   if ((nameLower.includes("soija") || nameLower.includes("soy")) && !allergens.includes("soy")) {
     allergens.push("soy");
   }
+  if (
+    !isPlantBased &&
+    /\b(salmon|lohi|trout|kirjolohi|fish|kala)\b/i.test(nameLower) &&
+    !allergens.includes("fish")
+  ) {
+    allergens.push("fish");
+  }
   return { dietaryTags, allergens };
+}
+
+export function inferSustainabilityCertificates(
+  name: string,
+  countryOfOrigin: string | null,
+  brand: string | null,
+): string[] {
+  const certs: string[] = [];
+  const lower = name.toLowerCase();
+  if (countryOfOrigin?.toLowerCase() === "fi") {
+    certs.push("Hyvää Suomesta (Produced in Finland)");
+  }
+  if (brand?.toLowerCase() === "valio" && /\b(milk|maito|cheese|juusto|cream|kerma)\b/i.test(lower)) {
+    certs.push("Valio Carbo® Climate-Reduced Chain");
+  }
+  if (lower.includes("organic") || lower.includes("luomu")) {
+    certs.push("EU Organic");
+  }
+  return certs;
 }
 
 export function synthesizeNutritionFromSeed(id: string): NutritionProfile {
@@ -446,7 +496,435 @@ export const MOCK_CATALOG_PRODUCTS: UnifiedCatalogRecord[] = [
       saltPer100g: 0.15,
       proteinPer100g: 3.1,
     },
+    substituteIds: ["460503"],
+    sustainabilityCertificates: [
+      "Hyvää Suomesta (Produced in Finland)",
+      "Valio Carbo® Climate-Reduced Chain",
+      "Heart Symbol",
+    ],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460502",
+    name: "Valio Heavy Whipping Cream 38% 1L",
+    productType: "Cream",
+    category: "CREAM",
+    brand: "Valio",
+    vendorName: "Valio Oy",
+    salesUnit: "L",
+    baseUnit: "L",
+    allowedLotSize: 1,
+    gtin: "6408430005024",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 2, max: 8 },
+    unitPriceEur: 4.1,
+    vatRatePct: 14,
+    availableQuantity: 0,
+    logisticModel: "stock",
+    deliveryReliability: 0.96,
+    co2PerKg: 3.8,
+    dietaryTags: ["vegetarian", "gluten-free"],
+    allergens: ["milk"],
+    nutrition: {
+      caloriesPer100g: 360,
+      fatPer100g: 38,
+      sugarPer100g: 2.9,
+      saltPer100g: 0.1,
+      proteinPer100g: 2.1,
+    },
+    substituteIds: ["460501", "460503"],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)"],
+    leadTimeDays: 2,
+  },
+  {
+    id: "460503",
+    name: "Oddlygood Planti Cooking Oat Cream 15% Gluten-Free 1L",
+    productType: "Cream",
+    category: "CREAM",
+    brand: "Oddlygood",
+    vendorName: "Oddlygood Global Oy",
+    salesUnit: "L",
+    baseUnit: "L",
+    allowedLotSize: 1,
+    gtin: "6408430005031",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 2, max: 8 },
+    unitPriceEur: 3.05,
+    vatRatePct: 14,
+    availableQuantity: 420,
+    logisticModel: "stock",
+    deliveryReliability: 0.98,
+    co2PerKg: 0.72,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 155,
+      fatPer100g: 15,
+      sugarPer100g: 1.8,
+      saltPer100g: 0.12,
+      proteinPer100g: 3.1,
+    },
+    substituteIds: ["460501"],
+    sustainabilityCertificates: [
+      "Hyvää Suomesta (Produced in Finland)",
+      "Carbon Footprint Verified",
+      "Heart Symbol",
+    ],
+    leadTimeDays: 1,
+    isNewArrival: true,
+  },
+  // Fish & Plant-Based Seafood products (for Salmon Soup recipe under any dietary profile)
+  {
+    id: "460601",
+    name: "Valio Aimo Fresh Nordic Salmon Fillet Skinless 1kg",
+    productType: "Fish",
+    category: "FISH",
+    brand: "Valio Aimo",
+    vendorName: "Kalatukku E. Eriksson",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430006014",
+    countryOfOrigin: "no",
+    netWeightKg: 1,
+    storageTempC: { min: 0, max: 3 },
+    unitPriceEur: 16.9,
+    vatRatePct: 14,
+    availableQuantity: 180,
+    logisticModel: "stock",
+    deliveryReliability: 0.98,
+    co2PerKg: 5.2,
+    dietaryTags: ["gluten-free", "lactose-free"],
+    allergens: ["fish"],
+    nutrition: {
+      caloriesPer100g: 208,
+      fatPer100g: 13,
+      sugarPer100g: 0,
+      saltPer100g: 0.12,
+      proteinPer100g: 20,
+    },
+    substituteIds: ["460602", "460603"],
+    sustainabilityCertificates: ["ASC Certified", "Traceable Nordic Aquaculture"],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460602",
+    name: "Åland Rainbow Trout Salmon-Family Fillet 1kg",
+    productType: "Fish",
+    category: "FISH",
+    brand: "Hätälä",
+    vendorName: "Hätälä Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430006021",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 0, max: 3 },
+    unitPriceEur: 14.8,
+    vatRatePct: 14,
+    availableQuantity: 240,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 4.1,
+    dietaryTags: ["gluten-free", "lactose-free"],
+    allergens: ["fish"],
+    nutrition: {
+      caloriesPer100g: 185,
+      fatPer100g: 10.5,
+      sugarPer100g: 0,
+      saltPer100g: 0.1,
+      proteinPer100g: 21,
+    },
+    substituteIds: ["460601", "460603"],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)", "ASC Certified"],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460603",
+    name: "Oddlygood Veggie Salmon-Style Fillet Cubes 1kg",
+    productType: "Fish",
+    category: "FISH",
+    brand: "Oddlygood",
+    vendorName: "Oddlygood Global Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430006038",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 12.4,
+    vatRatePct: 14,
+    availableQuantity: 300,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 1.5,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 168,
+      fatPer100g: 7.5,
+      sugarPer100g: 0.8,
+      saltPer100g: 1.1,
+      proteinPer100g: 18,
+    },
+    substituteIds: ["460601", "460602"],
+    sustainabilityCertificates: [
+      "Hyvää Suomesta (Produced in Finland)",
+      "Carbon Footprint Verified",
+      "Heart Symbol",
+    ],
+    leadTimeDays: 1,
+    isNewArrival: true,
+  },
+  // Potatoes, Vegetables & Fresh Herbs (for Salmon Soup & Canteen Recipes)
+  {
+    id: "460701",
+    name: "Valio Aimo Finnish Peeled Diced Potatoes 5kg",
+    productType: "Potato",
+    category: "VEGETABLES",
+    brand: "Valio Aimo",
+    vendorName: "Tuorekartano Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430007011",
+    countryOfOrigin: "fi",
+    netWeightKg: 5,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 1.85,
+    vatRatePct: 14,
+    availableQuantity: 800,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 0.32,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 76,
+      fatPer100g: 0.1,
+      sugarPer100g: 0.8,
+      saltPer100g: 0.02,
+      proteinPer100g: 3.1,
+    },
+    substituteIds: ["460702"],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)", "IP-Kasvikset Certified"],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460702",
+    name: "Luomu Organic Finnish Diced Soup Potatoes 5kg",
+    productType: "Potato",
+    category: "VEGETABLES",
+    brand: "Tuorekartano",
+    vendorName: "Tuorekartano Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430007028",
+    countryOfOrigin: "fi",
+    netWeightKg: 5,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 2.25,
+    vatRatePct: 14,
+    availableQuantity: 450,
+    logisticModel: "stock",
+    deliveryReliability: 0.98,
+    co2PerKg: 0.26,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 75,
+      fatPer100g: 0.1,
+      sugarPer100g: 0.7,
+      saltPer100g: 0.02,
+      proteinPer100g: 3.2,
+    },
+    substituteIds: ["460701"],
+    sustainabilityCertificates: [
+      "EU Organic",
+      "Luomu Sun Label",
+      "Hyvää Suomesta (Produced in Finland)",
+    ],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460703",
+    name: "Valio Aimo Fresh Washed Sliced Leek 1kg",
+    productType: "Vegetables",
+    category: "VEGETABLES",
+    brand: "Valio Aimo",
+    vendorName: " vihannestukku Kespro/Aimo",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430007035",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 3.4,
+    vatRatePct: 14,
+    availableQuantity: 320,
+    logisticModel: "stock",
+    deliveryReliability: 0.98,
+    co2PerKg: 0.48,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 61,
+      fatPer100g: 0.3,
+      sugarPer100g: 3.9,
+      saltPer100g: 0.05,
+      proteinPer100g: 3.1,
+    },
+    substituteIds: ["460704"],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)"],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460704",
+    name: "Valio Aimo Diced Finnish Carrots 2.5kg",
+    productType: "Vegetables",
+    category: "VEGETABLES",
+    brand: "Valio Aimo",
+    vendorName: "Tuorekartano Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430007042",
+    countryOfOrigin: "fi",
+    netWeightKg: 2.5,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 1.95,
+    vatRatePct: 14,
+    availableQuantity: 500,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 0.29,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 41,
+      fatPer100g: 0.2,
+      sugarPer100g: 4.7,
+      saltPer100g: 0.07,
+      proteinPer100g: 3.0,
+    },
+    substituteIds: ["460703"],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)"],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460801",
+    name: "Järvikylä Fresh Finnish Dill Culinary Pack 1kg",
+    productType: "Herbs",
+    category: "HERBS",
+    brand: "Järvikylä",
+    vendorName: "Famifarm Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 0.1,
+    gtin: "6408430008018",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 4, max: 8 },
+    unitPriceEur: 14.8,
+    vatRatePct: 14,
+    availableQuantity: 95,
+    logisticModel: "stock",
+    deliveryReliability: 0.98,
+    co2PerKg: 0.9,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 43,
+      fatPer100g: 1.1,
+      sugarPer100g: 0.5,
+      saltPer100g: 0.15,
+      proteinPer100g: 3.5,
+    },
     substituteIds: [],
+    sustainabilityCertificates: [
+      "Hyvää Suomesta (Produced in Finland)",
+      "Sirkka Leaf Greenhouse Standard",
+    ],
+    leadTimeDays: 1,
+  },
+  {
+    id: "460901",
+    name: "Puljonki Classic Vegetable & Herb Fond Gluten-Free 1L",
+    productType: "Broth",
+    category: "BROTH",
+    brand: "Puljonki",
+    vendorName: "Puljonki Oy",
+    salesUnit: "L",
+    baseUnit: "L",
+    allowedLotSize: 1,
+    gtin: "6408430009015",
+    countryOfOrigin: "fi",
+    netWeightKg: 1,
+    storageTempC: { min: 2, max: 8 },
+    unitPriceEur: 6.2,
+    vatRatePct: 14,
+    availableQuantity: 210,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 0.75,
+    dietaryTags: ["vegan", "vegetarian", "gluten-free", "lactose-free"],
+    allergens: [],
+    nutrition: {
+      caloriesPer100g: 28,
+      fatPer100g: 0.4,
+      sugarPer100g: 1.2,
+      saltPer100g: 1.3,
+      proteinPer100g: 3.1,
+    },
+    substituteIds: [],
+    sustainabilityCertificates: ["Hyvää Suomesta (Produced in Finland)"],
+    leadTimeDays: 1,
+  },
+  // Seasonal supplier recommendation item (Optional Feature #12)
+  {
+    id: "461001",
+    name: "Valio Seasonal Lapland Cloudberry Quark Lactose-Free 2.5kg",
+    productType: "Yogurt",
+    category: "YOGURT",
+    brand: "Valio",
+    vendorName: "Valio Oy",
+    salesUnit: "KG",
+    baseUnit: "KG",
+    allowedLotSize: 1,
+    gtin: "6408430010011",
+    countryOfOrigin: "fi",
+    netWeightKg: 2.5,
+    storageTempC: { min: 2, max: 6 },
+    unitPriceEur: 4.9,
+    vatRatePct: 14,
+    availableQuantity: 220,
+    logisticModel: "stock",
+    deliveryReliability: 0.99,
+    co2PerKg: 1.4,
+    dietaryTags: ["vegetarian", "gluten-free", "lactose-free"],
+    allergens: ["milk"],
+    nutrition: {
+      caloriesPer100g: 98,
+      fatPer100g: 2.0,
+      sugarPer100g: 8.5,
+      saltPer100g: 0.1,
+      proteinPer100g: 9.5,
+    },
+    substituteIds: [],
+    sustainabilityCertificates: [
+      "Hyvää Suomesta (Produced in Finland)",
+      "Valio Carbo® Climate-Reduced Chain",
+      "Nordic Wild Harvest Berry",
+    ],
+    leadTimeDays: 1,
+    isSeasonal: true,
+    isNewArrival: true,
   },
 ];
 

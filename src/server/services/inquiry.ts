@@ -6,6 +6,7 @@ import { getAvailability, getPrices, getProduct, searchProducts } from "@/server
 import {
   hashSeed,
   inferDietaryAndAllergensFromProduct,
+  inferSustainabilityCertificates,
   MOCK_CATALOG_BY_ID,
   MOCK_CATALOG_PRODUCTS,
   roundCurrency,
@@ -46,6 +47,9 @@ function toSummaryFromMock(record: UnifiedCatalogRecord): CatalogProductSummary 
     deliveryReliability: record.deliveryReliability,
     allergens: record.allergens,
     dietaryTags: record.dietaryTags,
+    sustainabilityCertificates:
+      record.sustainabilityCertificates ??
+      inferSustainabilityCertificates(record.name, record.countryOfOrigin, record.brand),
   };
 }
 
@@ -64,6 +68,11 @@ function toSummaryFromDb(item: ProductSummary, rawAllergens: string[] = []): Cat
     deliveryReliability: item.deliveryReliability,
     allergens,
     dietaryTags,
+    sustainabilityCertificates: inferSustainabilityCertificates(
+      item.name,
+      item.countryOfOrigin,
+      item.brand,
+    ),
   };
 }
 

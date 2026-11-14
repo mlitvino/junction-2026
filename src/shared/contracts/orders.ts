@@ -53,6 +53,13 @@ export const CandidateProductSchema = z.object({
   deliveryReliability: z.number().min(0).max(1).nullable().optional().meta({ example: 0.98 }),
   co2PerKg: z.number().nullable().optional().meta({ example: 4.8 }),
   dietaryTags: z.array(z.string()).meta({ example: ["vegetarian", "gluten-free", "lactose-free"] }),
+  sustainabilityCertificates: z
+    .array(z.string())
+    .optional()
+    .meta({
+      description: "Sustainability labels and certificates associated with the product.",
+      example: ["Hyvää Suomesta (Produced in Finland)", "Heart Symbol"],
+    }),
   allergens: z.array(z.string()).meta({ example: ["milk"] }),
   nutrition: NutritionProfileSchema,
   nameMatchScore: z.number().min(0).max(1).meta({
@@ -248,10 +255,14 @@ export type AuditActorType = z.infer<typeof AuditActorTypeSchema>;
 /** Event types recorded in the human-readable procurement audit trail */
 export const AuditEventTypeSchema = z.enum([
   "prompt_extracted",
+  "recipe_loaded",
+  "inventory_reconciled",
   "catalog_searched",
   "preferences_filtered",
   "candidates_ranked",
+  "partial_stock_split",
   "price_availability_inquired",
+  "recurring_anomaly_detected",
   "guardrails_evaluated",
   "order_created",
   "approval_requested",
@@ -356,6 +367,10 @@ export const CreateOrderFromPromptRequestSchema = z.object({
   requireApproval: z.boolean().optional().meta({
     description:
       "If true, pauses the created order in pending_approval so the user must explicitly approve or modify before checkout.",
+  }),
+  autoResolvePartialStock: z.boolean().optional().meta({
+    description:
+      "If true, when a top-ranked product has insufficient stock to cover the requested quantity, automatically splits the line across allergen-safe substitutes to fulfill the remainder.",
   }),
 });
 
@@ -504,6 +519,11 @@ export const CheckoutOrderRequestSchema = z.object({
   deliveryNotes: z.string().trim().max(500).optional().meta({
     description: "Optional unloading or delivery instructions.",
     example: "Deliver to loading dock B before 09:00.",
+  }),
+  replenishInventory: z.boolean().optional().meta({
+    description:
+      "If true, adds the checked-out order quantities into the customer's kitchen inventory stock upon supplier confirmation.",
+    example: false,
   }),
 });
 

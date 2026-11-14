@@ -29,14 +29,18 @@ import {
   searchCatalogProducts,
   todayIsoDate,
 } from "@/server/services/inquiry";
+import { replenishInventoryFromOrderLines } from "@/server/services/inventory";
 import {
   hashSeed,
   inferDietaryAndAllergensFromProduct,
+  inferSustainabilityCertificates,
   MOCK_CATALOG_PRODUCTS,
   roundCurrency,
   synthesizeNutritionFromSeed,
   type UnifiedCatalogRecord,
 } from "@/server/services/mock-catalog";
+import type { ExtractedProductItem } from "@/shared/contracts/extract";
+import type { AgentGuardrails } from "@/shared/contracts/guardrails";
 import type { SessionUser } from "@/shared/contracts/me";
 import {
   type ApproveOrderRequest,
@@ -228,7 +232,7 @@ export function evaluateCustomerPreferences(
   return reasons;
 }
 
-function makeAuditEvent(params: {
+export function makeAuditEvent(params: {
   orderId: string;
   actorType: AuditActorType;
   actorId?: string | null;
@@ -425,7 +429,7 @@ async function loadOrderRecord(
   return found;
 }
 
-async function loadHistoricalOrderRecords(
+export async function loadHistoricalOrderRecords(
   actor?: SessionUser | null,
 ): Promise<PreviousOrderRecord[]> {
   const historical: PreviousOrderRecord[] = [];
@@ -510,7 +514,7 @@ async function loadHistoricalOrderRecords(
 }
 
 /** Fetch candidates matching `productType` from Postgres `valio_product` if available, plus mock catalog. */
-async function getCandidatesByProductType(
+export async function getCandidatesByProductType(
   productType: string,
   deliveryDate: string,
 ): Promise<UnifiedCatalogRecord[]> {
@@ -651,7 +655,7 @@ async function getCandidatesByProductType(
   return [...mergedById.values()];
 }
 
-function toCandidateProduct(params: {
+export function toCandidateProduct(params: {
   record: UnifiedCatalogRecord;
   nameMatchScore: number;
   previouslyOrderedProduct: boolean;
@@ -693,6 +697,9 @@ function toCandidateProduct(params: {
     deliveryReliability: record.deliveryReliability,
     co2PerKg: record.co2PerKg,
     dietaryTags: record.dietaryTags,
+    sustainabilityCertificates:
+      record.sustainabilityCertificates ??
+      inferSustainabilityCertificates(record.name, record.countryOfOrigin, record.brand),
     allergens: record.allergens,
     nutrition: record.nutrition,
     nameMatchScore,
@@ -703,54 +710,40 @@ function toCandidateProduct(params: {
 
 // ---------- Main Procurement Flow ----------
 
-/**
- * End-to-end procurement order creation pipeline from a user prompt (Steps 1–8):
- * 1. Extract structured items from the user prompt (`productName`, `productType`, `productQuantity`).
- * 2. Fetch candidate products by `[Product type]`.
- * 3. Score & sort candidates by best match on `[Product name]`.
- * 4. Remove entries that don't match customer preferences (Dietary restrictions, Allergens, Nutritions).
- * 5. Sort surviving candidates by previous order history (product, then brand, then nameMatchScore).
- * 6. Execute a Price-and-Availability Inquiry to confirm fixed prices & stock before commitment.
- * 7. Compare against budget & agent permission guardrails, build human-readable audit trail, and persist order.
- */
-export async function createOrderFromPrompt(
-  input: CreateOrderFromPromptRequest,
-  actor?: SessionUser | null,
-): Promise<CreateOrderFromPromptResponse> {
-  const savedSettings = await getProcurementSettings(actor);
-  const preferences: CustomerPreferences = input.preferences ?? savedSettings.preferences;
-  const guardrails = mergeGuardrails(savedSettings.guardrails, input.guardrails, input.budgetEur);
-  const deliveryDate = input.deliveryDate ?? todayIsoDate();
-  const previousOrders: PreviousOrderRecord[] =
-    input.previousOrders ?? (await loadHistoricalOrderRecords(actor));
+export async function executeCoreOrderCreation(params: {
+  orderId?: string;
+  prompt: string;
+  extractedItems: ExtractedProductItem[];
+  deliveryDate: string;
+  preferences: CustomerPreferences;
+  guardrails: AgentGuardrails;
+  previousOrders: PreviousOrderRecord[];
+  requireApproval?: boolean;
+  autoResolvePartialStock?: boolean;
+  initialAuditEvents?: AuditTrailEvent[];
+  emptyOrderStatusOverride?: CreatedOrder["status"];
+  emptyReviewPromptOverride?: string;
+  actor?: SessionUser | null;
+}): Promise<CreateOrderFromPromptResponse> {
+  const {
+    prompt,
+    extractedItems,
+    deliveryDate,
+    preferences,
+    guardrails,
+    previousOrders,
+    requireApproval,
+    autoResolvePartialStock,
+    emptyOrderStatusOverride,
+    emptyReviewPromptOverride,
+    actor,
+  } = params;
 
-  const orderId = `ORD-${randomUUID().slice(0, 8).toUpperCase()}`;
-  const auditTrail: AuditTrailEvent[] = [];
+  const orderId = params.orderId ?? `ORD-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const auditTrail: AuditTrailEvent[] = [...(params.initialAuditEvents ?? [])];
   const actorType: AuditActorType = actor ? "buyer" : "agent";
   const actorId = actor?.id ?? null;
   const actorName = actor?.username ?? "Purchasing Agent";
-
-  // Step 1: Extract structured product requests from user prompt
-  const extraction = await extractProductsFromPrompt({ prompt: input.prompt });
-  const extractedItems = extraction.items;
-
-  auditTrail.push(
-    makeAuditEvent({
-      orderId,
-      actorType: "agent",
-      actorId,
-      actorName,
-      eventType: "prompt_extracted",
-      summary: `Extracted ${extractedItems.length} item(s) from buyer prompt: ${
-        extractedItems.length > 0
-          ? extractedItems
-              .map((i) => `${i.productQuantity} of '${i.productName}' (${i.productType})`)
-              .join("; ")
-          : "none"
-      }.`,
-      details: { prompt: input.prompt, extractedItems },
-    }),
-  );
 
   const previousProductIds = new Set(previousOrders.map((o) => o.productId.toLowerCase()));
   const previousProductNames = new Set(
@@ -895,20 +888,108 @@ export async function createOrderFromPrompt(
     });
 
     if (selectedProduct) {
-      draftSelections.push({
-        selected: selectedProduct,
-        requestedProductName: item.productName,
-        quantity,
-        unit: resolvedUnit,
-      });
+      // Optional Feature #4 & #8: Partial availability & allergen-safe split fulfillment
+      if (
+        autoResolvePartialStock &&
+        selectedProduct.availableQuantity !== null &&
+        selectedProduct.availableQuantity !== undefined &&
+        selectedProduct.availableQuantity < quantity &&
+        sortedCandidates.length > 1
+      ) {
+        let remaining = quantity;
+        const splitAllocations: Array<{ productId: string; name: string; allocated: number }> = [];
+
+        for (const cand of sortedCandidates) {
+          if (remaining <= 0) break;
+          const cap =
+            cand.availableQuantity === null || cand.availableQuantity === undefined
+              ? remaining
+              : Math.max(0, cand.availableQuantity);
+          if (cap <= 0) continue;
+          const allocated = roundCurrency(Math.min(remaining, cap));
+          if (allocated <= 0) continue;
+
+          draftSelections.push({
+            selected: cand,
+            requestedProductName: item.productName,
+            quantity: allocated,
+            unit: cand.salesUnit || resolvedUnit,
+          });
+          splitAllocations.push({
+            productId: cand.id,
+            name: cand.name,
+            allocated,
+          });
+          remaining = roundCurrency(remaining - allocated);
+        }
+
+        if (splitAllocations.length === 0) {
+          draftSelections.push({
+            selected: selectedProduct,
+            requestedProductName: item.productName,
+            quantity,
+            unit: resolvedUnit,
+          });
+        } else {
+          if (remaining > 0) {
+            // Attach any unfulfilled remainder onto the primary line so stock_shortfall guardrail triggers transparently
+            const firstDraft = draftSelections[draftSelections.length - splitAllocations.length];
+            if (firstDraft) {
+              firstDraft.quantity = roundCurrency(firstDraft.quantity + remaining);
+            }
+          }
+          auditTrail.push(
+            makeAuditEvent({
+              orderId,
+              actorType: "agent",
+              actorId,
+              actorName,
+              eventType: "partial_stock_split",
+              summary: `Resolved insufficient stock on '${selectedProduct.name}' (requested ${quantity} ${resolvedUnit}, available ${selectedProduct.availableQuantity}) across ${splitAllocations.length} allergen-safe SKU(s): ${splitAllocations.map((a) => `${a.allocated} of ${a.productId}`).join(" + ")}.`,
+              details: {
+                requestedQuantity: quantity,
+                splitAllocations,
+                unfulfilledRemainder: remaining,
+              },
+            }),
+          );
+        }
+      } else {
+        draftSelections.push({
+          selected: selectedProduct,
+          requestedProductName: item.productName,
+          quantity,
+          unit: resolvedUnit,
+        });
+      }
     }
   }
 
+  // Merge duplicate productIds in draftSelections before running inquiry
+  const mergedDraftMap = new Map<
+    string,
+    {
+      selected: CandidateProduct;
+      requestedProductName: string;
+      quantity: number;
+      unit: string;
+    }
+  >();
+  for (const d of draftSelections) {
+    const prev = mergedDraftMap.get(d.selected.id);
+    if (prev) {
+      prev.quantity = roundCurrency(prev.quantity + d.quantity);
+    } else {
+      mergedDraftMap.set(d.selected.id, { ...d });
+    }
+  }
+  const finalDrafts = [...mergedDraftMap.values()];
+
   // Core #5: Execute Price-and-Availability Inquiry before committing order lines
   const inquiry =
-    draftSelections.length > 0
+    finalDrafts.length > 0
       ? await createPriceAvailabilityInquiry({
-          items: draftSelections.map((d) => ({
+          items: finalDrafts.map((d) => ({
             productId: d.selected.id,
             quantity: d.quantity,
           })),
@@ -938,7 +1019,7 @@ export async function createOrderFromPrompt(
     );
   }
 
-  const orderLines: OrderLineItem[] = draftSelections.map(
+  const orderLines: OrderLineItem[] = finalDrafts.map(
     ({ selected, requestedProductName, quantity, unit }) => {
       const quote = inquiryByProductId.get(selected.id);
       const unitPriceEur = quote?.fixedUnitPriceExclVat ?? selected.unitPriceEur;
@@ -973,6 +1054,54 @@ export async function createOrderFromPrompt(
     },
   );
 
+  // Optional Feature #11: Automatic recurring-order anomaly audit check against historical baseline
+  if (previousOrders.length > 0 && orderLines.length > 0) {
+    const qtySpikes: Array<{
+      productId: string;
+      productName: string;
+      historicalAvg: number;
+      proposed: number;
+      ratio: number;
+    }> = [];
+
+    for (const line of orderLines) {
+      const matchingHist = previousOrders.filter(
+        (h) => h.productId.toLowerCase() === line.productId.toLowerCase(),
+      );
+      if (matchingHist.length > 0) {
+        const sortedQtys = matchingHist.map((h) => h.quantity).sort((a, b) => a - b);
+        const mid = Math.floor(sortedQtys.length / 2);
+        const baseline =
+          sortedQtys.length % 2 === 1
+            ? sortedQtys[mid]!
+            : ((sortedQtys[mid - 1] ?? 0) + (sortedQtys[mid] ?? 0)) / 2;
+        if (baseline > 0 && line.quantity / baseline >= 2.5) {
+          qtySpikes.push({
+            productId: line.productId,
+            productName: line.productName,
+            historicalAvg: roundCurrency(baseline),
+            proposed: line.quantity,
+            ratio: roundCurrency(line.quantity / baseline),
+          });
+        }
+      }
+    }
+
+    if (qtySpikes.length > 0) {
+      auditTrail.push(
+        makeAuditEvent({
+          orderId,
+          actorType: "system",
+          actorId: null,
+          actorName: "Anomaly Detector",
+          eventType: "recurring_anomaly_detected",
+          summary: `Detected ${qtySpikes.length} recurring-order quantity spike(s) vs historical baseline: ${qtySpikes.map((s) => `${s.productName} (${s.proposed} vs avg ${s.historicalAvg}, ${s.ratio}x)`).join("; ")}.`,
+          details: { qtySpikes },
+        }),
+      );
+    }
+  }
+
   // Step 6 & Core #9: Budget comparison & Agent permission guardrails
   const totalPriceEur = roundCurrency(orderLines.reduce((sum, l) => sum + l.lineTotalEur, 0));
   const totalPriceInclVatEur = roundCurrency(
@@ -983,7 +1112,7 @@ export async function createOrderFromPrompt(
     lines: orderLines,
     totalPriceEur,
     guardrails,
-    forceApproval: input.requireApproval,
+    forceApproval: requireApproval,
   });
 
   auditTrail.push(
@@ -1006,7 +1135,7 @@ export async function createOrderFromPrompt(
   // Step 7: Create order
   const orderStatus: CreatedOrder["status"] =
     orderLines.length === 0
-      ? "unfulfilled"
+      ? (emptyOrderStatusOverride ?? "unfulfilled")
       : guardrailEvaluation.authorizedForAutoConfirm
         ? "confirmed"
         : "pending_approval";
@@ -1037,7 +1166,9 @@ export async function createOrderFromPrompt(
         orderStatus === "pending_approval"
           ? `Created order ${orderId} in 'pending_approval' (${totalPriceEur.toFixed(2)} EUR) awaiting human approver sign-off or line item edits.`
           : orderStatus === "confirmed"
-            ? `Created authorized order ${orderId} in 'confirmed' status (${totalPriceEur.toFixed(2)} EUR), ready for checkout.`
+            ? orderLines.length === 0 && emptyReviewPromptOverride
+              ? emptyReviewPromptOverride
+              : `Created authorized order ${orderId} in 'confirmed' status (${totalPriceEur.toFixed(2)} EUR), ready for checkout.`
             : `Created order ${orderId} in 'unfulfilled' status (0 matching products).`,
       details: {
         status: orderStatus,
@@ -1047,16 +1178,19 @@ export async function createOrderFromPrompt(
     }),
   );
 
-  const customerReviewPrompt = buildCustomerReviewPrompt(
-    {
-      orderId,
-      status: orderStatus,
-      totalPriceEur,
-      lines: orderLines,
-      guardrailEvaluation,
-    },
-    suggestedAlternatives,
-  );
+  const customerReviewPrompt =
+    orderLines.length === 0 && emptyReviewPromptOverride
+      ? emptyReviewPromptOverride
+      : buildCustomerReviewPrompt(
+          {
+            orderId,
+            status: orderStatus,
+            totalPriceEur,
+            lines: orderLines,
+            guardrailEvaluation,
+          },
+          suggestedAlternatives,
+        );
 
   const order: CreatedOrder = {
     orderId,
@@ -1081,7 +1215,7 @@ export async function createOrderFromPrompt(
   };
 
   const response: CreateOrderFromPromptResponse = {
-    prompt: input.prompt,
+    prompt,
     extractedItems,
     preferencesUsed: preferences,
     previousOrdersUsed: previousOrders,
@@ -1092,6 +1226,68 @@ export async function createOrderFromPrompt(
 
   await persistOrderRecord(response, auditTrail);
   return response;
+}
+
+/**
+ * End-to-end procurement order creation pipeline from a user prompt (Steps 1–8):
+ * 1. Extract structured items from the user prompt (`productName`, `productType`, `productQuantity`).
+ * 2. Fetch candidate products by `[Product type]`.
+ * 3. Score & sort candidates by best match on `[Product name]`.
+ * 4. Remove entries that don't match customer preferences (Dietary restrictions, Allergens, Nutritions).
+ * 5. Sort surviving candidates by previous order history (product, then brand, then nameMatchScore).
+ * 6. Execute a Price-and-Availability Inquiry to confirm fixed prices & stock before commitment.
+ * 7. Compare against budget & agent permission guardrails, build human-readable audit trail, and persist order.
+ */
+export async function createOrderFromPrompt(
+  input: CreateOrderFromPromptRequest,
+  actor?: SessionUser | null,
+): Promise<CreateOrderFromPromptResponse> {
+  const savedSettings = await getProcurementSettings(actor);
+  const preferences: CustomerPreferences = input.preferences ?? savedSettings.preferences;
+  const guardrails = mergeGuardrails(savedSettings.guardrails, input.guardrails, input.budgetEur);
+  const deliveryDate = input.deliveryDate ?? todayIsoDate();
+  const previousOrders: PreviousOrderRecord[] =
+    input.previousOrders ?? (await loadHistoricalOrderRecords(actor));
+
+  const orderId = `ORD-${randomUUID().slice(0, 8).toUpperCase()}`;
+  const actorId = actor?.id ?? null;
+  const actorName = actor?.username ?? "Purchasing Agent";
+
+  // Step 1: Extract structured product requests from user prompt
+  const extraction = await extractProductsFromPrompt({ prompt: input.prompt });
+  const extractedItems = extraction.items;
+
+  const initialAuditEvents: AuditTrailEvent[] = [
+    makeAuditEvent({
+      orderId,
+      actorType: "agent",
+      actorId,
+      actorName,
+      eventType: "prompt_extracted",
+      summary: `Extracted ${extractedItems.length} item(s) from buyer prompt: ${
+        extractedItems.length > 0
+          ? extractedItems
+              .map((i) => `${i.productQuantity} of '${i.productName}' (${i.productType})`)
+              .join("; ")
+          : "none"
+      }.`,
+      details: { prompt: input.prompt, extractedItems },
+    }),
+  ];
+
+  return executeCoreOrderCreation({
+    orderId,
+    prompt: input.prompt,
+    extractedItems,
+    deliveryDate,
+    preferences,
+    guardrails,
+    previousOrders,
+    requireApproval: input.requireApproval,
+    autoResolvePartialStock: input.autoResolvePartialStock,
+    initialAuditEvents,
+    actor,
+  });
 }
 
 // ---------- Read Operations ----------
@@ -1864,6 +2060,10 @@ export async function checkoutOrder(
     ...existing,
     order: updatedOrder,
   };
+
+  if (input.replenishInventory) {
+    await replenishInventoryFromOrderLines(existing.order.lines, actor);
+  }
 
   await persistOrderRecord(updatedRecord, [checkoutEvent]);
   return { order: updatedOrder, receipt };
