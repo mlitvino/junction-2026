@@ -1,8 +1,8 @@
 import "server-only";
 
 import { Agent } from "@mastra/core/agent";
-import { createMockModel } from "@mastra/core/test-utils/llm-mock";
 
+import { GEMINI_MODEL } from "./gemini";
 import { getProductDetailsTool } from "./tools/get-product-details";
 import { inquirePriceAvailabilityTool } from "./tools/inquire-price-availability";
 import {
@@ -25,20 +25,9 @@ import {
 } from "./tools/recipes-and-inventory";
 import { searchProductsTool } from "./tools/search-products";
 
-const GEMINI_MODEL = "google/gemini-3.8-flash";
-
-// Gemini when GOOGLE_GENERATIVE_AI_API_KEY is set (Mastra reads it itself). Without a key
-// (CI, builds, frontend dev) the agent falls back to a mock model.
-const useGemini = Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
-
-const mockModel = createMockModel({
-  mockText: "[mock] I found matching products and validated guardrails.",
-  version: "v2",
-});
-
 export const purchasingAgent = new Agent({
   id: "purchasing-agent",
-  name: useGemini ? "Purchasing agent" : "Purchasing agent (mock)",
+  name: "Purchasing agent",
   instructions:
     "You are a trusted B2B purchasing agent for professional kitchens ordering from Valio Aimo. " +
     "Follow these procurement rules strictly:\n" +
@@ -50,7 +39,7 @@ export const purchasingAgent = new Agent({
     "6. When a buyer wants ingredients for a dish or recipe (such as salmon soup / lohikeitto), use listRecipes or createOrderFromRecipe so existing kitchen inventory stock is automatically subtracted.\n" +
     "7. Use evaluateSubstitutions, getStockoutAlerts, checkRecurringAnomalies, getProactiveRecommendations, and verifyOrderTrust when evaluating allergen-safe alternatives, shortages, anomalies, or SHA-256 verification proofs.\n" +
     "8. Only call checkoutOrder when the order is authorized ('confirmed' or 'approved') and the customer wants to finalize it; always summarize the receipt and confirmation ID.",
-  model: useGemini ? GEMINI_MODEL : mockModel,
+  model: GEMINI_MODEL,
   tools: {
     searchProducts: searchProductsTool,
     getProductDetails: getProductDetailsTool,

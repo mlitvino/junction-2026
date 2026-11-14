@@ -2,12 +2,18 @@ import "server-only";
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { describe, it } from "node:test";
+import { describe, it, mock } from "node:test";
 import { RequestContext } from "@mastra/core/request-context";
 
 import { app } from "@/server/api/app";
+import { extractorAgent } from "@/server/agents/extractor-agent";
+import { orderChangeAgent } from "@/server/agents/order-change-agent";
+import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { checkRecurringAnomaliesTool } from "@/server/agents/tools/procurement-intelligence";
-import { listRecipesTool } from "@/server/agents/tools/recipes-and-inventory";
+import {
+  createOrderFromRecipeTool,
+  listRecipesTool,
+} from "@/server/agents/tools/recipes-and-inventory";
 import {
   DEFAULT_AGENT_GUARDRAILS,
   DEFAULT_MOCK_PREFERENCES,
@@ -20,6 +26,7 @@ import {
   evaluateCustomerPreferences,
 } from "@/server/services/orders";
 import { DEFAULT_PREFERENCES, resolvePreferences } from "@/server/services/preferences";
+import type { ExtractedProductItem } from "@/shared/contracts/extract";
 import type { SessionUser } from "@/shared/contracts/me";
 import type { Preferences } from "@/shared/contracts/preferences";
 
@@ -33,6 +40,33 @@ async function jsonReq<T>(path: string, init?: RequestInit): Promise<{ status: n
   });
   const body = (await res.json()) as T;
   return { status: res.status, body };
+}
+
+async function withGeminiEnv<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  if (value === undefined) {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  } else {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) {
+      delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    } else {
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY = prev;
+    }
+    mock.restoreAll();
+  }
+}
+
+function stubExtractorAgent(itemsByPrompt: Record<string, ExtractedProductItem[]>) {
+  return mock.method(extractorAgent, "generate", async (prompt: string) => ({
+    object: {
+      items: itemsByPrompt[prompt] ?? [],
+    },
+  }));
 }
 
 describe("Trusted Trade Agents — Missing Core & Optional Backend Features", () => {
@@ -365,19 +399,26 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.equal(subs.body.partialAvailabilityPlan.totalFulfilledQuantity, 800);
     assert.equal(subs.body.partialAvailabilityPlan.allocations.length, 2);
 
-    // Direct order creation with autoResolvePartialStock: true
-    const splitOrder = await jsonReq<{
-      order: {
-        lines: Array<{ productId: string; quantity: number }>;
-        auditTrail: Array<{ eventType: string }>;
-      };
-    }>("/api/orders", {
-      method: "POST",
-      body: JSON.stringify({
-        prompt: "I want 800 kg of creamy cheese",
-        autoResolvePartialStock: true,
-        budgetEur: 6000,
-      }),
+    // Direct order creation with autoResolvePartialStock: true (parsed via Gemini extractorAgent)
+    const splitOrder = await withGeminiEnv("test-gemini-key", async () => {
+      stubExtractorAgent({
+        "I want 800 kg of creamy cheese": [
+          { productName: "Creamy cheese", productType: "Cheese", productQuantity: "800 kg" },
+        ],
+      });
+      return jsonReq<{
+        order: {
+          lines: Array<{ productId: string; quantity: number }>;
+          auditTrail: Array<{ eventType: string }>;
+        };
+      }>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: "I want 800 kg of creamy cheese",
+          autoResolvePartialStock: true,
+          budgetEur: 6000,
+        }),
+      });
     });
     assert.equal(splitOrder.status, 200);
     assert.equal(splitOrder.body.order.lines.length, 2);
@@ -385,10 +426,17 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
   });
 
   it("verifies cryptographic SHA-256 trust claims, proactive stock-out alerts, recurring anomalies, recommendations, and agent orchestration", async () => {
-    // Create a clean order and verify its SHA-256 claims
-    const created = await jsonReq<{ order: { orderId: string } }>("/api/orders", {
-      method: "POST",
-      body: JSON.stringify({ prompt: "I want 50 kg of creamy cheese" }),
+    // Create a clean order via Gemini extractorAgent and verify its SHA-256 claims
+    const created = await withGeminiEnv("test-gemini-key", async () => {
+      stubExtractorAgent({
+        "I want 50 kg of creamy cheese": [
+          { productName: "Creamy cheese", productType: "Cheese", productQuantity: "50 kg" },
+        ],
+      });
+      return jsonReq<{ order: { orderId: string } }>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({ prompt: "I want 50 kg of creamy cheese" }),
+      });
     });
     assert.equal(created.status, 200);
     const orderId = created.body.order.orderId;
@@ -451,18 +499,41 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.ok(recs.body.recommendations.some((r) => r.product.id === "461001"));
     assert.ok(recs.body.recommendations.some((r) => r.product.id === "460503"));
 
-    // Autonomous agent run for Salmon Soup recipe
-    const agentRes = await jsonReq<{
-      mode: string;
-      toolCalls: Array<{ toolName: string }>;
-      activeOrder: { orderId: string } | null;
-    }>("/api/agent/run", {
-      method: "POST",
-      body: JSON.stringify({
-        message: "Order ingredients for salmon soup for 20 servings",
-      }),
+    // Autonomous Gemini agent run for Salmon Soup recipe
+    const agentRes = await withGeminiEnv("test-gemini-key", async () => {
+      mock.method(
+        purchasingAgent,
+        "generate",
+        async (_msg: string, options?: { requestContext?: RequestContext }) => {
+          assert.ok(createOrderFromRecipeTool.execute);
+          await createOrderFromRecipeTool.execute(
+            { recipeId: "recipe-salmon-soup", servings: 20 },
+            { requestContext: options?.requestContext },
+          );
+          return {
+            text: "Prepared salmon soup order for 20 servings.",
+            toolCalls: [
+              {
+                toolName: "createOrderFromRecipe",
+                args: { recipeId: "recipe-salmon-soup", servings: 20 },
+              },
+            ],
+          };
+        },
+      );
+      return jsonReq<{
+        mode: string;
+        toolCalls: Array<{ toolName: string }>;
+        activeOrder: { orderId: string } | null;
+      }>("/api/agent/run", {
+        method: "POST",
+        body: JSON.stringify({
+          message: "Order ingredients for salmon soup for 20 servings",
+        }),
+      });
     });
     assert.equal(agentRes.status, 200);
+    assert.equal(agentRes.body.mode, "gemini");
     assert.ok(agentRes.body.toolCalls.some((t) => t.toolName === "createOrderFromRecipe"));
     assert.ok(agentRes.body.activeOrder?.orderId);
   });
@@ -530,17 +601,24 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.equal(countLayeredPreferenceMatches(violatingCandidate, layered).matchCount, 0);
 
     // allowSubstitutes=false with usedSubstitutes=true must trigger human approval
-    const sampleOrder = await jsonReq<{
-      order: {
-        lines: Parameters<typeof evaluateOrderGuardrails>[0]["lines"];
-        totalPriceEur: number;
-      };
-    }>("/api/orders", {
-      method: "POST",
-      body: JSON.stringify({
-        prompt: "I want 5 kg of creamy cheese",
-        requireApproval: false,
-      }),
+    const sampleOrder = await withGeminiEnv("test-gemini-key", async () => {
+      stubExtractorAgent({
+        "I want 5 kg of creamy cheese": [
+          { productName: "Creamy cheese", productType: "Cheese", productQuantity: "5 kg" },
+        ],
+      });
+      return jsonReq<{
+        order: {
+          lines: Parameters<typeof evaluateOrderGuardrails>[0]["lines"];
+          totalPriceEur: number;
+        };
+      }>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: "I want 5 kg of creamy cheese",
+          requireApproval: false,
+        }),
+      });
     });
     assert.equal(sampleOrder.status, 200);
 
@@ -589,34 +667,106 @@ describe("Trusted Trade Agents — Missing Core & Optional Backend Features", ()
     assert.equal(resolvedBuyer.values.maxOrderValue, null);
   });
 
-  it("routes deterministic anomaly queries and forwards RequestContext actor to Mastra tools", async () => {
-    const orderRes = await jsonReq<{
-      order: { orderId: string };
-    }>("/api/orders", {
-      method: "POST",
-      body: JSON.stringify({
-        prompt: "I want 5 kg of creamy cheese",
-        requireApproval: false,
-      }),
+  it("requires Gemini for prompt extraction, agent routing, and order-change prompts, and forwards RequestContext actor", async () => {
+    const orderRes = await withGeminiEnv("test-gemini-key", async () => {
+      stubExtractorAgent({
+        "I want 5 kg of creamy cheese": [
+          { productName: "Creamy cheese", productType: "Cheese", productQuantity: "5 kg" },
+        ],
+      });
+      return jsonReq<{
+        order: { orderId: string };
+      }>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({
+          prompt: "I want 5 kg of creamy cheese",
+          requireApproval: false,
+        }),
+      });
     });
     assert.equal(orderRes.status, 200);
     const orderId = orderRes.body.order.orderId;
 
-    const agentAnomalyRes = await jsonReq<{
-      mode: string;
-      reply: string;
-      toolCalls: Array<{ toolName: string }>;
-    }>("/api/agent/run", {
-      method: "POST",
-      body: JSON.stringify({
-        message: `Check order ${orderId} for recurring anomalies against historical baseline`,
-        orderId,
-      }),
+    // Missing GOOGLE_GENERATIVE_AI_API_KEY fails loudly instead of falling back to deterministic parsing
+    await withGeminiEnv(undefined, async () => {
+      const extractErr = await jsonReq<{ error: string }>("/api/extract", {
+        method: "POST",
+        body: JSON.stringify({ prompt: "I want to cook 100 salmon soups" }),
+      });
+      assert.equal(extractErr.status, 500);
+      assert.match(extractErr.body.error, /GOOGLE_GENERATIVE_AI_API_KEY is not set/);
+
+      const orderErr = await jsonReq<{ error: string }>("/api/orders", {
+        method: "POST",
+        body: JSON.stringify({ prompt: "I want 5 kg of creamy cheese" }),
+      });
+      assert.equal(orderErr.status, 500);
+      assert.match(orderErr.body.error, /GOOGLE_GENERATIVE_AI_API_KEY is not set/);
+
+      const agentErr = await jsonReq<{ error: string }>("/api/agent/run", {
+        method: "POST",
+        body: JSON.stringify({ message: "I want to cook 100 salmon soups" }),
+      });
+      assert.equal(agentErr.status, 500);
+      assert.match(agentErr.body.error, /GOOGLE_GENERATIVE_AI_API_KEY is not set/);
+
+      const patchErr = await jsonReq<{ error: string }>(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ prompt: "Swap 460101 for 460301" }),
+      });
+      assert.equal(patchErr.status, 500);
+      assert.match(patchErr.body.error, /GOOGLE_GENERATIVE_AI_API_KEY is not set/);
+    });
+
+    // Gemini-backed agent routing + order-change prompt parsing
+    const agentAnomalyRes = await withGeminiEnv("test-gemini-key", async () => {
+      mock.method(
+        purchasingAgent,
+        "generate",
+        async (_msg: string, options?: { requestContext?: RequestContext }) => {
+          assert.ok(checkRecurringAnomaliesTool.execute);
+          await checkRecurringAnomaliesTool.execute(
+            { orderId },
+            { requestContext: options?.requestContext },
+          );
+          return {
+            text: `Recurring-order anomaly check completed for ${orderId}.`,
+            toolCalls: [{ toolName: "checkRecurringAnomalies", args: { orderId } }],
+          };
+        },
+      );
+      return jsonReq<{
+        mode: string;
+        reply: string;
+        toolCalls: Array<{ toolName: string }>;
+      }>("/api/agent/run", {
+        method: "POST",
+        body: JSON.stringify({
+          message: `Check order ${orderId} for recurring anomalies against historical baseline`,
+          orderId,
+        }),
+      });
     });
     assert.equal(agentAnomalyRes.status, 200);
-    assert.equal(agentAnomalyRes.body.mode, "deterministic");
+    assert.equal(agentAnomalyRes.body.mode, "gemini");
     assert.ok(agentAnomalyRes.body.toolCalls.some((t) => t.toolName === "checkRecurringAnomalies"));
     assert.match(agentAnomalyRes.body.reply, /Recurring-order anomaly check/);
+
+    const modifiedViaGemini = await withGeminiEnv("test-gemini-key", async () => {
+      mock.method(orderChangeAgent, "generate", async () => ({
+        object: {
+          replacements: [{ fromTarget: "460101", toTarget: "460301" }],
+          quantityUpdates: [],
+          removeTargets: [],
+        },
+      }));
+      return jsonReq<{ order: { lines: Array<{ productId: string }> } }>(`/api/orders/${orderId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ prompt: "Swap 460101 for 460301" }),
+      });
+    });
+    assert.equal(modifiedViaGemini.status, 200);
+    assert.ok(modifiedViaGemini.body.order.lines.some((l) => l.productId === "460301"));
 
     // Invoke Mastra tools directly with a RequestContext containing actor
     const mockActor: SessionUser = {

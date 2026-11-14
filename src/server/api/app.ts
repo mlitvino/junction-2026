@@ -3,6 +3,7 @@ import "server-only";
 import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
+import { MissingGeminiKeyError } from "@/server/agents/gemini";
 import { getAuth } from "@/server/auth/auth";
 import { ensureDatabase } from "@/server/db/migrate";
 
@@ -75,6 +76,7 @@ app.notFound((c) => c.json({ error: "Not found" }, 404));
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
+  if (err instanceof MissingGeminiKeyError) return c.json({ error: err.message }, 500);
   console.error(err);
   return c.json({ error: "Internal error" }, 500);
 });

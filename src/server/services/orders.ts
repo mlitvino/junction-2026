@@ -4,11 +4,8 @@ import { randomUUID } from "node:crypto";
 
 import { asc, desc, eq, ilike, or } from "drizzle-orm";
 
-import {
-  orderChangeAgent,
-  ParsedOrderChangeSchema,
-  parseOrderChangeDeterministically,
-} from "@/server/agents/order-change-agent";
+import { assertGeminiConfigured } from "@/server/agents/gemini";
+import { orderChangeAgent, ParsedOrderChangeSchema } from "@/server/agents/order-change-agent";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { procurementAuditEvent, procurementOrder, valioProduct } from "@/server/db/schema";
@@ -1585,48 +1582,34 @@ export async function modifyOrder(
   const removeProductIds = [...(input.removeProductIds ?? [])];
   const addItems = [...(input.addItems ?? [])];
 
-  // Parse optional natural-language prompt (e.g. "Change product 460101 on product 460301")
+  // Parse optional natural-language prompt (e.g. "Change product 460101 on product 460301") via Gemini
   if (input.prompt) {
-    let parsedPromptChanges = parseOrderChangeDeterministically(input.prompt);
+    assertGeminiConfigured();
 
-    if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      try {
-        const agent = process.env.DATABASE_URL
-          ? getMastra().getAgentById("order-change-agent")
-          : orderChangeAgent;
-        const contextPrompt = [
-          `Current order lines: ${JSON.stringify(
-            workingLines.map((l) => ({
-              productId: l.productId,
-              productName: l.productName,
-              quantity: l.quantity,
-              unit: l.unit,
-            })),
-          )}`,
-          `Available candidate alternatives: ${JSON.stringify(
-            existing.pipeline.flatMap((t) =>
-              t.sortedCandidates.map((c) => ({ id: c.id, name: c.name })),
-            ),
-          )}`,
-          `Customer change request: ${input.prompt}`,
-        ].join("\n");
+    const agent = process.env.DATABASE_URL
+      ? getMastra().getAgentById("order-change-agent")
+      : orderChangeAgent;
+    const contextPrompt = [
+      `Current order lines: ${JSON.stringify(
+        workingLines.map((l) => ({
+          productId: l.productId,
+          productName: l.productName,
+          quantity: l.quantity,
+          unit: l.unit,
+        })),
+      )}`,
+      `Available candidate alternatives: ${JSON.stringify(
+        existing.pipeline.flatMap((t) =>
+          t.sortedCandidates.map((c) => ({ id: c.id, name: c.name })),
+        ),
+      )}`,
+      `Customer change request: ${input.prompt}`,
+    ].join("\n");
 
-        const llmRes = await agent.generate(contextPrompt, {
-          structuredOutput: { schema: ParsedOrderChangeSchema },
-        });
-        const parsed = ParsedOrderChangeSchema.safeParse(llmRes.object);
-        if (
-          parsed.success &&
-          (parsed.data.replacements.length > 0 ||
-            parsed.data.quantityUpdates.length > 0 ||
-            parsed.data.removeTargets.length > 0)
-        ) {
-          parsedPromptChanges = parsed.data;
-        }
-      } catch {
-        // Keep deterministic parse result if LLM call fails.
-      }
-    }
+    const llmRes = await agent.generate(contextPrompt, {
+      structuredOutput: { schema: ParsedOrderChangeSchema },
+    });
+    const parsedPromptChanges = ParsedOrderChangeSchema.parse(llmRes.object);
 
     for (const rep of parsedPromptChanges.replacements) {
       const matchedLine = await resolveLineTarget(rep.fromTarget, workingLines);

@@ -39,5 +39,9 @@ export const postAgentRunRoute = createRoute({
       description: "Order action blocked by approval or lifecycle state.",
       content: { "application/json": { schema: ErrorResponseSchema } },
     },
+    500: {
+      description: "Agent execution failed (e.g. GOOGLE_GENERATIVE_AI_API_KEY is not set).",
+      content: { "application/json": { schema: ErrorResponseSchema } },
+    },
   },
 });
