@@ -1,10 +1,10 @@
 import "server-only";
 
-import { actorFor, decideApproval, listApprovals, PurchasingError } from "@/server/services/purchasing";
+import { actorFor, decideApproval, listApprovals, pendingApprovalCount, PurchasingError } from "@/server/services/purchasing";
 
 import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
-import { decideApprovalRoute, listApprovalsRoute } from "./approvals.docs";
+import { decideApprovalRoute, listApprovalsRoute, pendingApprovalCountRoute } from "./approvals.docs";
 
 export const approvalsRouter = createRouter();
 
@@ -23,6 +23,8 @@ approvalsRouter.openapi(listApprovalsRoute, async (c) =>
     200,
   ),
 );
+
+approvalsRouter.openapi(pendingApprovalCountRoute, async (c) => c.json(await pendingApprovalCount(actorFor(c.var.user)), 200));
 
 approvalsRouter.openapi(decideApprovalRoute, async (c) => {
   try {

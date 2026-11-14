@@ -7,6 +7,7 @@ import {
   ApprovalListSchema,
   DecideApprovalRequestSchema,
   ListApprovalsQuerySchema,
+  PendingApprovalCountSchema,
   PurchasingErrorSchema,
   ProposalSchema,
 } from "@/shared/contracts/purchasing";
@@ -29,6 +30,22 @@ export const listApprovalsRoute = createRoute({
   request: { query: ListApprovalsQuerySchema },
   responses: {
     200: json(ApprovalListSchema, "Approvals."),
+    401: json(ErrorResponseSchema, "No valid session."),
+    403: json(ErrorResponseSchema, "Not an approver."),
+  },
+});
+
+export const pendingApprovalCountRoute = createRoute({
+  method: "get",
+  path: "/approvals/pending-count",
+  tags: ["Purchasing"],
+  summary: "Count pending approvals",
+  description:
+    "For a badge: how many approvals wait for a decision and when the first of them expires. Expired approvals " +
+    "(not decided before the proposal's quote expiry) are marked `EXPIRED` first and not counted. Approvers only.",
+  security,
+  responses: {
+    200: json(PendingApprovalCountSchema, "Pending approvals."),
     401: json(ErrorResponseSchema, "No valid session."),
     403: json(ErrorResponseSchema, "Not an approver."),
   },

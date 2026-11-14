@@ -44,6 +44,7 @@ import type {
   ListApprovalsQuery,
   ListProposalsQuery,
   Order,
+  PendingApprovalCount,
   OrderReceipt,
   Proposal,
   ProposalSelection,
@@ -464,6 +465,20 @@ export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Pr
     ...toApproval(a, names, quoteExpiry.get(a.proposalId) ?? null),
     proposal: proposals.get(a.proposalId)!,
   }));
+}
+
+/** For a badge: approvals waiting for a decision (expired ones are expired first) and the next expiry. */
+export async function pendingApprovalCount(actor: Actor): Promise<PendingApprovalCount> {
+  await expireStaleApprovals(actor);
+  const expiry = sql<Date | null>`min(coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}))`.mapWith((v) =>
+    v === null ? null : new Date(v as string),
+  );
+  const [row] = await (await db())
+    .select({ count: sql<number>`count(*)`.mapWith(Number), nextExpiresAt: expiry })
+    .from(approval)
+    .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+    .where(and(eq(approval.organizationId, actor.organizationId), eq(approval.status, "PENDING")));
+  return { count: row?.count ?? 0, nextExpiresAt: row?.nextExpiresAt?.toISOString() ?? null };
 }
 
 /**

@@ -188,6 +188,11 @@ export const PlaceOrderRequestSchema = z.object({
 
 export const ListApprovalsQuerySchema = z.object({ status: ApprovalStatusSchema.optional() });
 
+export const PendingApprovalCountSchema = z.object({
+  count: z.number().int().meta({ description: "Approvals waiting for a decision (expired ones not counted).", example: 2 }),
+  nextExpiresAt: isoDateTime.nullable().meta({ description: "When the first of them expires; null when none." }),
+});
+
 export const DecideApprovalRequestSchema = z
   .object({
     decision: z.enum(["APPROVED", "REJECTED"]),
@@ -221,6 +226,7 @@ export type CreateProposalRequest = z.infer<typeof CreateProposalRequestSchema>;
 export type ListProposalsQuery = z.infer<typeof ListProposalsQuerySchema>;
 export type PlaceOrderRequest = z.infer<typeof PlaceOrderRequestSchema>;
 export type ListApprovalsQuery = z.infer<typeof ListApprovalsQuerySchema>;
+export type PendingApprovalCount = z.infer<typeof PendingApprovalCountSchema>;
 export type DecideApprovalRequest = z.infer<typeof DecideApprovalRequestSchema>;
 export type ApprovalWithProposal = z.infer<typeof ApprovalWithProposalSchema>;
 
