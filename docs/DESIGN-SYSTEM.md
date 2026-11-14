@@ -8,7 +8,11 @@ One dashboard layout owns AppShell, AppHeader, AppSidebar, mobile drawer/tabs, n
 
 Primary navigation: Assistant, To review, Restocking, Recipes, Orders. Secondary: Settings & Administration, with Agents & Policies, Organization, Activity & Audit and Integrations. Use actual buyer/approver roles, including both roles. This presentation is not server authorization.
 
+The sidebar footer contains one full-width Settings & Administration link with a gear, visible label, softly tinted background and rounded corners, including in the mobile navigation drawer. Separate it from the navigation above with a fine border and preserve its active state. Account name and roles appear in the header account menu, without duplication in the sidebar.
+
 The header has page context on the left and notifications, theme, account on the right. Exactly one neutral `Development` tag is shown. Do not put Mock, Demo, Simulated, Simulation or internal status enums in customer-facing copy. Explain operational limitations where decisions need them: Payment unavailable, Not connected, Availability not confirmed, Order recorded. A recorded order never implies payment, supplier dispatch or confirmed delivery.
+
+The account trigger shows initials and the account name; its outline, filled avatar and trailing sliders icon appear when the popup is open. Reserve the icon's space while hidden so the trigger never shifts or resizes on opening. The right-aligned popup separates identity/roles/organization from action rows with fine dividers. Use sliders for Organization preferences, an outline shield and disclosure chevron for fixture-only Development tools, and an exit icon for connected sign-out. Keep native Escape/light dismissal and close the popup after navigation.
 
 ## Semantic tokens
 
@@ -38,7 +42,7 @@ The header has page context on the left and notifications, theme, account on the
 | success / surface      | #23734A / #EAF5EF | #7AC79B / #1B3026 |
 | info / surface         | #45627A / #EDF3F8 | #A5BFD5 / #202C36 |
 
-Light, Dark and System use the same markup, layout and typography. The dependency-free theme provider persists preference, listens to system changes and initializes the document before hydration. Theme switching works if storage is unavailable.
+Light, Dark and System use the same markup, layout and typography. System is the default until the user chooses an override. The header button immediately switches to the opposite resolved theme, without a menu; it shows a sun in Light and a moon in Dark, with a short rotation/fade transition that respects reduced-motion preferences. The dependency-free theme provider persists the user's choice, listens to system changes and initializes the document before hydration. Theme switching works if storage is unavailable.
 
 ## Typography and spacing
 
@@ -69,6 +73,7 @@ Shared presentation lives in `src/features/workspace/ui.tsx` and existing `src/c
 - Restocking plans and schedules are local until server support exists. Manual checks separate ready, partial/late, unknown and already-covered items. Unknown items remain excluded.
 - Recipe planning scales yield, aggregates compatible ingredients, subtracts kitchen stock once and verifies sales-unit conversions. Mandatory free-from requirements remain blocked when positive evidence is missing. Recipe edits are explicitly local drafts; creating a new version is a separate supported write.
 - Orders show recorded status, exact net totals, line details and available approval history. Checkout explains unavailable payment and has no fake payment action.
+- Order detail begins with Back to Orders, a reference/status heading, source and approval metadata, then the assistant and checkout actions. A divided items card uses package icons, clear quantity/date/unit-price hierarchy and right-aligned totals. A separate card shows a timestamped lifecycle with connecting lines and state icons; technical evidence expands below. Supplier identity, dietary claims, VAT and delivery confirmation must come from records, not the design reference.
 - Audit states its browser-local scope; integrations distinguish app health from provider connectivity. Unsupported credentials, scheduler and MCP actions explain missing support.
 
 ## Price, stock and status language

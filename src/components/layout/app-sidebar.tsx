@@ -61,17 +61,29 @@ export function NavigationLinks({
   );
 }
 
-export function SidebarNote({ viewer }: { viewer?: ShellViewer }) {
+export function SidebarNote({ onNavigate }: { onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const settingsActive =
+    pathname.startsWith("/admin/") ||
+    pathname.startsWith("/settings/") ||
+    matchesRoute(pathname, "/audit") ||
+    matchesRoute(pathname, "/integrations");
   return (
-    <div className="mt-auto border-t p-6 text-caption text-muted-foreground">
-      <p className="mb-1 font-medium text-foreground">
-        {viewer?.displayName ?? "Aimo TrustBridge"}
-      </p>
-      <p>
-        {viewer
-          ? viewer.roles.map((role) => (role === "BUYER" ? "Buyer" : "Approver")).join(" & ")
-          : "Purchasing with human oversight"}
-      </p>
+    <div className="mt-auto border-t p-3">
+      <Link
+        href="/admin/agents"
+        aria-label="Settings & Administration"
+        title="Settings & Administration"
+        aria-current={settingsActive ? "page" : undefined}
+        onClick={onNavigate}
+        className={cn(
+          "flex min-h-11 w-full items-center gap-3 rounded-lg bg-muted px-3 py-2 text-caption font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground",
+          settingsActive && "bg-accent text-accent-foreground",
+        )}
+      >
+        <Icon name="settings" className="size-[18px] shrink-0" />
+        <span className="whitespace-nowrap">Settings &amp; Administration</span>
+      </Link>
     </div>
   );
 }
@@ -84,7 +96,7 @@ export function AppSidebar({ viewer }: { viewer?: ShellViewer }) {
     >
       <Brand />
       <NavigationLinks viewer={viewer} />
-      <SidebarNote viewer={viewer} />
+      <SidebarNote />
     </aside>
   );
 }

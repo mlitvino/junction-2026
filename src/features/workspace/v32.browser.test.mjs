@@ -54,9 +54,13 @@ test("complete v3.2 frontend", async (t) => {
     await page.keyboard.press("Escape");
   }
   async function theme(value) {
-    await page.getByRole("button", { name: "Choose theme", exact: true }).click();
-    await page.getByRole("radio", { name: value, exact: true }).check();
-    await page.keyboard.press("Escape");
+    const dark = await page.evaluate(() => document.documentElement.classList.contains("dark"));
+    if (dark !== (value === "Dark"))
+      await page.getByRole("button", { name: "Toggle color theme", exact: true }).click();
+    await page.waitForFunction(
+      (expected) => document.documentElement.classList.contains("dark") === expected,
+      value === "Dark",
+    );
   }
   async function overflow() {
     const dims = await page.evaluate(() => ({
@@ -82,6 +86,11 @@ test("complete v3.2 frontend", async (t) => {
   await t.test("A1–A3: approval-first request with continuous composer", async () => {
     await page.goto(base + "/buyer");
     await page.getByRole("heading", { name: "What can I help you order?", exact: true }).waitFor();
+    const sidebar = page.getByRole("complementary", { name: "Application sidebar", exact: true });
+    const settings = sidebar.getByRole("link", { name: "Settings & Administration", exact: true });
+    assert.equal(await settings.innerText(), "Settings & Administration");
+    assert.equal(await sidebar.getByText("anna.lindholm", { exact: true }).count(), 0);
+    assert.equal(await sidebar.getByText("Buyer & Approver", { exact: true }).count(), 0);
     await page
       .getByRole("textbox", { name: "What do you need?", exact: true })
       .fill("Order 100 litres of lactose-free milk");
@@ -284,7 +293,17 @@ test("complete v3.2 frontend", async (t) => {
     await page.goto(base + "/orders");
     await page.getByRole("heading", { name: "Orders", exact: true }).waitFor();
     await page.goto(base + `/orders/${order}`);
-    await page.getByRole("heading", { name: "Order details", exact: true }).waitFor();
+    await page.getByRole("heading", { name: `Order ${order}`, exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Items in this order (1)", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Order Activity & Lifecycle", exact: true }).waitFor();
+    await page.getByText("Not provided", { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("link", { name: "Back to Orders", exact: true }).getAttribute("href"),
+      "/orders",
+    );
+    await page.getByRole("link", { name: "Back to Orders", exact: true }).click();
+    await page.waitForURL(base + "/orders");
+    await page.getByRole("heading", { name: "Orders", exact: true }).waitFor();
     await page.goto(base + "/admin/agents/kitchen");
     await page.getByRole("heading", { name: "Purchasing policies", exact: true }).waitFor();
     await page.getByRole("button", { name: "Save purchasing settings", exact: true }).waitFor();
@@ -357,6 +376,7 @@ test("complete v3.2 frontend", async (t) => {
       ["recipe", base + `/recipes/${recipe}/plan`],
       ["approval", base + `/approvals/${approval}`],
       ["settings", base + "/admin/agents/kitchen"],
+      ["order", base + `/orders/${order}`],
     ];
     for (const color of ["Light", "Dark"]) {
       await theme(color);
@@ -380,7 +400,14 @@ test("complete v3.2 frontend", async (t) => {
         .getByRole("textbox", { name: "Continue the conversation", exact: true })
         .isEditable(),
     );
-    await theme("System");
+    // A fresh preference follows the OS; subsequent clicks save an explicit override.
+    await page.evaluate(() => localStorage.removeItem("aimo-theme"));
+    await page.reload();
+    await settle();
+    assert.equal(
+      await page.evaluate(() => document.documentElement.dataset.themePreference),
+      "system",
+    );
     await page.emulateMedia({ colorScheme: "light" });
     await page.waitForFunction(() => !document.documentElement.classList.contains("dark"));
     await page.emulateMedia({ colorScheme: "dark" });

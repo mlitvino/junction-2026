@@ -35,7 +35,7 @@ export const navigationItems: readonly NavigationItem[] = [
     href: "/restocking",
     label: "Restocking",
     context: "Restocking",
-    icon: "integrations",
+    icon: "restocking",
     group: "workspace",
     roles: ["BUYER", "APPROVER"],
   },
@@ -43,7 +43,7 @@ export const navigationItems: readonly NavigationItem[] = [
     href: "/recipes",
     label: "Recipes",
     context: "Recipes",
-    icon: "leaf",
+    icon: "recipes",
     group: "workspace",
     roles: ["BUYER", "APPROVER"],
   },
@@ -59,7 +59,7 @@ export const navigationItems: readonly NavigationItem[] = [
     href: "/admin/agents",
     label: "Settings & Administration",
     context: "Settings & Administration",
-    icon: "agents",
+    icon: "settings",
     group: "administration",
     roles: ["BUYER", "APPROVER"],
   },
@@ -94,7 +94,7 @@ export function matchesRoute(pathname: string, href: string) {
 export function visibleNavigation(viewer?: ShellViewer) {
   return navigationItems.filter(
     (item) =>
-      (item.group === "workspace" || item.href === "/admin/agents") &&
+      item.group === "workspace" &&
       (!viewer || item.roles.some((role) => viewer.roles.includes(role))),
   );
 }

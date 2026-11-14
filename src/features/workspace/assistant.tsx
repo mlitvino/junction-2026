@@ -81,6 +81,20 @@ export function ConversationComposer({ id, welcome = false }: { id?: string; wel
           className="block w-full resize-none bg-transparent text-large-body outline-none focus-visible:outline-none"
           value={draft}
           onChange={(event) => set(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key !== "Enter" ||
+              event.shiftKey ||
+              event.ctrlKey ||
+              event.altKey ||
+              event.metaKey ||
+              event.nativeEvent.isComposing
+            )
+              return;
+            event.preventDefault();
+            if (!event.repeat && !action.busy && draft.trim())
+              event.currentTarget.form?.requestSubmit();
+          }}
           placeholder={
             welcome
               ? "Describe what your kitchen needs, or choose a suggestion…"
