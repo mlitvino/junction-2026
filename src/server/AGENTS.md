@@ -13,6 +13,13 @@ Every file here starts with `import "server-only";`. See the root AGENTS.md for 
 - `server/api/routes/<name>.docs.ts`: the OpenAPI `createRoute` definitions for one area (paths, summaries, descriptions, request/response docs). Keep all documentation here.
 - `server/api/routes/<name>.ts`: the router for that area, `createRouter().openapi(route, handler)`; handlers only call `server/services`. Reference: `routes/health.docs.ts` + `routes/health.ts`.
 
+## Auth (Better Auth)
+
+- `server/auth/auth.ts`: `getAuth()` (lazy), username plugin, sessions in Postgres via `getPool()`.
+- `server/auth/migrate.ts`: `ensureAuthSchema()` creates Better Auth's tables on first use.
+- `server/auth/session.ts`: `getSessionUser(headers)` for server code.
+- `server/api/middleware/session.ts`: `requireSession`, opt-in per route (the API is open for now). Use it as `createRouter().use("/<path>", requireSession)`; then `c.var.user` is set. Never read `c.var.user` in a route without it.
+
 ## Agents and database
 
 - Mastra instance: `getMastra()` in `server/mastra.ts` (lazy; Postgres storage). Agents live in `server/agents/`, tools in `server/agents/tools/`. Use `createTool()` with a Zod `inputSchema`; plain objects don't work.

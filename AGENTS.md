@@ -20,7 +20,7 @@ Two developers, each working with their own AI agent. **Edit only the zone of th
 
 | Owner | Paths |
 | --- | --- |
-| Backend/infra dev | `src/server/`, `src/app/api/`, `deploy/`, `.github/`, `.claude/`, `Dockerfile`, `compose.dev.yml`, `next.config.ts`, `package.json` dependencies |
+| Backend/infra dev | `src/server/`, `src/app/api/`, `src/proxy.ts`, `deploy/`, `.github/`, `.claude/`, `Dockerfile`, `compose.dev.yml`, `next.config.ts`, `package.json` dependencies |
 | Frontend dev | `src/app/` (except `src/app/api/`), `src/components/`, `src/features/`, `src/client/` |
 | Joint, by agreement only | `src/shared/contracts/` |
 
@@ -32,6 +32,7 @@ Before editing in a zone, read that zone's `AGENTS.md` (`src/<zone>/AGENTS.md`, 
 - Tailwind CSS v4 + shadcn/ui (`src/components/ui`, `cn()` in `src/components/lib/utils.ts`)
 - Zod v4 for API contracts
 - Hono + `@hono/zod-openapi` for every `/api` route; OpenAPI 3.1 spec at `/api/openapi.json`, Swagger UI at `/api/docs` (both public)
+- Auth: Better Auth (login + password via its username plugin, sessions in Postgres), see "Auth" below
 - AI agents: Mastra (`@mastra/core`, `@mastra/pg`), server-side only, in `src/server/agents/`. Listed in `serverExternalPackages` in `next.config.ts`.
 - DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `pnpm db:up`. Migrations are additive only.
 - ESLint (flat config, `eslint.config.mjs`) + Prettier
@@ -57,7 +58,7 @@ src/
 
 ## Boundary rules (enforced by ESLint `no-restricted-imports`)
 
-1. **Frontend** (`app/` except `app/api/`, `components/`, `features/`, `client/`) never imports from `src/server/`. It talks to the backend only through `src/client/api-client.ts`.
+1. **Frontend** (`app/` except `app/api/`, `components/`, `features/`, `client/`) never imports from `src/server/`. It talks to the backend only through `src/client/` (`api-client.ts` for our API, `auth-client.ts` for sign-in/up/out and the session).
 2. **Backend** (`app/api/`, `server/`) never imports from `components/`, `features/`, `client/`.
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
 4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints live in `src/server/api/routes/` as two files per area: `<name>.docs.ts` (OpenAPI `createRoute` definitions using schemas from `shared/contracts`) and `<name>.ts` (router + handlers that call `server/services`). No logic in either.
@@ -91,6 +92,13 @@ Step 1 is joint, steps 2–3 belong to the backend dev, steps 4–5 to the front
 5. UI in `src/features/<name>/`, calling `apiClient` only.
 
 The frontend can build steps 4–5 against the mock as soon as step 1 is agreed, before steps 2–3 exist.
+
+## Auth
+
+- **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me.ts`. Plan: switch to default-deny before real data goes in.
+- **Pages:** `src/proxy.ts` redirects to `/login` without a session cookie (cookie check only; the API checks sessions for real). `/login` and `/signup` are public. Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
+- **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
+- Its tables (`user`, `session`, `account`, `verification`) are created on first use. Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
 
 ## Secrets
 

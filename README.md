@@ -9,10 +9,11 @@ Trusted Trade Agents (Junction 2026, Valio Aimo challenge): a prototype interfac
 ## Getting started
 ```bash
 pnpm install
-cp .env.example .env.local
+cp .env.example .env.local   # then set BETTER_AUTH_SECRET (openssl rand -base64 32)
+pnpm db:up                   # Postgres is needed for accounts
 pnpm dev
 ```
-Open http://localhost:3000. The page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
+Open http://localhost:3000. You're sent to `/login`; create an account at `/signup` (login + password, min. 8 characters). The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
 
 ## Mocks (frontend without a backend)
 Set this in `.env.local`:
