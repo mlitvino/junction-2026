@@ -3,6 +3,7 @@ import "server-only";
 import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
+import { AgentError } from "@/server/agents/mode";
 import { getAuth } from "@/server/auth/auth";
 import { ensureDatabase } from "@/server/db/migrate";
 
@@ -92,6 +93,11 @@ app.notFound((c) => c.json({ error: "Not found" }, 404));
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
+  // Agent not configured (503) or the model call failed (502): say so, log the cause, hide details.
+  if (err instanceof AgentError) {
+    if (err.status === 502) console.error(err.message, err.cause);
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
   console.error(err);
   return c.json({ error: "Internal error" }, 500);
 });

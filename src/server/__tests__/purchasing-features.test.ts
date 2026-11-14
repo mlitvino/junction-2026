@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { app } from "@/server/api/app";
-import { GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
+import { AgentError, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
 import { runPurchasingAgent } from "@/server/services/agent";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
@@ -223,6 +223,10 @@ describe("Agent mode gating", () => {
       assert.equal(isAgentTestMode(), false);
       assert.throws(() => requireGeminiApiKey(), /GOOGLE_GENERATIVE_AI_API_KEY/);
       assert.throws(() => resolveAgentModel(mockModel), /GOOGLE_GENERATIVE_AI_API_KEY/);
+      assert.throws(
+        () => requireGeminiApiKey(),
+        (err) => err instanceof AgentError && err.status === 503 && err.code === "AGENT_NOT_CONFIGURED",
+      );
     });
 
     await withEnv({ TEST_MODE: "false", GOOGLE_GENERATIVE_AI_API_KEY: undefined }, () => {
