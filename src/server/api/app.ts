@@ -86,8 +86,27 @@ app.doc31("/openapi.json", {
       "[/api/auth/reference](/api/auth/reference). " +
       "Sign in there first; the session cookie it sets is what the endpoints marked with a lock need.",
   },
+  // Swagger UI shows tags in this order. Without the list it uses the order of first use (router
+  // registration below), which put Agents last; this keeps that order with Agents moved to the top.
+  // Every tag used by a route should be listed here; the API surface test checks it.
+  tags: [
+    { name: "Agents", description: "The purchasing agent and prompt extraction (Gemini, or deterministic with TEST_MODE=TRUE)." },
+    { name: "System", description: "Health and the proposal-signing public key." },
+    { name: "Auth", description: "The signed-in user. Sign-up and sign-in: /api/auth/reference." },
+    { name: "Organization", description: "Members and roles." },
+    { name: "Preferences", description: "The organization's settings for the agent and approvals." },
+    { name: "Catalog", description: "Product search, details, ranking, substitutes, prices and availability." },
+    { name: "Policy", description: "The organization's rules applied to a draft order." },
+    { name: "Purchasing", description: "Proposals, approvals, orders, receipts and verification." },
+    { name: "Audit", description: "The organization's audit log." },
+    { name: "Inquiries", description: "Price and availability inquiries." },
+    { name: "Inventory", description: "Kitchen stock." },
+    { name: "Recipes", description: "Recipes and recipe-to-proposal planning." },
+    { name: "Intelligence", description: "Stock-out alerts, recurring-order checks and recommendations." },
+  ],
 });
-app.get("/docs", swaggerUI({ url: "/api/openapi.json" }));
+// Categories start collapsed; click one to open it.
+app.get("/docs", swaggerUI({ url: "/api/openapi.json", docExpansion: "none" }));
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 

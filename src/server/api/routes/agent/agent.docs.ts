@@ -8,7 +8,7 @@ import { AgentErrorResponseSchema, ErrorResponseSchema } from "@/shared/contract
 export const postAgentRunRoute = createRoute({
   method: "post",
   path: "/agent/run",
-  tags: ["Agent"],
+  tags: ["Agents"],
   summary: "Run an autonomous turn of the Valio Aimo Purchasing Agent",
   description:
     "One turn of the purchasing agent, acting for the signed-in buyer: search products, ask prices and " +

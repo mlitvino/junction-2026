@@ -32,7 +32,16 @@ describe("API surface", () => {
   it("documents the unified purchasing routes and none of the retired ones", async () => {
     const res = await get("/api/openapi.json");
     assert.equal(res.status, 200);
-    const paths = Object.keys(((await res.json()) as { paths: Record<string, unknown> }).paths);
+    const spec = (await res.json()) as {
+      paths: Record<string, Record<string, { tags?: string[] }>>;
+      tags?: { name: string }[];
+    };
+    const paths = Object.keys(spec.paths);
+    // Tag order drives Swagger UI: Agents first, and every used tag is listed.
+    const listed = (spec.tags ?? []).map((t) => t.name);
+    assert.equal(listed[0], "Agents");
+    const used = new Set(Object.values(spec.paths).flatMap((ops) => Object.values(ops).flatMap((op) => op.tags ?? [])));
+    for (const tag of used) assert.ok(listed.includes(tag), `tag not listed in app.ts: ${tag}`);
     for (const p of [
       "/api/proposals",
       "/api/proposals/from-prompt",
