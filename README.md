@@ -27,7 +27,10 @@ and restart `pnpm dev`. `src/client/api-client.ts` will then return data from `s
 pnpm db:up   # local DB on 127.0.0.1:5432 (docker compose -f compose.dev.yml up -d)
 ```
 
-`DATABASE_URL` in `.env.local` (see `.env.example`) points to it. Mastra creates its own tables on first use. The agent currently uses a mock model, so no LLM API key is needed.
+`DATABASE_URL` in `.env.local` (see `.env.example`) points to it. Mastra creates its own tables on first use.
+
+## LLM (Gemini)
+Put your Gemini API key in `.env.local` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.example`); the purchasing agent then uses `google/gemini-3.8-flash`. Without the key it falls back to a mock model, so nobody needs a key to run the app.
 
 ## Commands
 | Command | What it does |
