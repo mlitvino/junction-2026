@@ -20,8 +20,12 @@ import {
   canDecide,
   canOrder,
   canRequestApproval,
+  checkLiveOffer,
+  checkQuote,
   contentHash,
   initialStatus,
+  quoteExpiresAt,
+  type LiveLineCheck,
   type RuleResult,
 } from "@/server/purchasing/rules";
 import type {
@@ -38,6 +42,7 @@ import type {
 } from "@/shared/contracts/purchasing";
 import type { PolicyOutcome } from "@/shared/contracts/policy";
 
+import { getAvailability, getPrices } from "./catalog";
 import { evaluateDraft } from "./policy";
 
 // Purchasing flow: proposals, approvals, orders. Every function takes the caller's organization
@@ -86,6 +91,16 @@ function toApproval(row: ApprovalRow): Approval {
   };
 }
 
+/** Rows from before availability was frozen have no availability fields. */
+function withAvailability(line: StoredProposalLine) {
+  return {
+    ...line,
+    orderable: line.orderable ?? null,
+    availableDate: line.availableDate ?? null,
+    availableQuantity: line.availableQuantity ?? null,
+  };
+}
+
 function toProposal(row: ProposalRow, approvalRow: ApprovalRow | null, orderId: string | null): Proposal {
   return {
     id: row.id,
@@ -93,11 +108,12 @@ function toProposal(row: ProposalRow, approvalRow: ApprovalRow | null, orderId: 
     createdBy: row.createdBy,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    lines: row.lines,
+    lines: row.lines.map(withAvailability),
     totalExclVat: row.totalExclVat,
     currency: row.currency,
     pricingDate: row.pricingDate,
     priceSource: row.priceSource as Proposal["priceSource"],
+    quoteExpiresAt: row.quoteExpiresAt?.toISOString() ?? null,
     decision: row.decision as Proposal["decision"],
     hash: row.hash,
     note: row.note,
@@ -116,7 +132,7 @@ function toOrder(row: PurchaseOrderRow): Order {
     createdAt: row.createdAt.toISOString(),
     idempotencyKey: row.idempotencyKey,
     proposalHash: row.proposalHash,
-    lines: row.lines,
+    lines: row.lines.map(withAvailability),
     totalExclVat: row.totalExclVat,
     currency: row.currency,
   };
@@ -178,6 +194,9 @@ export async function createProposal(actor: Actor, request: CreateProposalReques
     salesUnit: l.salesUnit,
     unitPriceExclVat: l.unitPriceExclVat,
     lineTotalExclVat: l.lineTotalExclVat,
+    orderable: l.orderable,
+    availableDate: l.availableDate,
+    availableQuantity: l.availableQuantity,
   }));
   const stored: StoredDecision = {
     outcome: decision.outcome,
@@ -193,6 +212,8 @@ export async function createProposal(actor: Actor, request: CreateProposalReques
     priceSource: decision.source,
     decision: stored,
   };
+  const createdAt = new Date();
+  const expiresAt = quoteExpiresAt(createdAt);
 
   const [row] = await d
     .insert(proposal)
@@ -201,8 +222,12 @@ export async function createProposal(actor: Actor, request: CreateProposalReques
       createdBy: actor.userId,
       status: initialStatus(decision.outcome),
       outcome: decision.outcome,
-      hash: contentHash(frozen),
+      // The expiry is part of the deal, so the hash covers it too.
+      hash: contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() }),
       note: request.note || null,
+      createdAt,
+      updatedAt: createdAt,
+      quoteExpiresAt: expiresAt,
       ...frozen,
     })
     .returning();
@@ -260,6 +285,7 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
     requireCreator(row, actor);
     if (row.status === "PENDING_APPROVAL") return reload(tx, row); // already requested: same approval
     enforce(canRequestApproval(row.status as ProposalStatus, row.outcome as PolicyOutcome));
+    enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx.insert(approval).values({
       proposalId: row.id,
       organizationId: actor.organizationId,
@@ -303,6 +329,7 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
     enforce(
       canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash),
     );
+    enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx
       .update(approval)
       .set({
@@ -321,7 +348,7 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
 
 export type PlacedOrder = { order: Order; replayed: boolean };
 
-async function orderByKey(tx: Tx, actor: Actor, key: string, proposalId: string): Promise<PlacedOrder | null> {
+async function orderByKey(tx: Tx | ReturnType<typeof getDb>, actor: Actor, key: string, proposalId: string): Promise<PlacedOrder | null> {
   const [existing] = await tx
     .select()
     .from(purchaseOrder)
@@ -332,13 +359,51 @@ async function orderByKey(tx: Tx, actor: Actor, key: string, proposalId: string)
   return { order: toOrder(existing), replayed: true };
 }
 
+/** Current Valio prices and availability for frozen lines (network: call outside transactions). */
+async function liveOffer(lines: readonly StoredProposalLine[], date: string): Promise<LiveLineCheck[]> {
+  const productIds = [...new Set(lines.map((l) => l.productId))];
+  const [prices, availability] = await Promise.all([
+    getPrices({ productIds, date }),
+    getAvailability({ productIds, date }),
+  ]);
+  const priceBy = new Map(prices.quotes.map((q) => [q.productId, q]));
+  const availabilityBy = new Map(availability.items.map((a) => [a.productId, a]));
+  return productIds.map((productId) => {
+    const quote = priceBy.get(productId);
+    const avail = availabilityBy.get(productId);
+    return {
+      productId,
+      unitPriceExclVat: quote?.found ? quote.priceExclVat : null,
+      orderable: avail?.orderable ?? null,
+      salesBlock: avail?.salesBlock ?? null,
+    };
+  });
+}
+
+const ORDERABLE: readonly string[] = ["READY", "APPROVED"];
+
+/**
+ * Orders a proposal: state + approval checks, quote expiry, and a re-check that Valio's prices
+ * (5-minute cache) and availability still match the frozen ones. A replay of the same key returns
+ * the existing order without any check.
+ */
 export async function placeOrder(actor: Actor, proposalId: string, idempotencyKey: string): Promise<PlacedOrder> {
   const d = await db();
+  const replay = await orderByKey(d, actor, idempotencyKey, proposalId);
+  if (replay) return replay;
+  const [pre] = await d
+    .select({ status: proposal.status, lines: proposal.lines, pricingDate: proposal.pricingDate })
+    .from(proposal)
+    .where(and(eq(proposal.id, proposalId), eq(proposal.organizationId, actor.organizationId)));
+  if (!pre) throw notFound("Proposal");
+  // Only ask Valio when the order could go through; other states fail the checks below anyway.
+  const live = ORDERABLE.includes(pre.status) ? await liveOffer(pre.lines, pre.pricingDate) : [];
+
   try {
     return await d.transaction(async (tx) => {
       const row = await lockProposal(tx, actor.organizationId, proposalId);
-      const replay = await orderByKey(tx, actor, idempotencyKey, proposalId);
-      if (replay) return replay;
+      const replayed = await orderByKey(tx, actor, idempotencyKey, proposalId);
+      if (replayed) return replayed;
       const [approvalRow] = await tx.select().from(approval).where(eq(approval.proposalId, row.id));
       enforce(
         canOrder(
@@ -348,6 +413,8 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
           row.hash,
         ),
       );
+      enforce(checkQuote(row.quoteExpiresAt, new Date()));
+      enforce(checkLiveOffer(row.lines, live));
       const [order] = await tx
         .insert(purchaseOrder)
         .values({
@@ -367,8 +434,8 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
   } catch (err) {
     // The same key raced on another proposal (unique violation): answer like a replay would.
     if ((err as { cause?: { code?: string } }).cause?.code === "23505" || (err as { code?: string }).code === "23505") {
-      const replay = await d.transaction((tx) => orderByKey(tx, actor, idempotencyKey, proposalId));
-      if (replay) return replay;
+      const again = await orderByKey(d, actor, idempotencyKey, proposalId);
+      if (again) return again;
     }
     throw err;
   }

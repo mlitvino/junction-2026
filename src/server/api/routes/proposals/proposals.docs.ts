@@ -25,7 +25,14 @@ const auth = {
   403: json(PurchasingErrorSchema, "Missing role, or not the proposal's creator."),
 };
 const notFound = { 404: json(PurchasingErrorSchema, "No such proposal in your organization.") };
-const conflict = { 409: json(PurchasingErrorSchema, "Not possible in the proposal's current state.") };
+const conflict = {
+  409: json(
+    PurchasingErrorSchema,
+    "Not possible now. `code`: `INVALID_STATE` (current status), `QUOTE_EXPIRED` (prices older than 24 h), " +
+      "`PRICE_CHANGED` / `AVAILABILITY_CHANGED` (order time: Valio's price or availability differs from the proposal), " +
+      "`IDEMPOTENCY_CONFLICT` (key used for another proposal). Except `INVALID_STATE`, create a new proposal.",
+  ),
+};
 const notAllowed = { 422: json(PurchasingErrorSchema, "Not allowed by the policy decision.") };
 const IdParam = z.object({ id: z.string().meta({ description: "Proposal id." }) });
 
@@ -35,9 +42,10 @@ export const createProposalRoute = createRoute({
   tags: ["Purchasing"],
   summary: "Create a proposal",
   description:
-    "Prices the lines on the server, runs the policy check (the buyer's preferences) and freezes lines, prices, " +
-    "total and decision. Status: `BLOCKED` when the policy denies it, otherwise `READY`. A proposal never changes: " +
-    "to change it, create a new one and cancel the old one.",
+    "Prices the lines on the server for the requested delivery `date`, checks availability, runs the policy check " +
+    "(the buyer's preferences) and freezes lines, prices, availability, total and decision. The prices hold for " +
+    "24 hours (`quoteExpiresAt`). Status: `BLOCKED` when the policy denies it, otherwise `READY`. A proposal never " +
+    "changes: to change it, create a new one and cancel the old one.",
   security,
   request: { body: { content: { "application/json": { schema: CreateProposalRequestSchema } }, required: true } },
   responses: {
@@ -99,6 +107,8 @@ export const placeOrderRoute = createRoute({
   summary: "Order a proposal (simulated)",
   description:
     "Creates the order for an allowed (`READY` + `ALLOW`) or `APPROVED` proposal; the proposal becomes `ORDERED`. " +
+    "The quote must not be expired, and Valio's current price and availability (cached up to 5 minutes) must still " +
+    "match the proposal, otherwise 409 and nothing is ordered. " +
     "Send a client-generated `idempotencyKey`: repeating it returns the same order (200), using it for another " +
     "proposal is a 409. The order is simulated: nothing is sent to Valio.",
   security,
@@ -113,5 +123,6 @@ export const placeOrderRoute = createRoute({
     ...notFound,
     ...conflict,
     ...notAllowed,
+    502: json(ErrorResponseSchema, "The Valio API failed or is unreachable (price re-check)."),
   },
 });

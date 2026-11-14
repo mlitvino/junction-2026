@@ -37,6 +37,9 @@ export const ProposalLineSchema = z.object({
   salesUnit: z.string().nullable(),
   unitPriceExclVat: z.number().nullable(),
   lineTotalExclVat: z.number().nullable(),
+  orderable: z.boolean().nullable().meta({ description: "Availability when the proposal was made; null = Valio gave no answer." }),
+  availableDate: z.string().nullable().meta({ description: "Earliest delivery date when the proposal was made." }),
+  availableQuantity: z.number().nullable().meta({ description: "In salesUnit; null when unknown." }),
 });
 
 export const ProposalDecisionSchema = z.object({
@@ -71,8 +74,12 @@ export const ProposalSchema = z.object({
   lines: z.array(ProposalLineSchema),
   totalExclVat: z.number().nullable(),
   currency: z.string(),
-  pricingDate: z.iso.date(),
+  pricingDate: z.iso.date().meta({ description: "The requested delivery date; prices and availability are for it." }),
   priceSource: DataSourceSchema,
+  quoteExpiresAt: isoDateTime.nullable().meta({
+    description:
+      "The frozen prices can be sent for approval, approved and ordered until then (24 h). After it: 409 `QUOTE_EXPIRED`, create a new proposal.",
+  }),
   decision: ProposalDecisionSchema,
   hash: z.string().meta({ description: "SHA-256 of the frozen content (lines, prices, total, decision)." }),
   note: z.string().nullable(),
@@ -101,7 +108,9 @@ export const CreateProposalRequestSchema = z.object({
     .array(z.object({ productId, quantity: z.number().positive().meta({ example: 20 }) }))
     .min(1)
     .max(50),
-  date: z.iso.date().optional().meta({ description: "Delivery date for pricing. Defaults to today (Helsinki)." }),
+  date: z.iso.date().optional().meta({
+    description: "The delivery date the goods are needed; prices and availability are checked for it. Defaults to today (Helsinki).",
+  }),
   note: z.string().trim().max(1000).optional(),
 });
 

@@ -2,7 +2,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { canCancel, canDecide, canOrder, canRequestApproval, contentHash, initialStatus } from "./rules.ts";
+import {
+  canCancel,
+  canDecide,
+  canOrder,
+  canRequestApproval,
+  checkLiveOffer,
+  checkQuote,
+  contentHash,
+  initialStatus,
+  quoteExpiresAt,
+  type LiveLineCheck,
+} from "./rules.ts";
 
 const code = (r: ReturnType<typeof canOrder>) => (r.ok ? "OK" : r.code);
 
@@ -50,4 +61,37 @@ test("cancelling: only before an order or a final decision", () => {
   for (const s of ["READY", "PENDING_APPROVAL", "APPROVED"] as const) assert.equal(code(canCancel(s)), "OK");
   for (const s of ["ORDERED", "REJECTED", "BLOCKED", "CANCELLED"] as const)
     assert.equal(code(canCancel(s)), "INVALID_STATE");
+});
+
+test("quote expiry: valid until 24 h after creation, null never expires", () => {
+  const created = new Date("2026-11-14T10:00:00Z");
+  const expires = quoteExpiresAt(created);
+  assert.equal(expires.toISOString(), "2026-11-15T10:00:00.000Z");
+  assert.equal(code(checkQuote(expires, new Date("2026-11-15T09:59:59Z"))), "OK");
+  assert.equal(code(checkQuote(expires, new Date("2026-11-15T10:00:00Z"))), "QUOTE_EXPIRED");
+  assert.equal(code(checkQuote(null, new Date("2030-01-01T00:00:00Z"))), "OK");
+});
+
+test("order-time re-check: same prices pass, changes and blocks refuse", () => {
+  const frozen = [
+    { productId: "a", unitPriceExclVat: 8.54 },
+    { productId: "b", unitPriceExclVat: 2 },
+  ];
+  const live = (over: Partial<Record<string, Partial<LiveLineCheck>>> = {}): LiveLineCheck[] =>
+    ["a", "b"].map((id, i) => ({
+      productId: id,
+      unitPriceExclVat: frozen[i]!.unitPriceExclVat,
+      orderable: true,
+      salesBlock: false,
+      ...over[id],
+    }));
+  assert.equal(code(checkLiveOffer(frozen, live())), "OK");
+  assert.equal(code(checkLiveOffer(frozen, live({ a: { unitPriceExclVat: 8.6 } }))), "PRICE_CHANGED");
+  assert.equal(code(checkLiveOffer(frozen, live({ b: { unitPriceExclVat: null } }))), "PRICE_CHANGED");
+  assert.equal(code(checkLiveOffer(frozen, live().slice(0, 1))), "PRICE_CHANGED");
+  assert.equal(code(checkLiveOffer(frozen, live({ b: { salesBlock: true } }))), "AVAILABILITY_CHANGED");
+  assert.equal(code(checkLiveOffer(frozen, live({ a: { orderable: false } }))), "AVAILABILITY_CHANGED");
+  assert.equal(code(checkLiveOffer(frozen, live({ a: { orderable: null, salesBlock: null } }))), "OK");
+  const msg = checkLiveOffer(frozen, live({ a: { unitPriceExclVat: 9 } }));
+  assert.ok(!msg.ok && msg.message.includes("a"));
 });

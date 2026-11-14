@@ -26,6 +26,10 @@ export type StoredProposalLine = {
   salesUnit: string | null;
   unitPriceExclVat: number | null;
   lineTotalExclVat: number | null;
+  /** Availability on the requested date when the proposal was made (absent on older rows). */
+  orderable?: boolean | null;
+  availableDate?: string | null;
+  availableQuantity?: number | null;
 };
 
 /** Frozen decision: see ProposalDecisionSchema. */
@@ -54,6 +58,8 @@ export const proposal = pgTable(
     decision: jsonb("decision").$type<StoredDecision>().notNull(),
     hash: text("hash").notNull(),
     note: text("note"),
+    /** Frozen prices can be approved and ordered until then. Null on rows from before it existed. */
+    quoteExpiresAt: timestamp("quote_expires_at", tz),
     createdAt: timestamp("created_at", tz).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", tz).notNull().defaultNow(),
   },

@@ -99,6 +99,10 @@ proposalsRouter.openapi(placeOrderRoute, async (c) => {
     );
     return replayed ? c.json(order, 200) : c.json(order, 201);
   } catch (err) {
+    if (err instanceof ValioApiError) {
+      console.error("Valio request failed", err.status, err.message);
+      return c.json({ error: "Valio is unavailable" }, 502);
+    }
     const f = failure(err);
     if (f.status === 403) return c.json(f.body, 403);
     if (f.status === 404) return c.json(f.body, 404);

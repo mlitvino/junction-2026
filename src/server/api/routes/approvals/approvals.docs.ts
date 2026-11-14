@@ -52,6 +52,10 @@ export const decideApprovalRoute = createRoute({
     401: json(ErrorResponseSchema, "No valid session."),
     403: json(ErrorResponseSchema, "Not an approver."),
     404: json(PurchasingErrorSchema, "No such approval in your organization."),
-    409: json(PurchasingErrorSchema, "Already decided or cancelled, or the hash doesn't match."),
+    409: json(
+      PurchasingErrorSchema,
+      "`INVALID_STATE` (already decided or cancelled), `HASH_MISMATCH` (not the proposal you reviewed) or " +
+        "`QUOTE_EXPIRED` (the proposal's prices are older than 24 h; the buyer creates a new one).",
+    ),
   },
 });

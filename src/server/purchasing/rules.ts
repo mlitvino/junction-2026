@@ -80,3 +80,64 @@ const CANCELLABLE: readonly ProposalStatus[] = ["READY", "PENDING_APPROVAL", "AP
 export function canCancel(status: ProposalStatus): RuleResult {
   return CANCELLABLE.includes(status) ? ok : no(409, "INVALID_STATE", `A ${status} proposal can't be cancelled.`);
 }
+
+// ---------- Fixed prices ----------
+
+/** How long a proposal's frozen prices can be approved and ordered. */
+export const QUOTE_TTL_HOURS = 24;
+
+export function quoteExpiresAt(createdAt: Date): Date {
+  return new Date(createdAt.getTime() + QUOTE_TTL_HOURS * 3_600_000);
+}
+
+/** Expired quotes can't be sent, approved or ordered. Null (proposals from before expiry existed): never expires. */
+export function checkQuote(expiresAt: Date | null, now: Date): RuleResult {
+  if (expiresAt && now.getTime() >= expiresAt.getTime())
+    return no(409, "QUOTE_EXPIRED", "The prices in this proposal have expired. Create a new proposal.");
+  return ok;
+}
+
+export type LiveLineCheck = {
+  productId: string;
+  /** Current EUR excl. VAT per sales unit; null when Valio has no price now. */
+  unitPriceExclVat: number | null;
+  /** Current availability; null when Valio gave no answer. */
+  orderable: boolean | null;
+  salesBlock: boolean | null;
+};
+
+/**
+ * Order-time re-check: the frozen prices must still be Valio's prices, and nothing may have become
+ * sales-blocked or undeliverable. Lines missing from `current` count as changed.
+ */
+export function checkLiveOffer(
+  frozen: readonly { productId: string; unitPriceExclVat: number | null }[],
+  current: readonly LiveLineCheck[],
+): RuleResult {
+  const now = new Map(current.map((c) => [c.productId, c]));
+  const priceChanged = frozen
+    .filter((line) => {
+      const c = now.get(line.productId);
+      return !c || c.unitPriceExclVat === null || c.unitPriceExclVat !== line.unitPriceExclVat;
+    })
+    .map((line) => line.productId);
+  if (priceChanged.length)
+    return no(
+      409,
+      "PRICE_CHANGED",
+      `The price of ${[...new Set(priceChanged)].join(", ")} has changed since the proposal. Create a new proposal.`,
+    );
+  const unavailable = frozen
+    .filter((line) => {
+      const c = now.get(line.productId);
+      return !!c && (c.salesBlock === true || c.orderable === false);
+    })
+    .map((line) => line.productId);
+  if (unavailable.length)
+    return no(
+      409,
+      "AVAILABILITY_CHANGED",
+      `${[...new Set(unavailable)].join(", ")} can no longer be delivered. Create a new proposal.`,
+    );
+  return ok;
+}
