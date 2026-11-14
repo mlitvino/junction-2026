@@ -22,14 +22,17 @@ export const ProposalStatusSchema = z.enum([
   "BLOCKED",
   "ORDERED",
   "CANCELLED",
+  "EXPIRED",
 ]).meta({
   description:
     "`READY`: allowed, or waiting to be sent for approval. `PENDING_APPROVAL`: an approver must decide. " +
     "`APPROVED` / `REJECTED`: decided. `BLOCKED`: the policy denied it (final). `ORDERED`: an order exists. " +
-    "`CANCELLED`: withdrawn by its creator.",
+    "`CANCELLED`: withdrawn by its creator. `EXPIRED`: nobody decided before the quote expired (final; create a new proposal).",
 });
 
-export const ApprovalStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]);
+export const ApprovalStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED", "EXPIRED"]).meta({
+  description: "`EXPIRED`: not decided before `expiresAt` (the proposal's quote expiry).",
+});
 
 export const ProposalLineSchema = z.object({
   productId,
@@ -77,6 +80,7 @@ export const ApprovalSchema = z.object({
   decidedByName: z.string().nullable().meta({ description: "Username of the approver who decided.", example: "bob" }),
   decidedAt: isoDateTime.nullable(),
   comment: z.string().nullable(),
+  expiresAt: isoDateTime.nullable().meta({ description: "A pending approval expires then (the proposal's quote expiry)." }),
 });
 
 export const ProposalSourceSchema = z.enum(["buyer", "agent", "recipe"]).meta({

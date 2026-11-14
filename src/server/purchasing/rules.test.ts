@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  approvalExpired,
+  approvalExpiry,
   canCancel,
   canDecide,
   canOrder,
@@ -42,6 +44,21 @@ test("a decision needs a pending approval and the reviewed hash", () => {
   assert.equal(code(canDecide("PENDING", "PENDING_APPROVAL", "old", "h")), "HASH_MISMATCH");
   assert.equal(code(canDecide("APPROVED", "APPROVED", "h", "h")), "INVALID_STATE");
   assert.equal(code(canDecide("CANCELLED", "CANCELLED", "h", "h")), "INVALID_STATE");
+  assert.equal(code(canDecide("EXPIRED", "EXPIRED", "h", "h")), "APPROVAL_EXPIRED");
+});
+
+test("a pending approval expires with its expiry (older rows: the quote's)", () => {
+  const at = new Date("2026-11-15T10:00:00Z");
+  const before = new Date("2026-11-15T09:59:59Z");
+  assert.equal(approvalExpiry(null, at), at);
+  assert.equal(approvalExpiry(before, at), before);
+  assert.equal(approvalExpiry(null, null), null);
+  assert.equal(approvalExpired("PENDING", at, at), true);
+  assert.equal(approvalExpired("PENDING", at, before), false);
+  assert.equal(approvalExpired("PENDING", null, at), false);
+  assert.equal(approvalExpired("APPROVED", at, at), false);
+  assert.equal(code(canDecide("PENDING", "PENDING_APPROVAL", "h", "h", { expiresAt: at, now: at })), "APPROVAL_EXPIRED");
+  assert.equal(code(canDecide("PENDING", "PENDING_APPROVAL", "h", "h", { expiresAt: at, now: before })), "OK");
 });
 
 test("ordering: allowed proposals directly, others only after approval of the same content", () => {
@@ -59,7 +76,7 @@ test("ordering: allowed proposals directly, others only after approval of the sa
 
 test("cancelling: only before an order or a final decision", () => {
   for (const s of ["READY", "PENDING_APPROVAL", "APPROVED"] as const) assert.equal(code(canCancel(s)), "OK");
-  for (const s of ["ORDERED", "REJECTED", "BLOCKED", "CANCELLED"] as const)
+  for (const s of ["ORDERED", "REJECTED", "BLOCKED", "CANCELLED", "EXPIRED"] as const)
     assert.equal(code(canCancel(s)), "INVALID_STATE");
 });
 

@@ -64,6 +64,13 @@
       "when": 1794688443476,
       "tag": "0008_proposal_signatures",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794688444253,
+      "tag": "0009_approval_expiry",
+      "breakpoints": true
     }
   ]
 }

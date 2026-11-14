@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
@@ -21,6 +21,7 @@ import {
   type StoredProposalLine,
 } from "@/server/db/schema";
 import {
+  approvalExpiry,
   canCancel,
   canDecide,
   canOrder,
@@ -107,7 +108,7 @@ async function usernames(d: Db, ids: (string | null)[]): Promise<Map<string, str
   return new Map(rows.map((r) => [r.id, r.username ?? r.id]));
 }
 
-function toApproval(row: ApprovalRow, names: Map<string, string>): Approval {
+function toApproval(row: ApprovalRow, names: Map<string, string>, quoteExpiresAt: Date | null): Approval {
   return {
     id: row.id,
     proposalId: row.proposalId,
@@ -120,6 +121,7 @@ function toApproval(row: ApprovalRow, names: Map<string, string>): Approval {
     decidedByName: row.decidedBy ? (names.get(row.decidedBy) ?? null) : null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     comment: row.comment,
+    expiresAt: approvalExpiry(row.expiresAt, quoteExpiresAt)?.toISOString() ?? null,
   };
 }
 
@@ -160,7 +162,7 @@ function toProposal(
     signature: row.signature,
     signatureKeyId: row.signatureKeyId,
     note: row.note,
-    approval: approvalRow ? toApproval(approvalRow, names) : null,
+    approval: approvalRow ? toApproval(approvalRow, names, row.quoteExpiresAt) : null,
     orderId,
   };
 }
@@ -323,6 +325,7 @@ export async function createProposal(
 }
 
 export async function listProposals(actor: Actor, query: ListProposalsQuery): Promise<Proposal[]> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const where: SQL[] = [eq(proposal.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(proposal.status, query.status));
@@ -332,6 +335,7 @@ export async function listProposals(actor: Actor, query: ListProposalsQuery): Pr
 }
 
 export async function getProposal(actor: Actor, id: string): Promise<Proposal> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const [row] = await d
     .select()
@@ -428,6 +432,8 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
         proposalHash: row.hash,
         status: "PENDING",
         requestedBy: actor.userId,
+        // Approval only makes sense while the frozen prices hold.
+        expiresAt: row.quoteExpiresAt,
       })
       .returning({ id: approval.id });
     await setProposalStatus(tx, row.id, "PENDING_APPROVAL");
@@ -444,6 +450,7 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
 }
 
 export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Promise<ApprovalWithProposal[]> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const where: SQL[] = [eq(approval.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(approval.status, query.status));
@@ -451,11 +458,65 @@ export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Pr
   if (!approvals.length) return [];
   const rows = await d.select().from(proposal).where(inArray(proposal.id, approvals.map((a) => a.proposalId)));
   const proposals = new Map((await withRelations(d, rows)).map((p) => [p.id, p]));
+  const quoteExpiry = new Map(rows.map((r) => [r.id, r.quoteExpiresAt]));
   const names = await usernames(d, approvals.flatMap((a) => [a.requestedBy, a.decidedBy]));
-  return approvals.map((a) => ({ ...toApproval(a, names), proposal: proposals.get(a.proposalId)! }));
+  return approvals.map((a) => ({
+    ...toApproval(a, names, quoteExpiry.get(a.proposalId) ?? null),
+    proposal: proposals.get(a.proposalId)!,
+  }));
+}
+
+/**
+ * Lazy expiry (no background job): the organization's pending approvals whose time is up become
+ * EXPIRED, with their PENDING_APPROVAL proposals, and the audit log says so. Rows another request
+ * holds are skipped and expire on the next call.
+ */
+async function expireStaleApprovals(actor: Actor): Promise<void> {
+  const d = await db();
+  const due = and(
+    eq(approval.organizationId, actor.organizationId),
+    eq(approval.status, "PENDING"),
+    sql`coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}) <= now()`,
+  );
+  const [any] = await d
+    .select({ id: approval.id })
+    .from(approval)
+    .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+    .where(due)
+    .limit(1);
+  if (!any) return;
+  await d.transaction(async (tx) => {
+    const stale = await tx
+      .select({ id: approval.id, proposalId: approval.proposalId, totalExclVat: proposal.totalExclVat })
+      .from(approval)
+      .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+      .where(due)
+      .orderBy(asc(approval.requestedAt))
+      .for("update", { skipLocked: true });
+    if (!stale.length) return;
+    const now = new Date();
+    await tx.update(approval).set({ status: "EXPIRED" }).where(inArray(approval.id, stale.map((s) => s.id)));
+    await tx
+      .update(proposal)
+      .set({ status: "EXPIRED", updatedAt: now })
+      .where(and(inArray(proposal.id, stale.map((s) => s.proposalId)), eq(proposal.status, "PENDING_APPROVAL")));
+    await recordAudit(
+      tx,
+      actor,
+      stale.map((s) => ({
+        action: "approval.expired",
+        resourceType: "proposal" as const,
+        resourceId: s.proposalId,
+        actorType: "system" as const,
+        summary: `The approval request (${eur(s.totalExclVat)}) expired undecided with the proposal's prices; create a new proposal.`,
+        details: { approvalId: s.id },
+      })),
+    );
+  });
 }
 
 export async function decideApproval(actor: Actor, id: string, request: DecideApprovalRequest): Promise<Proposal> {
+  await expireStaleApprovals(actor);
   return (await db()).transaction(async (tx) => {
     const [found] = await tx
       .select({ proposalId: approval.proposalId })
@@ -464,7 +525,12 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
     if (!found) throw notFound("Approval");
     const row = await lockProposal(tx, actor.organizationId, found.proposalId);
     const [current] = await tx.select().from(approval).where(eq(approval.id, id));
-    enforce(canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash));
+    enforce(
+      canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash, {
+        expiresAt: approvalExpiry(current!.expiresAt, row.quoteExpiresAt),
+        now: new Date(),
+      }),
+    );
     enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx
       .update(approval)
