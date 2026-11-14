@@ -42,6 +42,10 @@ export const ProposalLineSchema = z.object({
   orderable: z.boolean().nullable().meta({ description: "Availability when the proposal was made; null = Valio gave no answer." }),
   availableDate: z.string().nullable().meta({ description: "Earliest delivery date when the proposal was made." }),
   availableQuantity: z.number().nullable().meta({ description: "In salesUnit; null when unknown." }),
+  substituteFor: z
+    .object({ requested: z.string(), reason: z.enum(["split", "swap", "fallback"]) })
+    .nullable()
+    .meta({ description: "What this line stands in for; null when it is what was asked for." }),
 });
 
 export const ProposalDecisionSchema = z.object({
@@ -129,7 +133,21 @@ export const OrderSchema = z.object({
 
 export const CreateProposalRequestSchema = z.object({
   lines: z
-    .array(z.object({ productId, quantity: z.number().positive().meta({ example: 20 }) }))
+    .array(
+      z.object({
+        productId,
+        quantity: z.number().positive().meta({ example: 20 }),
+        substituteFor: z
+        .object({
+          requested: z.string().meta({ description: "What was asked for (requested name or product)." }),
+          reason: z.enum(["split", "swap", "fallback"]).meta({
+            description: "`split`: part of a short-stock split; `swap`: replaced on request; `fallback`: the best match can't be delivered.",
+          }),
+        })
+        .optional()
+        .meta({ description: "Set when this line stands in for what was requested. Needs approval unless `allowSubstitutes`." }),
+      }),
+    )
     .min(1)
     .max(50),
   date: z.iso.date().optional().meta({

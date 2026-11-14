@@ -127,6 +127,7 @@ function withAvailability(line: StoredProposalLine) {
     orderable: line.orderable ?? null,
     availableDate: line.availableDate ?? null,
     availableQuantity: line.availableQuantity ?? null,
+    substituteFor: line.substituteFor ?? null,
   };
 }
 
@@ -256,6 +257,7 @@ export async function createProposal(
     orderable: l.orderable,
     availableDate: l.availableDate,
     availableQuantity: l.availableQuantity,
+    substituteFor: request.lines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
   }));
   const stored: StoredDecision = {
     outcome: decision.outcome,
@@ -360,7 +362,11 @@ export async function cancelProposal(actor: Actor, id: string): Promise<Proposal
 export async function reviseProposal(
   actor: Actor,
   id: string,
-  next: { lines: { productId: string; quantity: number }[]; date?: string; appliedChanges: string[] },
+  next: {
+    lines: { productId: string; quantity: number; substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null }[];
+    date?: string;
+    appliedChanges: string[];
+  },
 ): Promise<ReviseProposalResponse> {
   const old = await getProposal(actor, id);
   if (old.createdBy !== actor.userId)
@@ -370,7 +376,11 @@ export async function reviseProposal(
 
   const revised = await createProposal(
     actor,
-    { lines: next.lines, date: next.date ?? old.pricingDate, note: old.note ?? undefined },
+    {
+      lines: next.lines.map((l) => ({ productId: l.productId, quantity: l.quantity, ...(l.substituteFor ? { substituteFor: l.substituteFor } : {}) })),
+      date: next.date ?? old.pricingDate,
+      note: old.note ?? undefined,
+    },
     {
       source: old.source ?? "buyer",
       selection: old.selection,

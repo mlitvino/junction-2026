@@ -30,6 +30,8 @@ export type StoredProposalLine = {
   orderable?: boolean | null;
   availableDate?: string | null;
   availableQuantity?: number | null;
+  /** Set when the line stands in for what was requested (split, swap, fallback). */
+  substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null;
 };
 
 /** Frozen decision: see ProposalDecisionSchema. */
