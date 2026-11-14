@@ -46,7 +46,9 @@ app.doc31("/openapi.json", {
     version: "0.1.0",
     description:
       "Interface for external purchasing agents to Valio Aimo (mock backend). " +
-      "Sign-up, sign-in and sign-out are documented separately at /api/auth/reference.",
+      "Sign-up, sign-in and sign-out are provided by Better Auth and documented separately: " +
+      "[/api/auth/reference](/api/auth/reference). " +
+      "Sign in there first; the session cookie it sets is what the endpoints marked with a lock need.",
   },
 });
 app.get("/docs", swaggerUI({ url: "/api/openapi.json" }));
