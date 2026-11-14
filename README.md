@@ -47,7 +47,7 @@ Put your Gemini API key in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.e
 ## Commands
 | Command | What it does |
 | --- | --- |
-| `pnpm dev` | Starts the local Postgres, waits for it, then the dev server (needs Docker) |
+| `pnpm dev` | Starts the local Postgres, applies pending migrations, then the dev server (needs Docker) |
 | `pnpm dev:app` | Dev server only, no Docker (frontend on mocks) |
 | `pnpm build` | Production build |
 | `pnpm lint` | ESLint, including the zone boundary checks |
