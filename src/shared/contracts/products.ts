@@ -14,6 +14,8 @@ export const DataSourceSchema = z
 
 // ---------- Products ----------
 
+// Fields added after the first release have defaults, so producers written against the older
+// contract (e.g. frontend mocks that parse their fixtures) keep working; parsed values always have them.
 export const ProductSummarySchema = z.object({
   id: productId,
   name: z.string().meta({ description: "English name (Finnish if no translation)." }),
@@ -34,18 +36,19 @@ export const ProductSummarySchema = z.object({
   }),
   hasImage: z.boolean(),
   allergens: z.array(z.string()).meta({ description: "GS1 allergen codes it contains (see shared/contracts/allergens.ts).", example: ["AM"] }),
-  allergenNames: z.array(z.string()).meta({ description: "The contained allergens as names.", example: ["milk"] }),
-  mayContainAllergens: z.array(z.string()).meta({ description: "GS1 codes it may contain (cross-contamination)." }),
-  dietaryTags: z.array(z.string()).meta({
+  allergenNames: z.array(z.string()).default([]).meta({ description: "The contained allergens as names.", example: ["milk"] }),
+  mayContainAllergens: z.array(z.string()).default([]).meta({ description: "GS1 codes it may contain (cross-contamination)." }),
+  dietaryTags: z.array(z.string()).default([]).meta({
     description: "From the product's declared claims: lactose-free, gluten-free, vegan, vegetarian.",
     example: ["lactose-free"],
   }),
-  labels: z.array(z.object({ id: z.string(), name: z.string() })).meta({
+  labels: z.array(z.object({ id: z.string(), name: z.string() })).default([]).meta({
     description: "Packaging labels and certificates (e.g. Hyvää Suomesta, EU organic, MSC).",
   }),
   contentPerSalesUnit: z
     .object({ value: z.number(), unit: z.enum(["L", "KG"]) })
     .nullable()
+    .default(null)
     .meta({ description: "Net content of one sales unit (e.g. 5 L per case). Null when not declared." }),
 });
 
@@ -81,8 +84,8 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
   netWeightKg: z.number().nullable().meta({ description: "Net weight of one base unit." }),
   co2PerBaseUnit: z.number().nullable().meta({ description: "co2PerKg × netWeightKg." }),
   vatCode: z.string().nullable(),
-  nutrition: ProductNutritionSchema.nullable(),
-  claims: z.array(z.string()).meta({ description: "Declared claims, e.g. FREE_FROM_LACTOSE, VEGAN, HIGH_PROTEIN." }),
+  nutrition: ProductNutritionSchema.nullable().default(null),
+  claims: z.array(z.string()).default([]).meta({ description: "Declared claims, e.g. FREE_FROM_LACTOSE, VEGAN, HIGH_PROTEIN." }),
   substitutes: z.array(ProductSummarySchema).meta({ description: "Products Valio suggests instead of this one." }),
 });
 

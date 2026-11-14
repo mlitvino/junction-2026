@@ -186,9 +186,10 @@ The rest of this branch's contract changes are still **required** or **breaking*
    - `ProposalStatus` and `ApprovalStatus`: `EXPIRED`;
    - `PolicyReasonCode`: `SUBSTITUTE_NOT_ALLOWED` and `MAY_CONTAIN_EXCLUDED_ALLERGEN`;
    - error `code`s: `APPROVAL_EXPIRED`, `AGENT_NOT_CONFIGURED` and `MODEL_FAILED`.
-4. **Required new product fields.** If a mock builds a `ProductSummary` (search items, rank items) or a `ProductDetail`, fill these fields:
-   - `allergenNames: []`, `mayContainAllergens: []`, `dietaryTags: []`, `labels: []`, `contentPerSalesUnit: null`;
-   - on detail also `nutrition: null` and `claims: []`.
+4. **New product fields have defaults.** On `ProductSummary` these are `allergenNames`, `mayContainAllergens`, `dietaryTags` and `labels` (default `[]`) and `contentPerSalesUnit` (default `null`); `ProductDetail` adds `nutrition` (`null`) and `claims` (`[]`).
+   - A mock that runs `ProductDetailSchema.parse(...)` on an old-style fixture (as `src/client/workspace/mock-api.ts` does) gets the defaults filled in, so `workspace.test.mjs` passes.
+   - The parsed type keeps them required, so UI code can read them without `??`.
+   - A mock that builds the **parsed** type directly (no `parse`) must set them. Better still: set real values in fixtures, so mock mode shows labels and content.
 
    New response types are fully required: `RankProductsResponse`, `PendingApprovalCount`, `PublicKeyResponse` and `AgentErrorResponse`.
 5. **Meaning change.** `allergens` now lists only what the product **contains**. Any warning that relied on `allergens` for "may contain" must also read `mayContainAllergens`.
@@ -211,7 +212,7 @@ The rest of this branch's contract changes are still **required** or **breaking*
 
 ### Rule from now on (both sides)
 
-- **New response fields are added as `.optional()`.** A required field breaks every mock or test that builds the type. Make a field required only once both sides have updated, by agreement (shared zone).
+- **New response fields are added as `.optional()`, or with `.default(…)` when there is a natural empty value.** A required field breaks every mock or test that builds or parses the type. `.default` keeps the parsed type required, while `.optional()` makes readers handle `undefined`. Make a field strictly required only once both sides have updated, by agreement (shared zone).
 - **Removing or renaming a field or enum value is breaking.** Announce it here and in the PR.
 - **Before pushing,** run `git fetch origin && git merge origin/main` locally (or rebase), then `pnpm check && pnpm test`. CI checks the merged result, not the branch alone.
 
