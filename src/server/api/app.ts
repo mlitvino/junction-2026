@@ -8,11 +8,14 @@ import { ensureDatabase } from "@/server/db/migrate";
 
 import { createRouter } from "./router";
 import { healthRouter } from "./routes/health/health";
+import { approvalsRouter } from "./routes/approvals/approvals";
 import { meRouter } from "./routes/me/me";
+import { ordersRouter } from "./routes/orders/orders";
 import { organizationRouter } from "./routes/organization/organization";
 import { policyRouter } from "./routes/policy/policy";
 import { preferencesRouter } from "./routes/preferences/preferences";
 import { productsRouter } from "./routes/products/products";
+import { proposalsRouter } from "./routes/proposals/proposals";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
@@ -34,6 +37,9 @@ app.route("/", organizationRouter);
 app.route("/", preferencesRouter);
 app.route("/", productsRouter);
 app.route("/", policyRouter);
+app.route("/", proposalsRouter);
+app.route("/", approvalsRouter);
+app.route("/", ordersRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {

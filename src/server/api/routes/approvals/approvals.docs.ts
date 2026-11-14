@@ -1,0 +1,57 @@
+import "server-only";
+
+import { createRoute, z } from "@hono/zod-openapi";
+
+import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import {
+  ApprovalListSchema,
+  DecideApprovalRequestSchema,
+  ListApprovalsQuerySchema,
+  ProcurementErrorSchema,
+  ProposalSchema,
+} from "@/shared/contracts/procurement";
+
+// OpenAPI definitions for approvals. Handlers live in ./approvals.ts.
+
+const security = [{ sessionCookie: [] }];
+const json = <T extends z.ZodType>(schema: T, description: string) => ({
+  description,
+  content: { "application/json": { schema } },
+});
+
+export const listApprovalsRoute = createRoute({
+  method: "get",
+  path: "/approvals",
+  tags: ["Purchasing"],
+  summary: "List approvals",
+  description: "The organization's approvals, newest first (max 200), each with its proposal. Approvers only.",
+  security,
+  request: { query: ListApprovalsQuerySchema },
+  responses: {
+    200: json(ApprovalListSchema, "Approvals."),
+    401: json(ErrorResponseSchema, "No valid session."),
+    403: json(ErrorResponseSchema, "Not an approver."),
+  },
+});
+
+export const decideApprovalRoute = createRoute({
+  method: "post",
+  path: "/approvals/{id}/decision",
+  tags: ["Purchasing"],
+  summary: "Approve or reject",
+  description:
+    "Approvers only (a user holding both roles may decide their own proposal). Send the `hash` of the proposal " +
+    "you reviewed; a mismatch is a 409. Rejecting needs a comment. Returns the updated proposal.",
+  security,
+  request: {
+    params: z.object({ id: z.string().meta({ description: "Approval id." }) }),
+    body: { content: { "application/json": { schema: DecideApprovalRequestSchema } }, required: true },
+  },
+  responses: {
+    200: json(ProposalSchema, "Decided."),
+    401: json(ErrorResponseSchema, "No valid session."),
+    403: json(ErrorResponseSchema, "Not an approver."),
+    404: json(ProcurementErrorSchema, "No such approval in your organization."),
+    409: json(ProcurementErrorSchema, "Already decided or cancelled, or the hash doesn't match."),
+  },
+});
