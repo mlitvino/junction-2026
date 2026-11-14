@@ -9,6 +9,7 @@ import { ensureAuthSchema } from "@/server/auth/migrate";
 import { createRouter } from "./router";
 import { healthRouter } from "./routes/health/health";
 import { meRouter } from "./routes/me/me";
+import { organizationRouter } from "./routes/organization/organization";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
@@ -26,6 +27,7 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 
 app.route("/", healthRouter);
 app.route("/", meRouter);
+app.route("/", organizationRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
