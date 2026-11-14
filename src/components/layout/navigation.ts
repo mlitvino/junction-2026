@@ -1,14 +1,10 @@
-import type { IconName } from "@/components/ui/icon";
-
-// Presentation props only, not an authentication contract or an authorization boundary.
-// Built from GET /api/me (connected mode) or the demo identity: src/client/viewer.ts.
+﻿import type { IconName } from "@/components/ui/icon";
 export type ShellViewer = {
   displayName: string;
   organizationLabel?: string;
   roles: readonly string[];
   demo?: boolean;
 };
-
 type NavigationItem = {
   href: string;
   label: string;
@@ -18,23 +14,38 @@ type NavigationItem = {
   roles: readonly string[];
   upcoming?: boolean;
 };
-
 export const navigationItems: readonly NavigationItem[] = [
   {
     href: "/buyer",
-    label: "Workspace",
-    context: "Buyer Workspace",
+    label: "Assistant",
+    context: "Assistant",
     icon: "workspace",
     group: "workspace",
-    roles: ["BUYER"],
+    roles: ["BUYER", "APPROVER"],
   },
   {
     href: "/approvals",
-    label: "Approvals",
-    context: "Approvals",
+    label: "To review",
+    context: "To review",
     icon: "approvals",
     group: "workspace",
-    roles: ["APPROVER", "ADMIN"],
+    roles: ["BUYER", "APPROVER"],
+  },
+  {
+    href: "/restocking",
+    label: "Restocking",
+    context: "Restocking",
+    icon: "integrations",
+    group: "workspace",
+    roles: ["BUYER", "APPROVER"],
+  },
+  {
+    href: "/recipes",
+    label: "Recipes",
+    context: "Recipes",
+    icon: "leaf",
+    group: "workspace",
+    roles: ["BUYER", "APPROVER"],
   },
   {
     href: "/orders",
@@ -42,26 +53,31 @@ export const navigationItems: readonly NavigationItem[] = [
     context: "Orders",
     icon: "orders",
     group: "workspace",
-    roles: ["BUYER", "APPROVER", "ADMIN"],
+    roles: ["BUYER", "APPROVER"],
   },
   {
     href: "/admin/agents",
-    label: "Agents & Policies",
-    context: "Agent Management",
+    label: "Settings & Administration",
+    context: "Settings & Administration",
     icon: "agents",
     group: "administration",
-    // Approvers manage the organization's AI settings; there is no separate admin role.
-    roles: ["APPROVER", "ADMIN"],
-    upcoming: true,
+    roles: ["BUYER", "APPROVER"],
+  },
+  {
+    href: "/admin/organization",
+    label: "Organization",
+    context: "Organization",
+    icon: "user",
+    group: "administration",
+    roles: ["APPROVER"],
   },
   {
     href: "/audit",
     label: "Activity & Audit",
-    context: "Audit",
+    context: "Activity & Audit",
     icon: "audit",
     group: "administration",
-    roles: ["BUYER", "APPROVER", "ADMIN"],
-    upcoming: true,
+    roles: ["BUYER", "APPROVER"],
   },
   {
     href: "/integrations",
@@ -69,18 +85,16 @@ export const navigationItems: readonly NavigationItem[] = [
     context: "Integrations",
     icon: "integrations",
     group: "administration",
-    roles: ["BUYER", "APPROVER", "ADMIN"],
-    upcoming: true,
+    roles: ["BUYER", "APPROVER"],
   },
 ];
-
 export function matchesRoute(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
-
 export function visibleNavigation(viewer?: ShellViewer) {
-  // No identity is claimed in the frontend preview. Authenticated users get role-filtered links.
-  return viewer
-    ? navigationItems.filter((item) => item.roles.some((role) => viewer.roles.includes(role)))
-    : navigationItems;
+  return navigationItems.filter(
+    (item) =>
+      (item.group === "workspace" || item.href === "/admin/agents") &&
+      (!viewer || item.roles.some((role) => viewer.roles.includes(role))),
+  );
 }

@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { AppHeader } from "./app-header";
 import { AppSidebar } from "./app-sidebar";
-import { DemoEnvironmentIndicator } from "./demo-environment-indicator";
+import { MobileTabs } from "./mobile-tabs";
 import type { ShellViewer } from "./navigation";
 
 export function AppShell({
@@ -29,14 +29,18 @@ export function AppShell({
           <Suspense fallback={<div className="h-16 border-b" />}>
             <AppHeader viewer={viewer} />
           </Suspense>
-          <div className="px-4 py-2">
-            <DemoEnvironmentIndicator />
-          </div>
         </div>
-        <main id="main-content" tabIndex={-1} className="flex flex-1 flex-col p-4 md:p-6 lg:p-8">
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="flex flex-1 flex-col p-4 pb-28 md:p-6 md:pb-28 lg:p-8"
+        >
           {children}
         </main>
       </div>
+      <Suspense fallback={null}>
+        <MobileTabs />
+      </Suspense>
     </div>
   );
 }

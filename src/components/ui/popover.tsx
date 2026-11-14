@@ -10,17 +10,26 @@ export function Popover({
   icon,
   title,
   children,
+  trigger,
 }: {
   label: string;
   icon: IconName;
   title: string;
   children: React.ReactNode;
+  trigger?: React.ReactNode;
 }) {
   const id = useId();
   return (
     <>
-      <Button variant="ghost" size="icon" aria-label={label} title={label} popoverTarget={id}>
-        <Icon name={icon} />
+      <Button
+        variant="ghost"
+        size={trigger ? "default" : "icon"}
+        aria-label={label}
+        title={label}
+        popoverTarget={id}
+        className={trigger ? "rounded-full px-2" : undefined}
+      >
+        {trigger ?? <Icon name={icon} />}
       </Button>
       <div id={id} popover="auto" aria-labelledby={`${id}-title`} className="shell-popover">
         <h2 id={`${id}-title`} className="mb-4 font-semibold">

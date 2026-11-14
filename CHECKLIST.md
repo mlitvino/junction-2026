@@ -46,14 +46,28 @@ Left
 - [x] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) dropped in migration 0010; images older than `9077a91` can't be rolled back to.
 - [x] Agent errors: 503 `AGENT_NOT_CONFIGURED` without a Gemini key (and no `TEST_MODE=TRUE`), 502 `MODEL_FAILED` when a model call fails, instead of a plain 500.
 - [x] README "LLM (Gemini)", root AGENTS.md and deploy README: the agent needs a Gemini key unless `TEST_MODE=TRUE`.
+
+- [ ] Agent identity: per-agent API keys created/revoked by approvers, scopes, every call attributed. The challenge is about external agents; today only humans with cookies can call the API.
+- [ ] Audit trail: insert-only event log (actor, action, reason, time) + `GET /api/audit`. Human-readable record of what was done and why (optional direction, high value).
+- [ ] Usernames in proposal/approval/order responses. Approvers should see "alice", not a user id.
+- [ ] Default-deny API (uncomment `TODO(default-deny)` in `src/server/api/app.ts`). A forgotten guard must not leak organization data.
+- [ ] Quantities in real units: content volume/weight per product + conversion ("1,000 L" → cases). The example request is in litres; the catalog sells cases.
+- [ ] Agent-friendly search: filters (exclude allergens, origin, max CO2, min reliability, vendor, brand) and sorting. Agents must narrow down before asking Valio for prices.
+- [ ] Comparison/ranking endpoint: good-better-best on price, reliability, CO2, preferred origin/vendor/brand, with reasons. Delivery and sustainability comparison (optional direction).
+- [ ] Substitutes per product filtered by allergens and availability, + policy rule "substitute outside preferences needs approval". Exception handling (optional direction).
+- [ ] Partial availability: split lines when stock is short. "Response logic" for partial stock.
+- [ ] Provenance: snapshot id + `fetchedAt` on every price/stock answer; optionally signed proposal hashes. Trust protocol: verify claims without a manual check.
+- [ ] Approval expiry and a pending-count endpoint for a badge. Approvals shouldn't wait forever or go unnoticed.
+- [ ] Apply migrations without restarting the dev server (`ensureDatabase` runs once per process). Teammates get 500s after pulling a migration.
+- [ ] Remove the `server/valio/types.ts` re-export shim. Legacy indirection.
+- [ ] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) stay unused; drop them only in a later cleanup once rollbacks to old images are no longer needed. Migrations are additive.
+- [ ] Map agent configuration and model errors to a clear response: a missing `GOOGLE_GENERATIVE_AI_API_KEY` throws a plain `Error`, and since #8 a failed model call in extraction or proposal revision is no longer caught, so both become `500 Internal error`. Return e.g. 503 "agent not configured" / 502 "model failed" with a message.
+- [ ] README "LLM (Gemini)" still says the agent falls back to a mock model without a key; since #8 it requires the key unless `TEST_MODE=TRUE`. Update README and the root AGENTS.md agent notes.
 - [ ] Stretch: MCP-style interface over the endpoints. Makes the API directly agent-readable.
 
 ## Frontend
 
-Done
-- [x] Real sign-in, user, organization and roles from `GET /api/me`. Screens per role.
-- [x] Demo scenarios use real catalog products, prices and availability. No synthetic prices in connected mode.
-- [x] Demo scenarios use the real policy decision. Limits come from the organization's preferences.
+Implemented v3.2 (14 November 2026). Evidence and limitations: `docs/FRONTEND-UX-IMPLEMENTATION-STATUS.md` and `docs/INTEGRATION-STATUS.md`. Checked integration means actual local backend/browser evidence where stated, not production or supplier fulfillment.
 
 Left
 - [ ] Switch the purchasing flow to `/api/proposals` (incl. `from-prompt`), `/api/approvals`, `/api/orders` (map EUR excl. VAT, statuses, hash-bound approvals, no intent). Approvals then work across browsers and users.
@@ -71,18 +85,35 @@ Left
 - [ ] Fix `docs/INTEGRATION-STATUS.md` contradictions and old `/api/v1/...` paths. Docs must match the real API.
 - [ ] Optional: rename procurement → purchasing in the UI (`useProcurement`, `features/procurement`). The API says purchasing.
 - [ ] Remove unused `src/client/provisional/unavailable-service.ts`. Dead code.
+- [x] One shared shell, tokens, Inter, Light/Dark/System, role-aware navigation, account/notifications, desktop/tablet/mobile layouts. All 29 Stitch state families mapped.
+- [x] Real sign-in and identity/organization/roles from `/api/me`; Buyer + Approver supported. No connected-mode role switch.
+- [x] Canonical purchasing uses `/api/proposals`, `/api/approvals`, `/api/proposals/{id}/order` and GET `/api/orders`, numeric EUR excl. VAT, server hashes and stable idempotency. Real two-browser approval/order/replay test passed.
+- [x] Manual buyer search, sales-unit quantities, actual shortlist offers, policy preview and proposal creation. Tested with connected catalog and backend.
+- [x] Continuous conversation, editable composer, nonmodal review, information questions, immutable revision/supersession, rejection recovery and hard safety blocks. Conversation orchestration remains local until streamed API exists.
+- [x] Quote expiration and 409 QUOTE_EXPIRED / PRICE_CHANGED / AVAILABILITY_CHANGED recovery; show quote expiry and prepare updated proposal. Injected conflict tests verify no local fallback order.
+- [x] Exact net price labels. No universal VAT assumption; gross/tax unavailable rather than invented.
+- [x] Preferences layer/lock editor and separate effective role settings. Connected load/save passed; invalid limits and lock inheritance tested deterministically.
+- [x] Organization colleague creation/role editing UI, both roles, last-approver error handling. Real member creation/role changes and organization read tested locally.
+- [x] Recipes library/detail/create/editor/batch planning, stock subtraction, verified unit conversions and substitute review. Existing recipe writes are local drafts with explicit new-version POST.
+- [x] Restocking overview/new/edit/pause/delete/manual checks; ready, partial/late, unknown and pending coverage. Plans/runs are browser-local; real inventory/offers and canonical purchase adapter underneath.
+- [x] Orders list/detail and read-only payment-unavailable checkout use canonical IDs, no alternate AI order lifecycle.
+- [x] Settings registry, scoped browser activity evidence and honest integration status; no fabricated credentials, global audit, scheduler, MCP or payment success.
+- [x] Removed connected scenario glue `real-catalog.ts` and hardcoded litre lookup. Replaced active default with human-review-first flow and removed misleading scenario copy from visible routes.
+- [x] Updated design system, integration tracker and current handoff; archived old provisional `/api/v1` assumptions. `unavailable-service.ts` retained because legacy imports/tests still use it.
+- [x] `pnpm check`, `pnpm test`, connected/fixture `pnpm build`, deterministic browser workflow/themes/responsiveness and connected two-user browser test. Detailed counts in implementation report.
+- [ ] Streamed, server-persisted AI conversation and autonomous tool safety (backend endpoint/contracts needed).
+- [ ] Durable restock plan CRUD/scheduler/run history and cross-user stock reservation/coverage (backend needed).
+- [ ] Real external agent key creation/revocation and MCP (backend needed; unavailable UI implemented).
+- [ ] Global append-only audit via `/api/audit` (backend needed; browser-local activity UI implemented).
+- [ ] Positive dietary/free-from evidence and server-authoritative physical unit conversions (backend needed; unknowns blocked).
+- [ ] Remote recipe update/version semantics, payment and supplier dispatch (backend support needed).
+- [ ] Optional removal/renaming of historical `features/procurement` / `client/provisional` regression surface. Not used by active routes; retained without altering backend naming.
 
 ## Agent (AI)
 
 Done
-- [x] Mastra set up on Gemini (`google/gemini-3.8-flash`). Since #8 the key is required at run time; `TEST_MODE=TRUE` switches the agent, extraction and proposal revision to the deterministic flow and mock model (`server/agents/mode.ts`), so builds, CI and offline tests need no key.
-- [x] Tests for the mode gating (`purchasing-features.test.ts`: test mode vs Gemini key).
-- [x] Agent turn endpoint `POST /api/agent/run` (buyers) with tools: search, product details, inquiry, create/revise/get/verify proposal, place order, recipes/inventory, intelligence. The agent can act end to end.
-- [x] The agent acts for the signed-in buyer through the one guarded flow; it can order only what the rules allow or an approver approved, and can't approve.
-- [x] Free-text extraction `POST /api/extract` and natural-language proposal changes (Gemini; deterministic parser in test mode). "1,000 L milk by Monday" → structured items.
-- [x] One set of rules: the agent's candidate filter and the policy both read the layered preferences.
-- [x] Selection steps (search, filter, ranking, split, drift) are written to the audit log. "Readable record of what the agent did and why".
-- [x] Search on the real catalog with real allergen data; synthetic products only without a real catalog.
+
+- [x] Mastra set up; Gemini when `GOOGLE_GENERATIVE_AI_API_KEY` is set, mock model otherwise. Builds and CI need no key.
 
 Left
 - [ ] Streamed chat events for the UI (status, message, proposal, approval, order). `/agent/run` returns one turn; the frontend's chat expects a stream.
@@ -90,3 +121,13 @@ Left
 - [x] The agent's ranking uses preferred origin/vendor/brand and sustainability labels; `allowSubstitutes` is enforced by the policy.
 - [ ] Use `language` in the agent's answers.
 - [ ] Allergen-safe substitution under pressure: the data (contains / may contain) is now imported; build the school/hospital scenario on top (strict mode excluding may-contain).
+
+- [ ] Chat endpoint with streamed events (status, message, intent, proposal, approval, order). The frontend's chat UI already expects this event shape.
+- [ ] Intent extraction: free text → products, quantity + unit, needed-by date, constraints. "1,000 L lactose-free milk by Monday" must become structured lines.
+- [ ] Search tool on the real catalog service (`services/catalog.ts`); today it returns fixed fake data. Agent answers must be real.
+- [ ] Decision-maker: handle missing data (unknown allergens, CO2), choose good-better-best, explain the choice. Deliberately left out of the policy check.
+- [ ] Act through the same API: policy preview → proposal → approval or order, within the agent's key and scopes. Agents must not bypass the guardrails.
+- [ ] Use preferences: `autonomy`, `allowSubstitutes`, `language`, preferred origin/vendor/brand for ranking. The settings already exist for this.
+- [ ] Write its reasoning into the audit trail. "Readable record of what the agent did and why".
+- [ ] Substitution with recipe logic (allergen-safe under pressure). Example scenarios from the challenge.
+- [ ] Stretch: proactive selling agent, need → recipe → order. Extra challenge scenarios.
