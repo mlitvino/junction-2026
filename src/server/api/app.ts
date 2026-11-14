@@ -10,6 +10,7 @@ import { createRouter } from "./router";
 import { extractRouter } from "./routes/extract/extract";
 import { healthRouter } from "./routes/health/health";
 import { meRouter } from "./routes/me/me";
+import { ordersRouter } from "./routes/orders/orders";
 import { organizationRouter } from "./routes/organization/organization";
 
 /**
@@ -29,6 +30,7 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 app.route("/", healthRouter);
 app.route("/", meRouter);
 app.route("/", extractRouter);
+app.route("/", ordersRouter);
 app.route("/", organizationRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
