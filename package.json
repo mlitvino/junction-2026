@@ -21,6 +21,7 @@
     "@hono/zod-openapi": "1.6.3",
     "@mastra/core": "^1.82.0",
     "@mastra/pg": "^1.35.0",
+    "better-auth": "1.7.23",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "hono": "4.13.18",
