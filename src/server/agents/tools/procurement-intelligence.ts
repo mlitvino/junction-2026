@@ -8,15 +8,15 @@ import {
   evaluateProductSubstitutions,
   getProactiveRecommendations,
   getProactiveStockoutAlerts,
-  verifyOrderTrustClaims,
 } from "@/server/services/intelligence";
 import {
-  OrderVerificationResponseSchema,
   ProactiveRecommendationsResponseSchema,
   ProductSubstitutionResponseSchema,
   RecurringOrderCheckResponseSchema,
   StockoutAlertsResponseSchema,
 } from "@/shared/contracts/intelligence";
+
+import { toolActor } from "./actor";
 
 export const evaluateSubstitutionsTool = createTool({
   id: "evaluate-product-substitutions",
@@ -32,8 +32,8 @@ export const evaluateSubstitutionsTool = createTool({
     deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
   }),
   outputSchema: ProductSubstitutionResponseSchema,
-  execute: async ({ productId, requestedQuantity, deliveryDate }) =>
-    evaluateProductSubstitutions({ productId, requestedQuantity, deliveryDate }),
+  execute: async ({ productId, requestedQuantity, deliveryDate }, context) =>
+    evaluateProductSubstitutions({ productId, requestedQuantity, deliveryDate }, toolActor(context)),
 });
 
 export const getStockoutAlertsTool = createTool({
@@ -44,18 +44,18 @@ export const getStockoutAlertsTool = createTool({
     deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
   }),
   outputSchema: StockoutAlertsResponseSchema,
-  execute: async ({ deliveryDate }) => getProactiveStockoutAlerts(deliveryDate),
+  execute: async ({ deliveryDate }, context) => getProactiveStockoutAlerts(deliveryDate, toolActor(context)),
 });
 
 export const checkRecurringAnomaliesTool = createTool({
   id: "check-recurring-order-anomalies",
   description:
-    "Check an order against historical purchasing baselines to catch unusual quantity spikes, drops, or cost anomalies before repeating.",
+    "Check a proposal against the organization's order history to catch unusual quantity or cost spikes before ordering.",
   inputSchema: z.object({
-    orderId: z.string().describe("Order ID to evaluate against historical baseline."),
+    proposalId: z.string().describe("Proposal to compare with past orders."),
   }),
   outputSchema: RecurringOrderCheckResponseSchema,
-  execute: async ({ orderId }) => checkRecurringOrderAnomalies({ orderId }),
+  execute: async ({ proposalId }, context) => checkRecurringOrderAnomalies({ proposalId }, toolActor(context)),
 });
 
 export const getProactiveRecommendationsTool = createTool({
@@ -64,16 +64,6 @@ export const getProactiveRecommendationsTool = createTool({
     "Suggest seasonal Nordic products, newly available items, low-carbon switches, and kitchen par-level replenishments tailored to customer preferences.",
   inputSchema: z.object({}),
   outputSchema: ProactiveRecommendationsResponseSchema,
-  execute: async () => getProactiveRecommendations(),
+  execute: async (_input, context) => getProactiveRecommendations(toolActor(context)),
 });
 
-export const verifyOrderTrustTool = createTool({
-  id: "verify-order-trust-claims",
-  description:
-    "Generate canonical-JSON SHA-256 verification proofs for fixed prices, stock availability, origin, allergen compliance, guardrails, and audit trail integrity.",
-  inputSchema: z.object({
-    orderId: z.string().describe("Order ID to cryptographically verify."),
-  }),
-  outputSchema: OrderVerificationResponseSchema,
-  execute: async ({ orderId }) => verifyOrderTrustClaims(orderId),
-});

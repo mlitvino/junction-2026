@@ -1,5 +1,6 @@
 import "server-only";
 
+import { containsExcludedAllergen, allergenCodes } from "@/shared/contracts/allergens";
 import type { PolicyOutcome, PolicyReason } from "@/shared/contracts/policy";
 import type { Preferences } from "@/shared/contracts/preferences";
 
@@ -10,6 +11,8 @@ import type { Preferences } from "@/shared/contracts/preferences";
 
 export type PolicyProductFacts = {
   vendorName: string;
+  /** Valio category code. */
+  category?: string;
   allergens: string[];
   co2PerKg: number | null;
   deliveryReliability: number | null;
@@ -65,7 +68,12 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], opt
 
   // ----- Per product -----
   const blockedVendors = new Set(prefs.blockedVendors);
-  const excluded = new Set(prefs.excludedAllergens);
+  const excludedCodes = allergenCodes(prefs.excludedAllergens);
+  const lower = (list: readonly string[]) => new Set(list.map((v) => v.trim().toLowerCase()));
+  const blockedCategories = lower(prefs.blockedCategories);
+  const allowedCategories = lower(prefs.allowedCategories);
+  const blockedProducts = lower(prefs.blockedProductIds);
+  const allowedProducts = lower(prefs.allowedProductIds);
   for (const line of lines) {
     const { product, productId } = line;
     if (!product) {
@@ -76,7 +84,10 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], opt
       deny({ code: "PRICE_UNKNOWN", productId, message: `No price for product ${productId}, so the order total can't be checked.` });
     if (blockedVendors.has(product.vendorName))
       deny({ code: "BLOCKED_VENDOR", setting: "blockedVendors", productId, message: `Vendor ${product.vendorName} is blocked.` });
-    const found = product.allergens.filter((a) => excluded.has(a));
+    // Excluded allergens may be names ("milk") or GS1 codes ("AM"); compared as codes.
+    const found = containsExcludedAllergen(product.allergens, prefs.excludedAllergens)
+      ? product.allergens.filter((a) => excludedCodes.has(a.trim().toUpperCase()))
+      : [];
     if (found.length)
       deny({ code: "EXCLUDED_ALLERGEN", setting: "excludedAllergens", productId, message: `Contains excluded allergens: ${found.join(", ")}.` });
     if (prefs.maxCo2PerKg !== null && product.co2PerKg !== null && product.co2PerKg > prefs.maxCo2PerKg)
@@ -96,6 +107,51 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], opt
         setting: "minDeliveryReliability",
         productId,
         message: `Delivery reliability ${product.deliveryReliability} is below the minimum of ${prefs.minDeliveryReliability}.`,
+      });
+  }
+
+  // ----- Organization limits per line (outside them → approval) -----
+  for (const line of lines) {
+    const { product, productId } = line;
+    if (!product) continue;
+    if (prefs.maxUnitPrice !== null && line.unitPriceExclVat !== null && line.unitPriceExclVat > prefs.maxUnitPrice)
+      approve({
+        code: "UNIT_PRICE_TOO_HIGH",
+        setting: "maxUnitPrice",
+        productId,
+        message: `Unit price ${eur(line.unitPriceExclVat)} of product ${productId} is above the cap of ${eur(prefs.maxUnitPrice)}.`,
+      });
+    if (prefs.maxLineQuantity !== null && line.quantity > prefs.maxLineQuantity)
+      approve({
+        code: "LINE_QUANTITY_TOO_HIGH",
+        setting: "maxLineQuantity",
+        productId,
+        message: `Quantity ${line.quantity} of product ${productId} is above the single-line cap of ${prefs.maxLineQuantity}.`,
+      });
+    const category = product.category?.trim().toLowerCase();
+    if (category && blockedCategories.has(category))
+      approve({
+        code: "CATEGORY_BLOCKED",
+        setting: "blockedCategories",
+        productId,
+        message: `Category ${product.category} of product ${productId} needs approval.`,
+      });
+    else if (category && allowedCategories.size > 0 && !allowedCategories.has(category))
+      approve({
+        code: "CATEGORY_NOT_ALLOWED",
+        setting: "allowedCategories",
+        productId,
+        message: `Category ${product.category} of product ${productId} is outside the allowed categories.`,
+      });
+    const id = productId.trim().toLowerCase();
+    if (blockedProducts.has(id))
+      approve({ code: "PRODUCT_BLOCKED", setting: "blockedProductIds", productId, message: `Product ${productId} needs approval.` });
+    else if (allowedProducts.size > 0 && !allowedProducts.has(id))
+      approve({
+        code: "PRODUCT_NOT_ALLOWED",
+        setting: "allowedProductIds",
+        productId,
+        message: `Product ${productId} is not on the pre-approved product list.`,
       });
   }
 

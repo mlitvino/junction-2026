@@ -12,7 +12,7 @@ import {
   InventoryListResponseSchema,
 } from "@/shared/contracts/inventory";
 
-import { resolveOptionalUser } from "../../middleware/session";
+import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
 import {
   adjustInventoryItemRoute,
@@ -21,24 +21,30 @@ import {
   upsertInventoryItemRoute,
 } from "./inventory.docs";
 
-export const inventoryRouter = createRouter()
+// Session required (default-deny in app.ts); roles per path. Separate statements: `.use()`/`.on()`
+// return a plain Hono type, so chaining `.openapi()` after them doesn't type-check.
+export const inventoryRouter = createRouter();
+inventoryRouter.use("/inventory", requireRole("buyer", "approver"));
+inventoryRouter.use("/inventory/*", requireRole("buyer", "approver"));
+
+inventoryRouter
   .openapi(listInventoryRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     const result = await listInventory(actor);
     return c.json(InventoryListResponseSchema.parse(result), 200);
   })
   .openapi(upsertInventoryItemRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     const item = await upsertInventoryItem(c.req.valid("json"), actor);
     return c.json(InventoryItemSchema.parse(item), 200);
   })
   .openapi(replaceInventoryRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     const result = await replaceInventory(c.req.valid("json"), actor);
     return c.json(InventoryListResponseSchema.parse(result), 200);
   })
   .openapi(adjustInventoryItemRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
+    const actor = c.var.user;
     try {
       const updated = await adjustInventoryItem(
         c.req.valid("param").itemId,

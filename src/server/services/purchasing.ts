@@ -6,8 +6,11 @@ import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import {
   approval,
+  organization,
   proposal,
   purchaseOrder,
+  user,
+  valioPriceSnapshot,
   valioProduct,
   type ApprovalRow,
   type ProposalRow,
@@ -28,6 +31,7 @@ import {
   type LiveLineCheck,
   type RuleResult,
 } from "@/server/purchasing/rules";
+import type { PolicyOutcome } from "@/shared/contracts/policy";
 import type {
   Approval,
   ApprovalStatus,
@@ -37,23 +41,30 @@ import type {
   ListApprovalsQuery,
   ListProposalsQuery,
   Order,
+  OrderReceipt,
   Proposal,
+  ProposalSelection,
+  ProposalSource,
   ProposalStatus,
+  ProposalVerification,
+  ReviseProposalResponse,
 } from "@/shared/contracts/purchasing";
-import type { PolicyOutcome } from "@/shared/contracts/policy";
 
+import { recordAudit, type AuditActor, type AuditEntry } from "./audit";
 import { getAvailability, getPrices } from "./catalog";
 import { evaluateDraft } from "./policy";
 
-// Purchasing flow: proposals, approvals, orders. Every function takes the caller's organization
-// (and user) and only touches that organization's rows. Rules: server/purchasing/rules.ts.
-// State changes lock the proposal row (SELECT … FOR UPDATE), so concurrent clicks can't both win.
+// The one purchasing flow: proposals, approvals, orders. Every function takes the caller (their
+// organization and user) and only touches that organization's rows. Rules: server/purchasing/rules.ts.
+// State changes lock the proposal row (SELECT … FOR UPDATE), so concurrent clicks can't both win,
+// and write the audit log in the same transaction. The agent's prompt/recipe pipeline
+// (services/orders.ts) ends in `createProposal` too, so its proposals obey the same rules.
 
 /** Expected failures, mapped to HTTP statuses by the routes. */
 export class PurchasingError extends Error {
-  readonly status: 403 | 404 | 409 | 422;
+  readonly status: 400 | 403 | 404 | 409 | 422;
   readonly code: string;
-  constructor(status: 403 | 404 | 409 | 422, code: string, message: string) {
+  constructor(status: 400 | 403 | 404 | 409 | 422, code: string, message: string) {
     super(message);
     this.name = "PurchasingError";
     this.status = status;
@@ -61,8 +72,15 @@ export class PurchasingError extends Error {
   }
 }
 
-type Actor = { organizationId: string; userId: string };
+/** The signed-in user (or the agent acting for them) the call is made for. */
+export type Actor = AuditActor & { userId: string };
+
+export function actorFor(user: { id: string; username: string; organization: { id: string } }, agent = false): Actor {
+  return { organizationId: user.organization.id, userId: user.id, userName: user.username, agent };
+}
+
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
+type Db = Tx | ReturnType<typeof getDb>;
 
 async function db() {
   await ensureDatabase();
@@ -74,18 +92,29 @@ function enforce(result: RuleResult) {
 }
 
 const notFound = (what: string) => new PurchasingError(404, "NOT_FOUND", `${what} not found`);
+const eur = (n: number | null) => (n === null ? "unknown total" : `€${n.toFixed(2)}`);
 
 // ---------- Mapping ----------
 
-function toApproval(row: ApprovalRow): Approval {
+/** Usernames for user ids (one query). */
+async function usernames(d: Db, ids: (string | null)[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((v): v is string => !!v))];
+  if (!unique.length) return new Map();
+  const rows = await d.select({ id: user.id, username: user.username }).from(user).where(inArray(user.id, unique));
+  return new Map(rows.map((r) => [r.id, r.username ?? r.id]));
+}
+
+function toApproval(row: ApprovalRow, names: Map<string, string>): Approval {
   return {
     id: row.id,
     proposalId: row.proposalId,
     proposalHash: row.proposalHash,
     status: row.status as ApprovalStatus,
     requestedBy: row.requestedBy,
+    requestedByName: names.get(row.requestedBy) ?? null,
     requestedAt: row.requestedAt.toISOString(),
     decidedBy: row.decidedBy,
+    decidedByName: row.decidedBy ? (names.get(row.decidedBy) ?? null) : null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     comment: row.comment,
   };
@@ -101,11 +130,19 @@ function withAvailability(line: StoredProposalLine) {
   };
 }
 
-function toProposal(row: ProposalRow, approvalRow: ApprovalRow | null, orderId: string | null): Proposal {
+function toProposal(
+  row: ProposalRow,
+  approvalRow: ApprovalRow | null,
+  orderId: string | null,
+  names: Map<string, string>,
+): Proposal {
   return {
     id: row.id,
     status: row.status as ProposalStatus,
     createdBy: row.createdBy,
+    createdByName: names.get(row.createdBy) ?? null,
+    source: (row.source as ProposalSource | null) ?? null,
+    selection: (row.selection as ProposalSelection | null) ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     lines: row.lines.map(withAvailability),
@@ -117,18 +154,19 @@ function toProposal(row: ProposalRow, approvalRow: ApprovalRow | null, orderId: 
     decision: row.decision as Proposal["decision"],
     hash: row.hash,
     note: row.note,
-    approval: approvalRow ? toApproval(approvalRow) : null,
+    approval: approvalRow ? toApproval(approvalRow, names) : null,
     orderId,
   };
 }
 
-function toOrder(row: PurchaseOrderRow): Order {
+function toOrder(row: PurchaseOrderRow, names: Map<string, string>): Order {
   return {
     id: row.id,
     proposalId: row.proposalId,
     status: "SIMULATED_CONFIRMED",
     source: "LOCAL_SIMULATOR",
     createdBy: row.createdBy,
+    createdByName: names.get(row.createdBy) ?? null,
     createdAt: row.createdAt.toISOString(),
     idempotencyKey: row.idempotencyKey,
     proposalHash: row.proposalHash,
@@ -138,8 +176,8 @@ function toOrder(row: PurchaseOrderRow): Order {
   };
 }
 
-/** Proposals with their approval and order id, in the given order. */
-async function withRelations(d: Tx | ReturnType<typeof getDb>, rows: ProposalRow[]): Promise<Proposal[]> {
+/** Proposals with their approval, order id and usernames, in the given order. */
+async function withRelations(d: Db, rows: ProposalRow[]): Promise<Proposal[]> {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const [approvals, orders] = await Promise.all([
@@ -149,9 +187,18 @@ async function withRelations(d: Tx | ReturnType<typeof getDb>, rows: ProposalRow
       .from(purchaseOrder)
       .where(inArray(purchaseOrder.proposalId, ids)),
   ]);
+  const names = await usernames(d, [
+    ...rows.map((r) => r.createdBy),
+    ...approvals.flatMap((a) => [a.requestedBy, a.decidedBy]),
+  ]);
   const approvalBy = new Map(approvals.map((a) => [a.proposalId, a]));
   const orderBy = new Map(orders.map((o) => [o.proposalId, o.id]));
-  return rows.map((r) => toProposal(r, approvalBy.get(r.id) ?? null, orderBy.get(r.id) ?? null));
+  return rows.map((r) => toProposal(r, approvalBy.get(r.id) ?? null, orderBy.get(r.id) ?? null, names));
+}
+
+async function ordersWithNames(d: Db, rows: PurchaseOrderRow[]): Promise<Order[]> {
+  const names = await usernames(d, rows.map((r) => r.createdBy));
+  return rows.map((r) => toOrder(r, names));
 }
 
 /** Locks one proposal of the organization for the rest of the transaction. */
@@ -169,14 +216,26 @@ async function setProposalStatus(tx: Tx, id: string, status: ProposalStatus) {
   await tx.update(proposal).set({ status, updatedAt: new Date() }).where(eq(proposal.id, id));
 }
 
-async function reload(tx: Tx, row: ProposalRow): Promise<Proposal> {
-  const [fresh] = await tx.select().from(proposal).where(eq(proposal.id, row.id));
+async function reload(tx: Tx, id: string): Promise<Proposal> {
+  const [fresh] = await tx.select().from(proposal).where(eq(proposal.id, id));
   return (await withRelations(tx, [fresh!]))[0]!;
 }
 
 // ---------- Proposals ----------
 
-export async function createProposal(actor: Actor, request: CreateProposalRequest): Promise<Proposal> {
+export type CreateProposalOptions = {
+  source?: ProposalSource;
+  selection?: ProposalSelection | null;
+  /** Extra audit entries about how the proposal was prepared (e.g. the agent's search steps). */
+  preparation?: Omit<AuditEntry, "resourceType" | "resourceId">[];
+};
+
+/** Prices the lines, runs the policy check and freezes the result. Network first, then one insert. */
+export async function createProposal(
+  actor: Actor,
+  request: CreateProposalRequest,
+  options: CreateProposalOptions = {},
+): Promise<Proposal> {
   const decision = await evaluateDraft(actor.organizationId, request);
   const d = await db();
   const ids = [...new Set(request.lines.map((l) => l.productId))];
@@ -214,24 +273,40 @@ export async function createProposal(actor: Actor, request: CreateProposalReques
   };
   const createdAt = new Date();
   const expiresAt = quoteExpiresAt(createdAt);
+  const source = options.source ?? "buyer";
 
-  const [row] = await d
-    .insert(proposal)
-    .values({
-      organizationId: actor.organizationId,
-      createdBy: actor.userId,
-      status: initialStatus(decision.outcome),
-      outcome: decision.outcome,
-      // The expiry is part of the deal, so the hash covers it too.
-      hash: contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() }),
-      note: request.note || null,
-      createdAt,
-      updatedAt: createdAt,
-      quoteExpiresAt: expiresAt,
-      ...frozen,
-    })
-    .returning();
-  return toProposal(row!, null, null);
+  return d.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(proposal)
+      .values({
+        organizationId: actor.organizationId,
+        createdBy: actor.userId,
+        status: initialStatus(decision.outcome),
+        outcome: decision.outcome,
+        // The expiry is part of the deal, so the hash covers it too.
+        hash: contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() }),
+        note: request.note || null,
+        createdAt,
+        updatedAt: createdAt,
+        quoteExpiresAt: expiresAt,
+        source,
+        selection: (options.selection ?? null) as Record<string, unknown> | null,
+        ...frozen,
+      })
+      .returning();
+    const created = row!;
+    await recordAudit(tx, actor, [
+      ...(options.preparation ?? []).map((p) => ({ ...p, resourceType: "proposal" as const, resourceId: created.id })),
+      {
+        action: "proposal.created",
+        resourceType: "proposal",
+        resourceId: created.id,
+        summary: `Created a proposal with ${lines.length} line(s), ${eur(decision.totalExclVat)} excl. VAT for ${decision.pricingDate}; policy: ${decision.outcome}.`,
+        details: { source, outcome: decision.outcome, reasons: decision.reasons, totalExclVat: decision.totalExclVat },
+      },
+    ]);
+    return (await withRelations(tx, [created]))[0]!;
+  });
 }
 
 export async function listProposals(actor: Actor, query: ListProposalsQuery): Promise<Proposal[]> {
@@ -239,12 +314,7 @@ export async function listProposals(actor: Actor, query: ListProposalsQuery): Pr
   const where: SQL[] = [eq(proposal.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(proposal.status, query.status));
   if (query.mine === "true") where.push(eq(proposal.createdBy, actor.userId));
-  const rows = await d
-    .select()
-    .from(proposal)
-    .where(and(...where))
-    .orderBy(desc(proposal.createdAt))
-    .limit(200);
+  const rows = await d.select().from(proposal).where(and(...where)).orderBy(desc(proposal.createdAt)).limit(200);
   return withRelations(d, rows);
 }
 
@@ -263,18 +333,61 @@ function requireCreator(row: ProposalRow, actor: Actor) {
     throw new PurchasingError(403, "NOT_CREATOR", "Only the buyer who created this proposal can do this.");
 }
 
+async function cancelLocked(tx: Tx, actor: Actor, row: ProposalRow, why: string) {
+  enforce(canCancel(row.status as ProposalStatus));
+  await setProposalStatus(tx, row.id, "CANCELLED");
+  await tx
+    .update(approval)
+    .set({ status: "CANCELLED" })
+    .where(and(eq(approval.proposalId, row.id), eq(approval.status, "PENDING")));
+  await recordAudit(tx, actor, { action: "proposal.cancelled", resourceType: "proposal", resourceId: row.id, summary: why });
+}
+
 export async function cancelProposal(actor: Actor, id: string): Promise<Proposal> {
   return (await db()).transaction(async (tx) => {
     const row = await lockProposal(tx, actor.organizationId, id);
     requireCreator(row, actor);
-    enforce(canCancel(row.status as ProposalStatus));
-    await setProposalStatus(tx, row.id, "CANCELLED");
-    await tx
-      .update(approval)
-      .set({ status: "CANCELLED" })
-      .where(and(eq(approval.proposalId, row.id), eq(approval.status, "PENDING")));
-    return reload(tx, row);
+    await cancelLocked(tx, actor, row, "Cancelled the proposal.");
+    return reload(tx, row.id);
   });
+}
+
+/**
+ * Proposals never change: a revision creates a new proposal from the changed lines (priced and
+ * checked again) and cancels the old one. Only the creator may revise, and only while it can
+ * still be cancelled.
+ */
+export async function reviseProposal(
+  actor: Actor,
+  id: string,
+  next: { lines: { productId: string; quantity: number }[]; date?: string; appliedChanges: string[] },
+): Promise<ReviseProposalResponse> {
+  const old = await getProposal(actor, id);
+  if (old.createdBy !== actor.userId)
+    throw new PurchasingError(403, "NOT_CREATOR", "Only the buyer who created this proposal can revise it.");
+  enforce(canCancel(old.status));
+  if (!next.lines.length) throw new PurchasingError(400, "EMPTY_PROPOSAL", "The revision removes every line; cancel the proposal instead.");
+
+  const revised = await createProposal(
+    actor,
+    { lines: next.lines, date: next.date ?? old.pricingDate, note: old.note ?? undefined },
+    {
+      source: old.source ?? "buyer",
+      selection: old.selection,
+      preparation: [
+        {
+          action: "proposal.revised",
+          summary: `Revision of proposal ${old.id}: ${next.appliedChanges.join("; ") || "re-priced"}.`,
+          details: { previousProposalId: old.id, appliedChanges: next.appliedChanges },
+        },
+      ],
+    },
+  );
+  await (await db()).transaction(async (tx) => {
+    const row = await lockProposal(tx, actor.organizationId, old.id);
+    await cancelLocked(tx, actor, row, `Replaced by revised proposal ${revised.id}.`);
+  });
+  return { previousProposalId: old.id, appliedChanges: next.appliedChanges, proposal: revised };
 }
 
 // ---------- Approvals ----------
@@ -283,18 +396,29 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
   return (await db()).transaction(async (tx) => {
     const row = await lockProposal(tx, actor.organizationId, id);
     requireCreator(row, actor);
-    if (row.status === "PENDING_APPROVAL") return reload(tx, row); // already requested: same approval
+    if (row.status === "PENDING_APPROVAL") return reload(tx, row.id); // already requested: same approval
     enforce(canRequestApproval(row.status as ProposalStatus, row.outcome as PolicyOutcome));
     enforce(checkQuote(row.quoteExpiresAt, new Date()));
-    await tx.insert(approval).values({
-      proposalId: row.id,
-      organizationId: actor.organizationId,
-      proposalHash: row.hash,
-      status: "PENDING",
-      requestedBy: actor.userId,
-    });
+    const [created] = await tx
+      .insert(approval)
+      .values({
+        proposalId: row.id,
+        organizationId: actor.organizationId,
+        proposalHash: row.hash,
+        status: "PENDING",
+        requestedBy: actor.userId,
+      })
+      .returning({ id: approval.id });
     await setProposalStatus(tx, row.id, "PENDING_APPROVAL");
-    return reload(tx, row);
+    const reasons = (row.decision.reasons ?? []).filter((r) => r.outcome !== "ALLOW").map((r) => r.message);
+    await recordAudit(tx, actor, {
+      action: "approval.requested",
+      resourceType: "proposal",
+      resourceId: row.id,
+      summary: `Sent for approval (${eur(row.totalExclVat)}): ${reasons.join(" ") || "approval required"}`,
+      details: { approvalId: created!.id, proposalHash: row.hash },
+    });
+    return reload(tx, row.id);
   });
 }
 
@@ -302,19 +426,12 @@ export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Pr
   const d = await db();
   const where: SQL[] = [eq(approval.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(approval.status, query.status));
-  const approvals = await d
-    .select()
-    .from(approval)
-    .where(and(...where))
-    .orderBy(desc(approval.requestedAt))
-    .limit(200);
+  const approvals = await d.select().from(approval).where(and(...where)).orderBy(desc(approval.requestedAt)).limit(200);
   if (!approvals.length) return [];
-  const rows = await d
-    .select()
-    .from(proposal)
-    .where(inArray(proposal.id, approvals.map((a) => a.proposalId)));
+  const rows = await d.select().from(proposal).where(inArray(proposal.id, approvals.map((a) => a.proposalId)));
   const proposals = new Map((await withRelations(d, rows)).map((p) => [p.id, p]));
-  return approvals.map((a) => ({ ...toApproval(a), proposal: proposals.get(a.proposalId)! }));
+  const names = await usernames(d, approvals.flatMap((a) => [a.requestedBy, a.decidedBy]));
+  return approvals.map((a) => ({ ...toApproval(a, names), proposal: proposals.get(a.proposalId)! }));
 }
 
 export async function decideApproval(actor: Actor, id: string, request: DecideApprovalRequest): Promise<Proposal> {
@@ -326,21 +443,21 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
     if (!found) throw notFound("Approval");
     const row = await lockProposal(tx, actor.organizationId, found.proposalId);
     const [current] = await tx.select().from(approval).where(eq(approval.id, id));
-    enforce(
-      canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash),
-    );
+    enforce(canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash));
     enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx
       .update(approval)
-      .set({
-        status: request.decision,
-        decidedBy: actor.userId,
-        decidedAt: new Date(),
-        comment: request.comment || null,
-      })
+      .set({ status: request.decision, decidedBy: actor.userId, decidedAt: new Date(), comment: request.comment || null })
       .where(eq(approval.id, id));
     await setProposalStatus(tx, row.id, request.decision);
-    return reload(tx, row);
+    await recordAudit(tx, actor, {
+      action: "approval.decided",
+      resourceType: "proposal",
+      resourceId: row.id,
+      summary: `${request.decision === "APPROVED" ? "Approved" : "Rejected"} the proposal (${eur(row.totalExclVat)})${request.comment ? `: ${request.comment}` : "."}`,
+      details: { approvalId: id, decision: request.decision, comment: request.comment ?? null, proposalHash: row.hash },
+    });
+    return reload(tx, row.id);
   });
 }
 
@@ -348,24 +465,21 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
 
 export type PlacedOrder = { order: Order; replayed: boolean };
 
-async function orderByKey(tx: Tx | ReturnType<typeof getDb>, actor: Actor, key: string, proposalId: string): Promise<PlacedOrder | null> {
-  const [existing] = await tx
+async function orderByKey(d: Db, actor: Actor, key: string, proposalId: string): Promise<PlacedOrder | null> {
+  const [existing] = await d
     .select()
     .from(purchaseOrder)
     .where(and(eq(purchaseOrder.organizationId, actor.organizationId), eq(purchaseOrder.idempotencyKey, key)));
   if (!existing) return null;
   if (existing.proposalId !== proposalId)
     throw new PurchasingError(409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for another proposal.");
-  return { order: toOrder(existing), replayed: true };
+  return { order: (await ordersWithNames(d, [existing]))[0]!, replayed: true };
 }
 
 /** Current Valio prices and availability for frozen lines (network: call outside transactions). */
 async function liveOffer(lines: readonly StoredProposalLine[], date: string): Promise<LiveLineCheck[]> {
   const productIds = [...new Set(lines.map((l) => l.productId))];
-  const [prices, availability] = await Promise.all([
-    getPrices({ productIds, date }),
-    getAvailability({ productIds, date }),
-  ]);
+  const [prices, availability] = await Promise.all([getPrices({ productIds, date }), getAvailability({ productIds, date })]);
   const priceBy = new Map(prices.quotes.map((q) => [q.productId, q]));
   const availabilityBy = new Map(availability.items.map((a) => [a.productId, a]));
   return productIds.map((productId) => {
@@ -414,7 +528,18 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
         ),
       );
       enforce(checkQuote(row.quoteExpiresAt, new Date()));
-      enforce(checkLiveOffer(row.lines, live));
+      const liveCheck = checkLiveOffer(row.lines, live);
+      if (!liveCheck.ok) {
+        // A refused order is part of the record too (outside the rolled-back transaction).
+        await recordAudit(d, actor, {
+          action: "order.refused",
+          resourceType: "proposal",
+          resourceId: row.id,
+          summary: liveCheck.message,
+          details: { code: liveCheck.code },
+        });
+      }
+      enforce(liveCheck);
       const [order] = await tx
         .insert(purchaseOrder)
         .values({
@@ -429,7 +554,14 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
         })
         .returning();
       await setProposalStatus(tx, row.id, "ORDERED");
-      return { order: toOrder(order!), replayed: false };
+      await recordAudit(tx, actor, {
+        action: "order.placed",
+        resourceType: "proposal",
+        resourceId: row.id,
+        summary: `Placed simulated order ${order!.id} (${eur(row.totalExclVat)}); prices re-checked against Valio.`,
+        details: { orderId: order!.id, idempotencyKey, proposalHash: row.hash },
+      });
+      return { order: (await ordersWithNames(tx, [order!]))[0]!, replayed: false };
     });
   } catch (err) {
     // The same key raced on another proposal (unique violation): answer like a replay would.
@@ -442,20 +574,100 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
 }
 
 export async function listOrders(actor: Actor): Promise<Order[]> {
-  const rows = await (await db())
+  const d = await db();
+  const rows = await d
     .select()
     .from(purchaseOrder)
     .where(eq(purchaseOrder.organizationId, actor.organizationId))
     .orderBy(desc(purchaseOrder.createdAt))
     .limit(200);
-  return rows.map(toOrder);
+  return ordersWithNames(d, rows);
 }
 
 export async function getOrder(actor: Actor, id: string): Promise<Order> {
-  const [row] = await (await db())
+  const d = await db();
+  const [row] = await d
     .select()
     .from(purchaseOrder)
     .where(and(eq(purchaseOrder.id, id), eq(purchaseOrder.organizationId, actor.organizationId)));
   if (!row) throw notFound("Order");
-  return toOrder(row);
+  return (await ordersWithNames(d, [row]))[0]!;
+}
+
+/** Itemized receipt of a simulated order: who ordered, who approved, what at which price. */
+export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderReceipt> {
+  const d = await db();
+  const [row] = await d
+    .select({ order: purchaseOrder, pricingDate: proposal.pricingDate, orgName: organization.name })
+    .from(purchaseOrder)
+    .innerJoin(proposal, eq(proposal.id, purchaseOrder.proposalId))
+    .innerJoin(organization, eq(organization.id, purchaseOrder.organizationId))
+    .where(and(eq(purchaseOrder.id, id), eq(purchaseOrder.organizationId, actor.organizationId)));
+  if (!row) throw notFound("Order");
+  const [approvalRow] = await d.select().from(approval).where(eq(approval.proposalId, row.order.proposalId));
+  const names = await usernames(d, [row.order.createdBy, approvalRow?.decidedBy ?? null]);
+  return {
+    orderId: row.order.id,
+    proposalId: row.order.proposalId,
+    issuedAt: row.order.createdAt.toISOString(),
+    organizationName: row.orgName,
+    orderedByName: names.get(row.order.createdBy) ?? null,
+    approvedByName: approvalRow?.status === "APPROVED" && approvalRow.decidedBy ? (names.get(approvalRow.decidedBy) ?? null) : null,
+    deliveryDate: row.pricingDate,
+    lines: row.order.lines.map(withAvailability),
+    totalExclVat: row.order.totalExclVat,
+    currency: row.order.currency,
+    status: "SIMULATED_CONFIRMED",
+    source: "LOCAL_SIMULATOR",
+    proposalHash: row.order.proposalHash,
+  };
+}
+
+/**
+ * Trust check an agent or a person can run without a manual lookup: the stored content still
+ * hashes to the stored hash, and every frozen price matches a Valio price snapshot we recorded.
+ */
+export async function verifyProposal(actor: Actor, id: string): Promise<ProposalVerification> {
+  const d = await db();
+  const [row] = await d
+    .select()
+    .from(proposal)
+    .where(and(eq(proposal.id, id), eq(proposal.organizationId, actor.organizationId)));
+  if (!row) throw notFound("Proposal");
+  const frozen = {
+    lines: row.lines,
+    totalExclVat: row.totalExclVat,
+    currency: row.currency,
+    pricingDate: row.pricingDate,
+    priceSource: row.priceSource,
+    decision: row.decision,
+  };
+  const recomputed = contentHash(row.quoteExpiresAt ? { ...frozen, quoteExpiresAt: row.quoteExpiresAt.toISOString() } : frozen);
+  const ids = [...new Set(row.lines.map((l) => l.productId))];
+  const snapshots = ids.length
+    ? await d
+        .select()
+        .from(valioPriceSnapshot)
+        .where(and(inArray(valioPriceSnapshot.productId, ids), eq(valioPriceSnapshot.pricingDate, row.pricingDate)))
+        .orderBy(desc(valioPriceSnapshot.fetchedAt))
+    : [];
+  return {
+    proposalId: row.id,
+    storedHash: row.hash,
+    recomputedHash: recomputed,
+    hashValid: recomputed === row.hash,
+    lines: row.lines.map((line) => {
+      const match = snapshots.find(
+        (s) => s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat,
+      );
+      return {
+        productId: line.productId,
+        unitPriceExclVat: line.unitPriceExclVat,
+        snapshotFound: !!match,
+        snapshotFetchedAt: match?.fetchedAt.toISOString() ?? null,
+        source: (match?.source as ProposalVerification["lines"][number]["source"]) ?? null,
+      };
+    }),
+    verifiedAt: new Date().toISOString(),
+  };
 }

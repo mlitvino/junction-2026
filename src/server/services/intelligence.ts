@@ -2,30 +2,28 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 
-import { getProcurementSettings } from "@/server/services/guardrails";
 import { resolveUnifiedCatalogRecord, todayIsoDate } from "@/server/services/inquiry";
 import { listInventory } from "@/server/services/inventory";
 import {
-  inferSustainabilityCertificates,
   MOCK_CATALOG_PRODUCTS,
+  syntheticCatalogEnabled,
   roundCurrency,
   type UnifiedCatalogRecord,
 } from "@/server/services/mock-catalog";
+import { getEffectiveFor } from "@/server/services/preferences";
+import { actorFor, getProposal, PurchasingError } from "@/server/services/purchasing";
 import {
   computeNameMatchScore,
+  customerPreferencesFor,
   evaluateCustomerPreferences,
   getCandidatesByProductType,
-  getOrderDetail,
   loadHistoricalOrderRecords,
-  OrderServiceError,
   toCandidateProduct,
-} from "@/server/services/orders";
+} from "@/server/services/selection";
 import { listRecipes } from "@/server/services/recipes";
 import type { CatalogProductSummary } from "@/shared/contracts/catalog";
-import type { CustomerPreferences } from "@/shared/contracts/guardrails";
 import type {
   DeliveryComparison,
-  OrderVerificationResponse,
   PartialAvailabilityPlan,
   ProactiveRecommendation,
   ProactiveRecommendationsResponse,
@@ -39,10 +37,9 @@ import type {
   SplitAllocationLine,
   StockoutAlertsResponse,
   SustainabilityComparison,
-  VerifiedClaim,
 } from "@/shared/contracts/intelligence";
 import type { SessionUser } from "@/shared/contracts/me";
-import type { PreviousOrderRecord, RemovedCandidate } from "@/shared/contracts/orders";
+import type { CustomerPreferences, PreviousOrderRecord, RemovedCandidate } from "@/shared/contracts/selection";
 
 export class IntelligenceServiceError extends Error {
   readonly status: 400 | 404;
@@ -140,7 +137,7 @@ export function computeSustainabilityComparison(
 ): SustainabilityComparison {
   const certificates =
     record.sustainabilityCertificates ??
-    inferSustainabilityCertificates(record.name, record.countryOfOrigin, record.brand);
+    [] /* no label data imported yet */;
 
   const peerCo2Values = categoryPeers
     .filter((p) => p.category.toLowerCase() === record.category.toLowerCase())
@@ -455,7 +452,7 @@ function buildPartialAvailabilityPlan(params: {
  */
 export async function evaluateProductSubstitutions(
   input: ProductSubstitutionRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<ProductSubstitutionResponse> {
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
   const target = await resolveUnifiedCatalogRecord(input.productId, deliveryDate);
@@ -463,9 +460,11 @@ export async function evaluateProductSubstitutions(
     throw new IntelligenceServiceError(`Product '${input.productId}' not found.`, 404);
   }
 
-  const savedSettings = await getProcurementSettings(actor);
-  const preferences = input.preferences ?? savedSettings.preferences;
-  const previousOrders = await loadHistoricalOrderRecords(actor);
+  // Always the organization's own rules: a request can't loosen allergen or dietary filters.
+  const [preferences, previousOrders] = await Promise.all([
+    customerPreferencesFor(actor.organization.id),
+    loadHistoricalOrderRecords(actor.organization.id),
+  ]);
 
   const byType = await getCandidatesByProductType(target.productType, deliveryDate);
   const byCategory = await getCandidatesByProductType(target.category, deliveryDate);
@@ -528,218 +527,6 @@ export async function evaluateProductSubstitutions(
   };
 }
 
-/**
- * Optional Feature #6: Open Trust & Verification Layer (`GET /api/orders/{orderId}/verify`).
- * Generates independently recomputable canonical-JSON SHA-256 digests proving fixed-price quotes,
- * stock availability, product origin & sustainability labels, allergen compliance, guardrails,
- * and chronological audit-chain integrity.
- */
-export async function verifyOrderTrustClaims(
-  orderId: string,
-  actor?: SessionUser | null,
-): Promise<OrderVerificationResponse> {
-  const detail = await getOrderDetail(orderId, actor);
-  const { order, preferencesUsed } = detail;
-  const claims: VerifiedClaim[] = [];
-  const inquiryByProduct = new Map(
-    (order.inquiry?.lines ?? []).map((l) => [l.productId, l]),
-  );
-
-  for (const line of order.lines) {
-    const quote = inquiryByProduct.get(line.productId);
-    const catalogRecord = await resolveUnifiedCatalogRecord(line.productId, order.deliveryDate);
-
-    // 1. Fixed-price claim
-    const priceMatched = Boolean(
-      quote &&
-        quote.priceFound &&
-        quote.fixedUnitPriceExclVat !== null &&
-        Math.abs(quote.fixedUnitPriceExclVat - line.unitPriceEur) < 0.001,
-    );
-    const priceEvidence = {
-      orderId: order.orderId,
-      inquiryId: order.inquiry?.inquiryId ?? null,
-      source: order.inquiry?.source ?? "mock",
-      quotedAt: order.inquiry?.quotedAt ?? null,
-      validUntil: order.inquiry?.validUntil ?? null,
-      productId: line.productId,
-      fixedUnitPriceExclVat: line.unitPriceEur,
-      vatRatePct: line.vatRatePct,
-      currency: order.currency,
-    };
-    claims.push({
-      claimType: "fixed_price_quote",
-      subject: `Product ${line.productId} (${line.productName})`,
-      verified: priceMatched,
-      evidenceSource: order.inquiry
-        ? `PriceAvailabilityInquiry ${order.inquiry.inquiryId} (${order.inquiry.source})`
-        : "No inquiry snapshot",
-      statement: priceMatched
-        ? `Verified fixed price ${line.unitPriceEur.toFixed(2)} EUR/${line.unit} locked by inquiry ${order.inquiry!.inquiryId}.`
-        : `Fixed price quote missing or mismatched for ${line.productId}.`,
-      evidenceData: priceEvidence,
-      sha256Digest: sha256Canonical(priceEvidence),
-    });
-
-    // 2. Stock availability claim
-    const stockVerified =
-      line.stockStatus === "in_stock" || line.stockStatus === "terminal_unconfirmed";
-    const stockEvidence = {
-      orderId: order.orderId,
-      inquiryId: order.inquiry?.inquiryId ?? null,
-      productId: line.productId,
-      requestedQuantity: line.quantity,
-      availableQuantity: line.availableQuantity,
-      stockStatus: line.stockStatus,
-      deliveryDate: order.deliveryDate,
-    };
-    claims.push({
-      claimType: "stock_availability",
-      subject: `Product ${line.productId} (${line.productName})`,
-      verified: stockVerified,
-      evidenceSource: order.inquiry
-        ? `Availability snapshot via ${order.inquiry.inquiryId}`
-        : "Catalog snapshot",
-      statement: stockVerified
-        ? `Stock verified (${line.availableQuantity ?? "terminal"} ${line.unit} available >= ${line.quantity} ${line.unit} requested).`
-        : `Stock shortfall flagged (${line.stockStatus}: ${line.availableQuantity ?? 0} ${line.unit} available vs ${line.quantity} ${line.unit} requested).`,
-      evidenceData: stockEvidence,
-      sha256Digest: sha256Canonical(stockEvidence),
-    });
-
-    // 3. Origin & sustainability claim
-    const certs = catalogRecord
-      ? (catalogRecord.sustainabilityCertificates ??
-        inferSustainabilityCertificates(
-          catalogRecord.name,
-          catalogRecord.countryOfOrigin,
-          catalogRecord.brand,
-        ))
-      : [];
-    const originEvidence = {
-      productId: line.productId,
-      gtin: catalogRecord?.gtin ?? null,
-      vendorName: catalogRecord?.vendorName ?? null,
-      countryOfOrigin: catalogRecord?.countryOfOrigin ?? null,
-      co2PerKg: catalogRecord?.co2PerKg ?? null,
-      sustainabilityCertificates: certs,
-    };
-    claims.push({
-      claimType: "origin_and_sustainability",
-      subject: `Product ${line.productId} (${line.productName})`,
-      verified: Boolean(catalogRecord),
-      evidenceSource: "Valio Aimo Static Product & Carbon Dataset",
-      statement: catalogRecord
-        ? `Origin '${catalogRecord.countryOfOrigin ?? "unspecified"}', GTIN '${catalogRecord.gtin ?? "N/A"}', CO2 ${catalogRecord.co2PerKg ?? "N/A"} kg/kg, ${certs.length} certificate(s).`
-        : `Catalog origin metadata unavailable for ${line.productId}.`,
-      evidenceData: originEvidence,
-      sha256Digest: sha256Canonical(originEvidence),
-    });
-
-    // 4. Allergen & preference safety claim
-    const prefViolations = catalogRecord
-      ? evaluateCustomerPreferences(catalogRecord, preferencesUsed)
-      : [];
-    const safetyVerified =
-      prefViolations.length === 0 || order.approval?.status === "approved";
-    const safetyEvidence = {
-      productId: line.productId,
-      allergens: catalogRecord?.allergens ?? [],
-      dietaryTags: catalogRecord?.dietaryTags ?? [],
-      preferencesEnforced: preferencesUsed,
-      preferenceViolations: prefViolations,
-    };
-    claims.push({
-      claimType: "allergen_and_preference_safety",
-      subject: `Product ${line.productId} (${line.productName})`,
-      verified: safetyVerified,
-      evidenceSource: "Guardrail & Allergen Safety Filter",
-      statement:
-        prefViolations.length === 0
-          ? `Zero excluded allergens present; satisfies all dietary and nutrition constraints.`
-          : `Preference override noted (${prefViolations.join("; ")}).`,
-      evidenceData: safetyEvidence,
-      sha256Digest: sha256Canonical(safetyEvidence),
-    });
-  }
-
-  // 5. Guardrail & human authorization claim
-  const authVerified =
-    order.guardrailEvaluation.authorizedForAutoConfirm ||
-    order.approval?.status === "approved" ||
-    order.status === "pending_approval";
-  const guardrailEvidence = {
-    orderId: order.orderId,
-    status: order.status,
-    totalPriceEur: order.totalPriceEur,
-    budgetEur: order.guardrailsUsed.budgetEur,
-    autoApproveLimitEur: order.guardrailsUsed.autoApproveLimitEur,
-    authorizedForAutoConfirm: order.guardrailEvaluation.authorizedForAutoConfirm,
-    violations: order.guardrailEvaluation.violations,
-    approval: order.approval,
-  };
-  claims.push({
-    claimType: "guardrail_authorization",
-    subject: `Order ${order.orderId}`,
-    verified: authVerified,
-    evidenceSource: "Agent Guardrail & Human Approval Engine",
-    statement: order.guardrailEvaluation.authorizedForAutoConfirm
-      ? `Authorized within autonomous spending authority (${order.totalPriceEur.toFixed(2)} <= ${order.guardrailsUsed.autoApproveLimitEur.toFixed(2)} EUR).`
-      : order.approval?.status === "approved"
-        ? `Signed off by human approver '${order.approval.decidedByName ?? "Approver"}' at ${order.approval.decidedAt}.`
-        : `Correctly paused in '${order.status}' awaiting human sign-off.`,
-    evidenceData: guardrailEvidence,
-    sha256Digest: sha256Canonical(guardrailEvidence),
-  });
-
-  // 6. Chronological audit trail hash chain
-  let rollingHash = "0".repeat(64);
-  for (const event of order.auditTrail) {
-    rollingHash = sha256Canonical({
-      prevHash: rollingHash,
-      id: event.id,
-      orderId: event.orderId,
-      timestamp: event.timestamp,
-      actorType: event.actorType,
-      eventType: event.eventType,
-      summary: event.summary,
-    });
-  }
-  const auditEvidence = {
-    orderId: order.orderId,
-    eventCount: order.auditTrail.length,
-    firstEventAt: order.auditTrail[0]?.timestamp ?? null,
-    lastEventAt: order.auditTrail[order.auditTrail.length - 1]?.timestamp ?? null,
-    chainedDigestSha256: rollingHash,
-  };
-  claims.push({
-    claimType: "audit_trail_integrity",
-    subject: `Order ${order.orderId} Audit Log (${order.auditTrail.length} events)`,
-    verified: order.auditTrail.length > 0,
-    evidenceSource: "Append-Only Procurement Audit Trail",
-    statement: `Chained SHA-256 integrity digest verified across ${order.auditTrail.length} chronological audit event(s).`,
-    evidenceData: auditEvidence,
-    sha256Digest: sha256Canonical(auditEvidence),
-  });
-
-  const allClaimsVerified = claims.every((c) => c.verified);
-  const orderDigestSha256 = sha256Canonical({
-    orderId: order.orderId,
-    status: order.status,
-    totalPriceEur: order.totalPriceEur,
-    claimDigests: claims.map((c) => c.sha256Digest),
-  });
-
-  return {
-    orderId: order.orderId,
-    verifiedAt: new Date().toISOString(),
-    verificationMethod: "canonical-json-sha256-v1",
-    allClaimsVerified,
-    orderDigestSha256,
-    auditChainDigestSha256: rollingHash,
-    claims,
-  };
-}
 
 /**
  * Optional Feature #10: Proactive supplier-stock-out & kitchen low-stock response.
@@ -748,13 +535,13 @@ export async function verifyOrderTrustClaims(
  */
 export async function getProactiveStockoutAlerts(
   deliveryDate = todayIsoDate(),
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<StockoutAlertsResponse> {
-  const [settings, inventoryRes, recipesRes, previousOrders] = await Promise.all([
-    getProcurementSettings(actor),
+  const [preferences, inventoryRes, recipesRes, previousOrders] = await Promise.all([
+    customerPreferencesFor(actor.organization.id),
     listInventory(actor),
     listRecipes({}, actor),
-    loadHistoricalOrderRecords(actor),
+    loadHistoricalOrderRecords(actor.organization.id),
   ]);
 
   const alerts: ProactiveStockoutAlert[] = [];
@@ -783,7 +570,8 @@ export async function getProactiveStockoutAlerts(
   for (const hist of previousOrders) {
     watchedProductIds.add(hist.productId);
   }
-  for (const prod of MOCK_CATALOG_PRODUCTS) {
+  // Synthetic out-of-stock demo products only without a real catalog.
+  for (const prod of (await syntheticCatalogEnabled()) ? MOCK_CATALOG_PRODUCTS : []) {
     if (prod.availableQuantity !== null && prod.availableQuantity <= 0) {
       watchedProductIds.add(prod.id);
     }
@@ -801,7 +589,7 @@ export async function getProactiveStockoutAlerts(
       const { rankedSubstitutes } = buildRankedSubstitutes({
         target: record,
         candidates: peers,
-        preferences: settings.preferences,
+        preferences,
         previousOrders,
         requestedQuantity: 10,
         deliveryDate,
@@ -872,7 +660,7 @@ export async function getProactiveStockoutAlerts(
       const { rankedSubstitutes } = buildRankedSubstitutes({
         target: dummyBase,
         candidates: peers,
-        preferences: settings.preferences,
+        preferences,
         previousOrders,
         requestedQuantity: Math.max(1, deficit),
         deliveryDate,
@@ -907,20 +695,23 @@ export async function getProactiveStockoutAlerts(
  */
 export async function checkRecurringOrderAnomalies(
   input: RecurringOrderCheckRequest,
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<RecurringOrderCheckResponse> {
-  if (!input.orderId && (!input.items || input.items.length === 0)) {
+  if (!input.proposalId && (!input.items || input.items.length === 0)) {
     throw new IntelligenceServiceError(
-      "Provide either 'orderId' or non-empty 'items' to check for recurring-order anomalies.",
+      "Provide either 'proposalId' or non-empty 'items' to check for recurring-order anomalies.",
       400,
     );
   }
 
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
-  const [settings, previousOrders] = await Promise.all([
-    getProcurementSettings(actor),
-    loadHistoricalOrderRecords(actor),
+  const [rules, previousOrders, useSynthetic] = await Promise.all([
+    getEffectiveFor(actor.organization.id, "buyer"),
+    loadHistoricalOrderRecords(actor.organization.id),
+    syntheticCatalogEnabled(),
   ]);
+  const maxOrderValue = rules.values.maxOrderValue;
+  const syntheticPool: UnifiedCatalogRecord[] = useSynthetic ? MOCK_CATALOG_PRODUCTS : [];
 
   const proposedLines: Array<{
     productId: string;
@@ -930,20 +721,20 @@ export async function checkRecurringOrderAnomalies(
     unitPriceEur: number;
   }> = [];
 
-  if (input.orderId) {
+  if (input.proposalId) {
     try {
-      const detail = await getOrderDetail(input.orderId, actor);
-      for (const l of detail.order.lines) {
+      const proposal = await getProposal(actorFor(actor), input.proposalId);
+      for (const l of proposal.lines) {
         proposedLines.push({
           productId: l.productId,
-          productName: l.productName,
-          category: l.category,
+          productName: l.name,
+          category: "",
           quantity: l.quantity,
-          unitPriceEur: l.unitPriceEur,
+          unitPriceEur: l.unitPriceExclVat ?? 0,
         });
       }
     } catch (err) {
-      if (err instanceof OrderServiceError && err.status === 404) {
+      if (err instanceof PurchasingError && err.status === 404) {
         throw new IntelligenceServiceError(err.message, 404);
       }
       throw err;
@@ -964,10 +755,8 @@ export async function checkRecurringOrderAnomalies(
     }
   }
 
-  // Exclude the inspected orderId itself from historical baseline if it was already saved
-  const filteredHistory = input.orderId
-    ? previousOrders.filter((h) => h.orderId !== input.orderId)
-    : previousOrders;
+  // History holds placed orders only, so the inspected proposal is never part of its own baseline.
+  const filteredHistory = previousOrders;
 
   const uniqueHistOrders = new Set(filteredHistory.map((h) => h.orderId)).size;
   const histAvgItemQty =
@@ -1029,7 +818,8 @@ export async function checkRecurringOrderAnomalies(
     }
 
     // Check unit price vs category average
-    const catPeers = MOCK_CATALOG_PRODUCTS.filter(
+    // Category price baseline from synthetic data only; real lines skip this check for now.
+    const catPeers = syntheticPool.filter(
       (p) => p.category.toLowerCase() === line.category.toLowerCase(),
     );
     if (catPeers.length >= 2) {
@@ -1052,17 +842,17 @@ export async function checkRecurringOrderAnomalies(
     }
   }
 
-  if (proposedTotalEur > settings.guardrails.budgetEur) {
-    const ratio = roundCurrency(proposedTotalEur / settings.guardrails.budgetEur);
+  if (maxOrderValue !== null && proposedTotalEur > maxOrderValue) {
+    const ratio = roundCurrency(proposedTotalEur / maxOrderValue);
     anomalies.push({
       anomalyType: "total_spend_spike",
       severity: "high",
       productId: null,
       productName: null,
-      historicalBaseline: settings.guardrails.budgetEur,
+      historicalBaseline: maxOrderValue,
       proposedValue: proposedTotalEur,
       deviationRatio: ratio,
-      explanation: `Total order cost (${proposedTotalEur.toFixed(2)} EUR) exceeds usual budget baseline (${settings.guardrails.budgetEur.toFixed(2)} EUR) by ${(proposedTotalEur - settings.guardrails.budgetEur).toFixed(2)} EUR.`,
+      explanation: `Total order cost (${proposedTotalEur.toFixed(2)} EUR) exceeds usual budget baseline (${maxOrderValue.toFixed(2)} EUR) by ${(proposedTotalEur - maxOrderValue).toFixed(2)} EUR.`,
     });
   }
 
@@ -1097,7 +887,7 @@ function recordToCatalogSummary(record: UnifiedCatalogRecord): CatalogProductSum
     dietaryTags: record.dietaryTags,
     sustainabilityCertificates:
       record.sustainabilityCertificates ??
-      inferSustainabilityCertificates(record.name, record.countryOfOrigin, record.brand),
+      [] /* no label data imported yet */,
   };
 }
 
@@ -1107,14 +897,12 @@ function recordToCatalogSummary(record: UnifiedCatalogRecord): CatalogProductSum
  * with the buyer's dietary, allergen, and nutritional preferences.
  */
 export async function getProactiveRecommendations(
-  actor?: SessionUser | null,
+  actor: SessionUser,
 ): Promise<ProactiveRecommendationsResponse> {
-  const [settings, inventoryRes] = await Promise.all([
-    getProcurementSettings(actor),
+  const [preferences, inventoryRes] = await Promise.all([
+    customerPreferencesFor(actor.organization.id),
     listInventory(actor),
   ]);
-
-  const preferences = settings.preferences;
   const lowStockTypes = new Set(
     inventoryRes.items
       .filter((i) => i.minParLevel !== null && i.quantityInStock < i.minParLevel)
@@ -1124,7 +912,16 @@ export async function getProactiveRecommendations(
   const recommendations: ProactiveRecommendation[] = [];
   const addedIds = new Set<string>();
 
-  const compliantProducts = MOCK_CATALOG_PRODUCTS.filter(
+  // Real catalog: priced candidates for the kitchen's low-stock product types. Synthetic demo
+  // products (seasonal / new-arrival flags) only when there is no real catalog.
+  const pool = (await syntheticCatalogEnabled())
+    ? MOCK_CATALOG_PRODUCTS
+    : (
+        await Promise.all(
+          [...lowStockTypes].map((type) => getCandidatesByProductType(type, todayIsoDate())),
+        )
+      ).flat();
+  const compliantProducts = pool.filter(
     (p) =>
       (p.availableQuantity === null || p.availableQuantity > 0) &&
       evaluateCustomerPreferences(p, preferences).length === 0,
@@ -1133,7 +930,7 @@ export async function getProactiveRecommendations(
   for (const prod of compliantProducts) {
     if (addedIds.has(prod.id)) continue;
 
-    const sust = computeSustainabilityComparison(prod, MOCK_CATALOG_PRODUCTS);
+    const sust = computeSustainabilityComparison(prod, pool);
 
     if (prod.isSeasonal) {
       addedIds.add(prod.id);

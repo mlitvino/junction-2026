@@ -1,6 +1,6 @@
 import "server-only";
 
-import { PurchasingError, decideApproval, listApprovals } from "@/server/services/purchasing";
+import { actorFor, decideApproval, listApprovals, PurchasingError } from "@/server/services/purchasing";
 
 import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
@@ -16,7 +16,7 @@ approvalsRouter.openapi(listApprovalsRoute, async (c) =>
   c.json(
     {
       items: await listApprovals(
-        { organizationId: c.var.user.organization.id, userId: c.var.user.id },
+        actorFor(c.var.user),
         c.req.valid("query"),
       ),
     },
@@ -27,7 +27,7 @@ approvalsRouter.openapi(listApprovalsRoute, async (c) =>
 approvalsRouter.openapi(decideApprovalRoute, async (c) => {
   try {
     const proposal = await decideApproval(
-      { organizationId: c.var.user.organization.id, userId: c.var.user.id },
+      actorFor(c.var.user),
       c.req.valid("param").id,
       c.req.valid("json"),
     );

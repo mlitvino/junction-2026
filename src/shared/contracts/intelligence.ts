@@ -1,8 +1,7 @@
 import { z } from "zod";
 
 import { CatalogProductSummarySchema } from "./catalog";
-import { CustomerPreferencesSchema } from "./guardrails";
-import { CandidateProductSchema, OrderAddItemSchema, RemovedCandidateSchema } from "./orders";
+import { CandidateProductSchema, CustomerPreferencesSchema, OrderAddItemSchema, RemovedCandidateSchema } from "./selection";
 
 /** Optional Feature #2: Delivery lead-time and reliability comparison against requested deadline */
 export const DeliveryComparisonSchema = z.object({
@@ -141,9 +140,6 @@ export const ProductSubstitutionRequestSchema = z.object({
     example: 800,
   }),
   deliveryDate: z.iso.date().optional().meta({ example: "2026-11-16" }),
-  preferences: CustomerPreferencesSchema.optional().meta({
-    description: "Optional dietary, allergen, and nutrition constraints override.",
-  }),
 });
 
 export type ProductSubstitutionRequest = z.infer<typeof ProductSubstitutionRequestSchema>;
@@ -165,51 +161,6 @@ export const ProductSubstitutionResponseSchema = z.object({
 });
 
 export type ProductSubstitutionResponse = z.infer<typeof ProductSubstitutionResponseSchema>;
-
-/** Individual verifiable claim in the Open Trust & Verification Layer */
-export const VerifiedClaimSchema = z.object({
-  claimType: z.enum([
-    "fixed_price_quote",
-    "stock_availability",
-    "origin_and_sustainability",
-    "allergen_and_preference_safety",
-    "guardrail_authorization",
-    "audit_trail_integrity",
-  ]),
-  subject: z.string().meta({ example: "Product 460101 (Valio Oltermanni Creamy Cheese 1kg)" }),
-  verified: z.boolean().meta({ example: true }),
-  evidenceSource: z.string().meta({ example: "PriceAvailabilityInquiry INQ-9F3A1B2C (mock)" }),
-  statement: z.string().meta({
-    example: "Unit price 5.40 EUR/KG locked until 2026-11-14T18:00:00.000Z.",
-  }),
-  evidenceData: z.record(z.string(), z.unknown()),
-  sha256Digest: z.string().meta({
-    description: "Hex SHA-256 digest of the canonical JSON `evidenceData` object.",
-    example: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  }),
-});
-
-export type VerifiedClaim = z.infer<typeof VerifiedClaimSchema>;
-
-/** Optional Feature #6: GET /api/orders/{orderId}/verify — Trust & Verification response */
-export const OrderVerificationResponseSchema = z.object({
-  orderId: z.string().meta({ example: "ORD-8A7B6C5D" }),
-  verifiedAt: z.iso.datetime(),
-  verificationMethod: z.literal("canonical-json-sha256-v1").meta({
-    description:
-      "Open, deterministic verification scheme: keys sorted lexicographically, serialized as UTF-8 JSON, hashed with SHA-256.",
-  }),
-  allClaimsVerified: z.boolean(),
-  orderDigestSha256: z.string().meta({
-    description: "Master SHA-256 digest over all claim digests and order metadata.",
-  }),
-  auditChainDigestSha256: z.string().meta({
-    description: "Chained SHA-256 digest across every chronological audit trail event.",
-  }),
-  claims: z.array(VerifiedClaimSchema),
-});
-
-export type OrderVerificationResponse = z.infer<typeof OrderVerificationResponseSchema>;
 
 /** Optional Feature #10: Proactive supplier-stock-out & kitchen low-stock alert */
 export const ProactiveStockoutAlertSchema = z.object({
@@ -273,9 +224,8 @@ export type RecurringOrderAnomaly = z.infer<typeof RecurringOrderAnomalySchema>;
 
 /** POST /api/intelligence/recurring-check — request body */
 export const RecurringOrderCheckRequestSchema = z.object({
-  orderId: z.string().trim().min(1).optional().meta({
-    description: "Existing order ID to inspect for recurring-order anomalies.",
-    example: "ORD-8A7B6C5D",
+  proposalId: z.string().trim().min(1).optional().meta({
+    description: "A proposal to inspect before it is ordered.",
   }),
   items: z.array(OrderAddItemSchema).min(1).max(100).optional().meta({
     description: "Proposed recurring order items when checking before creating an order.",

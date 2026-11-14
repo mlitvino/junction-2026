@@ -23,8 +23,13 @@ export const PreferencesSchema = z.object({
     example: ["fi", "se"],
   }),
   excludedAllergens: z.array(z.string().min(1)).max(200).meta({
-    description: "Allergen codes to avoid, as in the catalog (GS1 codes such as `AM`, `AW`).",
-    example: ["AM"],
+    description:
+      "Allergens to avoid: GS1 codes as in the catalog (`AM`, `AW`) or names (`milk`, `gluten`); a name covers all its codes (shared/contracts/allergens.ts).",
+    example: ["milk", "AY"],
+  }),
+  dietaryRestrictions: z.array(z.string().min(1)).max(50).meta({
+    description: "Required dietary tags for products the agent picks (e.g. `vegetarian`, `lactose-free`, `gluten-free`).",
+    example: ["lactose-free"],
   }),
 
   // ----- Vendors and brands -----
@@ -40,10 +45,36 @@ export const PreferencesSchema = z.object({
     example: ["Valio", "Fazer"],
   }),
 
+  // ----- Products and categories (outside these → approval) -----
+  allowedCategories: z.array(z.string().min(1)).max(500).meta({
+    description: "Valio category codes the agent may order without approval. Empty = all (except blocked).",
+    example: [],
+  }),
+  blockedCategories: z.array(z.string().min(1)).max(500).meta({
+    description: "Valio category codes that always need approval.",
+    example: [],
+  }),
+  allowedProductIds: z.array(z.string().min(1)).max(2000).meta({
+    description: "Product codes the agent may order without approval. Empty = all (except blocked).",
+    example: [],
+  }),
+  blockedProductIds: z.array(z.string().min(1)).max(2000).meta({
+    description: "Product codes that always need approval.",
+    example: [],
+  }),
+
   // ----- Spending and approval -----
   maxOrderValue: z.number().positive().nullable().meta({
     description: "Highest allowed total of one order, EUR excluding VAT. Null = no limit.",
     example: 500,
+  }),
+  maxUnitPrice: z.number().positive().nullable().meta({
+    description: "Unit price (EUR excl. VAT, per sales unit) above which a line needs approval. Null = no cap.",
+    example: 50,
+  }),
+  maxLineQuantity: z.number().positive().nullable().meta({
+    description: "Quantity (in sales units) above which a single line needs approval. Null = no cap.",
+    example: 1000,
   }),
   autoApproveBelow: z.number().min(0).nullable().meta({
     description:

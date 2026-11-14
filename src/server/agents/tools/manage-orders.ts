@@ -4,86 +4,77 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
 import {
-  checkoutOrder,
-  createOrderFromPrompt,
-  getOrderDetail,
-  modifyOrder,
-} from "@/server/services/orders";
+  actorFor,
+  getProposal,
+  placeOrder,
+  verifyProposal,
+} from "@/server/services/purchasing";
+import { createProposalFromPrompt, reviseProposalFromRequest } from "@/server/services/selection";
 import {
-  CheckoutOrderResponseSchema,
-  CreateOrderFromPromptResponseSchema,
-  ModifyOrderResponseSchema,
-  OrderDetailResponseSchema,
-  OrderProductReplacementSchema,
-  OrderQuantityUpdateSchema,
-} from "@/shared/contracts/orders";
+  OrderSchema,
+  ProposalFromPromptResponseSchema,
+  ProposalSchema,
+  ProposalVerificationSchema,
+  ReviseProposalRequestSchema,
+  ReviseProposalResponseSchema,
+} from "@/shared/contracts/purchasing";
 
-export const createProcurementOrderTool = createTool({
-  id: "create-procurement-order",
+import { toolActor } from "./actor";
+
+// Purchasing tools. The agent acts for the signed-in buyer through the same flow as a person:
+// it creates and revises proposals, and can order only what the organization's rules allow or an
+// approver approved. It has no tool to approve.
+
+const agentActor = (context: Parameters<typeof toolActor>[0]) => actorFor(toolActor(context), true);
+
+export const createProposalTool = createTool({
+  id: "create-proposal",
   description:
-    "Run the full procurement pipeline from a buyer request: extract items, search & rank products by preferences and order history, execute a fixed-price & availability inquiry, check agent guardrails/budget, and create an order (confirmed or pending_approval).",
+    "Turn a buyer's request into a proposal: extract items, pick products that fit the organization's dietary and allergen rules (preferring past orders), then price them, check availability and run the organization's policy. Returns the proposal, how each product was chosen, and what to do next.",
   inputSchema: z.object({
-    prompt: z.string().describe("Buyer's natural-language purchasing prompt."),
-    deliveryDate: z.string().optional().describe("Optional YYYY-MM-DD delivery date."),
-    budgetEur: z.number().positive().optional().describe("Optional budget override in EUR."),
+    prompt: z.string().describe("The buyer's request, e.g. '100 litres of lactose-free milk for Friday'."),
+    date: z.string().optional().describe("Delivery date the goods are needed, YYYY-MM-DD."),
+    autoResolvePartialStock: z.boolean().optional().describe("Split a line over alternatives when stock is short."),
   }),
-  outputSchema: CreateOrderFromPromptResponseSchema,
-  execute: async ({ prompt, deliveryDate, budgetEur }) =>
-    createOrderFromPrompt({
-      prompt,
-      deliveryDate,
-      budgetEur,
-    }),
+  outputSchema: ProposalFromPromptResponseSchema,
+  execute: async (input, context) => createProposalFromPrompt(agentActor(context), input),
 });
 
-export const modifyOrderTool = createTool({
-  id: "modify-order",
+export const reviseProposalTool = createTool({
+  id: "revise-proposal",
   description:
-    "Modify an existing order before checkout: swap product X for product Y, adjust quantities, remove products, or apply a natural-language change request. Re-runs fixed-price inquiry and guardrail checks.",
-  inputSchema: z.object({
-    orderId: z.string().describe("ID of the order to modify, e.g. 'ORD-8A7B6C5D'."),
-    prompt: z
-      .string()
-      .optional()
-      .describe("Natural-language modification instruction, e.g. 'Change 460101 to 460301'."),
-    replacements: z.array(OrderProductReplacementSchema).optional(),
-    quantityUpdates: z.array(OrderQuantityUpdateSchema).optional(),
-    removeProductIds: z.array(z.string()).optional(),
+    "Change a proposal (swap products, change quantities, remove or add lines, move the date). Creates a new, re-priced and re-checked proposal and cancels the old one.",
+  inputSchema: ReviseProposalRequestSchema.extend({
+    proposalId: z.string().describe("The proposal to change."),
   }),
-  outputSchema: ModifyOrderResponseSchema,
-  execute: async ({ orderId, prompt, replacements, quantityUpdates, removeProductIds }) =>
-    modifyOrder(orderId, {
-      prompt,
-      replacements,
-      quantityUpdates,
-      removeProductIds,
-    }),
+  outputSchema: ReviseProposalResponseSchema,
+  execute: async ({ proposalId, ...changes }, context) =>
+    reviseProposalFromRequest(agentActor(context), proposalId, changes),
 });
 
-export const checkoutOrderTool = createTool({
-  id: "checkout-order",
+export const placeOrderTool = createTool({
+  id: "place-order",
   description:
-    "Submit an authorized ('confirmed' or 'approved') order to Valio Aimo and issue an itemized fixed-price receipt. Will fail if the order is still 'pending_approval'.",
-  inputSchema: z.object({
-    orderId: z.string().describe("ID of the authorized order to check out."),
-    customerReference: z.string().optional().describe("Optional PO or kitchen reference."),
-    deliveryNotes: z.string().optional().describe("Optional delivery instructions."),
-  }),
-  outputSchema: CheckoutOrderResponseSchema,
-  execute: async ({ orderId, customerReference, deliveryNotes }) =>
-    checkoutOrder(orderId, {
-      customerReference,
-      deliveryNotes,
-    }),
+    "Order a proposal. Works only when the organization's rules allow it (decision ALLOW) or an approver has approved it; the server re-checks prices first. Repeating it for the same proposal returns the same order.",
+  inputSchema: z.object({ proposalId: z.string().describe("The proposal to order.") }),
+  outputSchema: OrderSchema,
+  execute: async ({ proposalId }, context) =>
+    (await placeOrder(agentActor(context), proposalId, `agent-${proposalId}`)).order,
 });
 
-export const getOrderDetailsTool = createTool({
-  id: "get-order-details",
+export const getProposalTool = createTool({
+  id: "get-proposal",
+  description: "Read a proposal: lines, prices, availability, policy decision with reasons, approval and order status.",
+  inputSchema: z.object({ proposalId: z.string() }),
+  outputSchema: ProposalSchema,
+  execute: async ({ proposalId }, context) => getProposal(agentActor(context), proposalId),
+});
+
+export const verifyProposalTool = createTool({
+  id: "verify-proposal",
   description:
-    "Retrieve full details of an existing order including lines, inquiry quote, guardrail status, human approval status, suggested product alternatives, receipt, and audit trail.",
-  inputSchema: z.object({
-    orderId: z.string().describe("Order ID to inspect."),
-  }),
-  outputSchema: OrderDetailResponseSchema,
-  execute: async ({ orderId }) => getOrderDetail(orderId),
+    "Check that a proposal's content still matches its SHA-256 hash and that each frozen price matches a recorded Valio price.",
+  inputSchema: z.object({ proposalId: z.string() }),
+  outputSchema: ProposalVerificationSchema,
+  execute: async ({ proposalId }, context) => verifyProposal(agentActor(context), proposalId),
 });

@@ -31,6 +31,7 @@ export async function evaluateDraft(
       .select({
         id: valioProduct.id,
         vendorName: valioProduct.vendorName,
+        category: valioProduct.category,
         allergens: valioProduct.allergens,
         co2PerKg: valioProduct.co2PerKg,
         deliveryReliability: valioProduct.deliveryReliability,

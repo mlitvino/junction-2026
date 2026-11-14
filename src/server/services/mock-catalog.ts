@@ -1,6 +1,11 @@
 import "server-only";
 
-import type { NutritionProfile } from "@/shared/contracts/guardrails";
+import { getDb } from "@/server/db/client";
+import { ensureDatabase } from "@/server/db/migrate";
+import { valioProduct } from "@/server/db/schema";
+import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+
+import type { NutritionProfile } from "@/shared/contracts/catalog";
 
 export type UnifiedCatalogRecord = {
   id: string;
@@ -24,7 +29,8 @@ export type UnifiedCatalogRecord = {
   co2PerKg: number | null;
   dietaryTags: string[];
   allergens: string[];
-  nutrition: NutritionProfile;
+  /** Null for real products: the catalog import doesn't carry nutrition yet. */
+  nutrition: NutritionProfile | null;
   substituteIds: string[];
   sustainabilityCertificates?: string[];
   leadTimeDays?: number;
@@ -43,28 +49,9 @@ export function hashSeed(id: string): number {
   return (h >>> 0) / 2 ** 32;
 }
 
-/** Maps GS1 / Synkka allergen codes or raw strings to readable lowercase allergen names. */
+/** Maps GS1 allergen codes (or names) to readable lowercase allergen names (shared/contracts/allergens.ts). */
 export function normalizeAllergenList(rawAllergens: string[]): string[] {
-  const gs1Map: Record<string, string> = {
-    AM: "milk",
-    ML: "milk",
-    AW: "gluten",
-    UW: "gluten",
-    AN: "tree-nuts",
-    SA: "tree-nuts",
-    AP: "peanuts",
-    AY: "soy",
-    AC: "crustaceans",
-    AE: "eggs",
-    AF: "fish",
-  };
-  const out = new Set<string>();
-  for (const a of rawAllergens) {
-    const upper = a.trim().toUpperCase();
-    const mapped = gs1Map[upper] ?? a.trim().toLowerCase();
-    if (mapped) out.add(mapped);
-  }
-  return [...out];
+  return allergenNames([...allergenCodes(rawAllergens)]);
 }
 
 export function inferDietaryAndAllergensFromProduct(name: string, rawAllergens: string[]) {
@@ -123,37 +110,8 @@ export function inferDietaryAndAllergensFromProduct(name: string, rawAllergens: 
   return { dietaryTags, allergens };
 }
 
-export function inferSustainabilityCertificates(
-  name: string,
-  countryOfOrigin: string | null,
-  brand: string | null,
-): string[] {
-  const certs: string[] = [];
-  const lower = name.toLowerCase();
-  if (countryOfOrigin?.toLowerCase() === "fi") {
-    certs.push("Hyvää Suomesta (Produced in Finland)");
-  }
-  if (brand?.toLowerCase() === "valio" && /\b(milk|maito|cheese|juusto|cream|kerma)\b/i.test(lower)) {
-    certs.push("Valio Carbo® Climate-Reduced Chain");
-  }
-  if (lower.includes("organic") || lower.includes("luomu")) {
-    certs.push("EU Organic");
-  }
-  return certs;
-}
 
-export function synthesizeNutritionFromSeed(id: string): NutritionProfile {
-  const s = hashSeed(id);
-  return {
-    caloriesPer100g: Math.round(120 + s * 260),
-    fatPer100g: roundCurrency(4 + s * 28),
-    sugarPer100g: roundCurrency(0.5 + s * 6),
-    saltPer100g: roundCurrency(0.2 + s * 1.6),
-    proteinPer100g: roundCurrency(5 + s * 20),
-  };
-}
-
-export const MOCK_CATALOG_PRODUCTS: UnifiedCatalogRecord[] = [
+const RAW_MOCK_CATALOG_PRODUCTS: UnifiedCatalogRecord[] = [
   // Cheese products (some pass preferences, some fail dietary/allergens/nutrition to demonstrate filtering)
   {
     id: "460101",
@@ -928,4 +886,38 @@ export const MOCK_CATALOG_PRODUCTS: UnifiedCatalogRecord[] = [
   },
 ];
 
+/** Prefix of synthetic product ids. They must never look like real Valio codes. */
+export const SYNTHETIC_ID_PREFIX = "SYN-";
+export const syntheticId = (id: string) => (id.startsWith(SYNTHETIC_ID_PREFIX) ? id : `${SYNTHETIC_ID_PREFIX}${id}`);
+export const isSyntheticId = (id: string) => id.startsWith(SYNTHETIC_ID_PREFIX);
+
+/**
+ * Synthetic demo products, used only when the real catalog is empty (`syntheticCatalogEnabled`).
+ * Their ids carry the `SYN-` prefix: the codes they were written with belong to unrelated real
+ * Valio products (e.g. 460101 is peaches), so an unprefixed id would order the wrong product.
+ */
+export const MOCK_CATALOG_PRODUCTS: UnifiedCatalogRecord[] = RAW_MOCK_CATALOG_PRODUCTS.map((p) => ({
+  ...p,
+  id: syntheticId(p.id),
+  substituteIds: p.substituteIds.map(syntheticId),
+}));
+
 export const MOCK_CATALOG_BY_ID = new Map(MOCK_CATALOG_PRODUCTS.map((p) => [p.id, p]));
+
+let catalogEmpty: Promise<boolean> | undefined;
+
+/**
+ * True when there is no real catalog to work with (no database, or `pnpm data:import` not run):
+ * only then may synthetic products be offered. Re-checked until the catalog has data.
+ */
+export async function syntheticCatalogEnabled(): Promise<boolean> {
+  if (!process.env.DATABASE_URL) return true;
+  catalogEmpty ??= (async () => {
+    await ensureDatabase();
+    const [row] = await getDb().select({ id: valioProduct.id }).from(valioProduct).limit(1);
+    return !row;
+  })().catch(() => true);
+  const empty = await catalogEmpty;
+  if (empty) catalogEmpty = undefined;
+  return empty;
+}
