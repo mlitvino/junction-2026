@@ -43,6 +43,7 @@ describe("API surface", () => {
       "/api/proposals/{id}/audit",
       "/api/proposals/{id}/verify",
       "/api/approvals/{id}/decision",
+      "/api/trust/public-key",
       "/api/orders/{id}/receipt",
       "/api/audit",
       "/api/policy/evaluate",
@@ -91,9 +92,15 @@ describe("API surface", () => {
     }
   });
 
-  it("keeps health and the docs public", async () => {
+  it("keeps health, the docs and the signing public key public", async () => {
     assert.equal((await get("/api/openapi.json")).status, 200);
     assert.notEqual((await get("/api/health")).status, 401);
+    const key = await get("/api/trust/public-key");
+    assert.equal(key.status, 200);
+    const body = (await key.json()) as { algorithm: string; keyId: string; publicKeyPem: string };
+    assert.equal(body.algorithm, "Ed25519");
+    assert.match(body.keyId, /^[0-9a-f]{16}$/);
+    assert.match(body.publicKeyPem, /BEGIN PUBLIC KEY/);
   });
 });
 

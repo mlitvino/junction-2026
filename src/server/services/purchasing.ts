@@ -1,5 +1,7 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
+
 import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 
 import { getDb } from "@/server/db/client";
@@ -53,6 +55,7 @@ import type {
 import { recordAudit, type AuditActor, type AuditEntry } from "./audit";
 import { getAvailability, getPrices } from "./catalog";
 import { evaluateDraft } from "./policy";
+import { checkProposalSignature, signProposalContent } from "./trust";
 
 // The one purchasing flow: proposals, approvals, orders. Every function takes the caller (their
 // organization and user) and only touches that organization's rows. Rules: server/purchasing/rules.ts.
@@ -154,6 +157,8 @@ function toProposal(
     quoteExpiresAt: row.quoteExpiresAt?.toISOString() ?? null,
     decision: row.decision as Proposal["decision"],
     hash: row.hash,
+    signature: row.signature,
+    signatureKeyId: row.signatureKeyId,
     note: row.note,
     approval: approvalRow ? toApproval(approvalRow, names) : null,
     orderId,
@@ -278,17 +283,21 @@ export async function createProposal(
   const createdAt = new Date();
   const expiresAt = quoteExpiresAt(createdAt);
   const source = options.source ?? "buyer";
+  // The expiry is part of the deal, so the hash covers it too. The id is made here so it can be signed.
+  const id = randomUUID();
+  const hash = contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() });
 
   return d.transaction(async (tx) => {
     const [row] = await tx
       .insert(proposal)
       .values({
+        id,
         organizationId: actor.organizationId,
         createdBy: actor.userId,
         status: initialStatus(decision.outcome),
         outcome: decision.outcome,
-        // The expiry is part of the deal, so the hash covers it too.
-        hash: contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() }),
+        hash,
+        ...signProposalContent({ proposalId: id, hash }),
         note: request.note || null,
         createdAt,
         updatedAt: createdAt,
@@ -610,7 +619,13 @@ export async function getOrder(actor: Actor, id: string): Promise<Order> {
 export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderReceipt> {
   const d = await db();
   const [row] = await d
-    .select({ order: purchaseOrder, pricingDate: proposal.pricingDate, orgName: organization.name })
+    .select({
+      order: purchaseOrder,
+      pricingDate: proposal.pricingDate,
+      signature: proposal.signature,
+      signatureKeyId: proposal.signatureKeyId,
+      orgName: organization.name,
+    })
     .from(purchaseOrder)
     .innerJoin(proposal, eq(proposal.id, purchaseOrder.proposalId))
     .innerJoin(organization, eq(organization.id, purchaseOrder.organizationId))
@@ -632,13 +647,16 @@ export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderRe
     status: "SIMULATED_CONFIRMED",
     source: "LOCAL_SIMULATOR",
     proposalHash: row.order.proposalHash,
+    proposalSignature: row.signature,
+    signatureKeyId: row.signatureKeyId,
   };
 }
 
 /**
  * Trust check an agent or a person can run without a manual lookup: the stored content still
- * hashes to the stored hash, and every frozen price is the price in the recorded Valio answer it
- * names (snapshot id; older proposals: any snapshot with that price for the date).
+ * hashes to the stored hash, the server's signature over id + hash holds, and every frozen price is
+ * the price in the recorded Valio answer it names (snapshot id; older proposals: any snapshot with
+ * that price for the date).
  */
 export async function verifyProposal(actor: Actor, id: string): Promise<ProposalVerification> {
   const d = await db();
@@ -669,6 +687,9 @@ export async function verifyProposal(actor: Actor, id: string): Promise<Proposal
     storedHash: row.hash,
     recomputedHash: recomputed,
     hashValid: recomputed === row.hash,
+    // The signature covers the stored hash; a changed hash already shows in hashValid.
+    signatureValid: checkProposalSignature({ proposalId: row.id, hash: row.hash }, row.signature, row.signatureKeyId),
+    signatureKeyId: row.signatureKeyId,
     lines: row.lines.map((line) => {
       const samePrice = (s: (typeof snapshots)[number]) =>
         s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat;

@@ -69,6 +69,9 @@ export const proposal = pgTable(
     source: text("source"),
     /** How the agent chose the lines (candidates, filters, ranking, warnings); null for direct lines. */
     selection: jsonb("selection").$type<Record<string, unknown>>(),
+    /** Ed25519 signature (base64url) over id + hash; null on rows from before signing. */
+    signature: text("signature"),
+    signatureKeyId: text("signature_key_id"),
     createdAt: timestamp("created_at", tz).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", tz).notNull().defaultNow(),
   },

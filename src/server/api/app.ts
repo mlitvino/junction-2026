@@ -24,18 +24,19 @@ import { preferencesRouter } from "./routes/preferences/preferences";
 import { productsRouter } from "./routes/products/products";
 import { proposalsRouter } from "./routes/proposals/proposals";
 import { recipesRouter } from "./routes/recipes/recipes";
+import { trustRouter } from "./routes/trust/trust";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
  * Add an endpoint: create ./routes/<name>/<name>.ts (+ <name>.docs.ts) and register it below.
- * Default-deny: everything except /health, /docs, /openapi.json and /auth/* needs a session
+ * Default-deny: everything except /health, /trust/public-key, /docs, /openapi.json and /auth/* needs a session
  * (middleware below); routers add `requireRole(...)` from ./middleware/session.ts for their role.
  */
 export const app = createRouter().basePath("/api");
 
 // Default-deny: every /api route needs a signed-in user, except the public ones below. Routers
 // still add `requireRole(...)` for the role they need; it reuses the user resolved here.
-const PUBLIC_PATHS = new Set(["/api/health", "/api/docs", "/api/openapi.json"]);
+const PUBLIC_PATHS = new Set(["/api/health", "/api/trust/public-key", "/api/docs", "/api/openapi.json"]);
 app.use("*", async (c, next) => {
   if (PUBLIC_PATHS.has(c.req.path) || c.req.path.startsWith("/api/auth/")) return next();
   return requireSession(c, next);
@@ -48,6 +49,7 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 });
 
 app.route("/", healthRouter);
+app.route("/", trustRouter);
 app.route("/", meRouter);
 app.route("/", organizationRouter);
 app.route("/", preferencesRouter);

@@ -115,6 +115,11 @@ export const ProposalSchema = z.object({
   }),
   decision: ProposalDecisionSchema,
   hash: z.string().meta({ description: "SHA-256 of the frozen content (lines, prices, total, decision)." }),
+  signature: z.string().nullable().meta({
+    description:
+      "Ed25519 signature (base64url) over id and hash; verify it with `GET /api/trust/public-key`. Null on older proposals.",
+  }),
+  signatureKeyId: z.string().nullable().meta({ description: "Which server key signed it." }),
   note: z.string().nullable(),
   approval: ApprovalSchema.nullable(),
   orderId: id.nullable(),
@@ -273,6 +278,8 @@ export const OrderReceiptSchema = z.object({
   status: z.literal("SIMULATED_CONFIRMED"),
   source: z.literal("LOCAL_SIMULATOR"),
   proposalHash: z.string(),
+  proposalSignature: z.string().nullable().meta({ description: "The proposal's Ed25519 signature (see `GET /api/trust/public-key`)." }),
+  signatureKeyId: z.string().nullable(),
 });
 
 export const ProposalVerificationSchema = z.object({
@@ -280,6 +287,10 @@ export const ProposalVerificationSchema = z.object({
   storedHash: z.string(),
   recomputedHash: z.string(),
   hashValid: z.boolean().meta({ description: "True when the stored content still produces the stored hash." }),
+  signatureValid: z.boolean().nullable().meta({
+    description: "True when the signature matches id and hash under the server's key; null when unsigned.",
+  }),
+  signatureKeyId: z.string().nullable(),
   lines: z.array(
     z.object({
       productId,
