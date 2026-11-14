@@ -150,7 +150,7 @@ export const PriceQuoteSchema = z.object({
   validFrom: z.string().nullable(),
   validTo: z.string().nullable(),
   fetchedAt: z.iso.datetime().meta({ description: "When this price was fetched from Valio (cached up to 5 minutes)." }),
-  snapshotId: z.string().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure.", example: "18342" }),
+  snapshotId: z.string().optional().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure. Always set by the server.", example: "18342" }),
 });
 
 export const PricesResponseSchema = z.object({
@@ -179,7 +179,7 @@ export const AvailabilitySchema = z.object({
   orderCutoff: z.string().nullable().meta({ description: "Order by this time to receive goods on availableDate." }),
   salesUnit: z.string().nullable(),
   fetchedAt: z.iso.datetime(),
-  snapshotId: z.string().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure.", example: "18342" }),
+  snapshotId: z.string().optional().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure. Always set by the server.", example: "18342" }),
 });
 
 export const AvailabilityResponseSchema = z.object({

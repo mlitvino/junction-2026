@@ -2,6 +2,8 @@
 
 This is the backend branch `feat/better-static-api`, compared with `main`. It covers catalog data, search, ranking, unit conversion, trust, approval expiry and agent errors. It is written for the **frontend** and **agentic AI** teammates and their coding agents: what changed, what breaks, and what you can now build on.
 
+**Typing note for mocks:** the response fields this branch added are **optional** in the contracts: `snapshotId`, `priceSnapshotId` / `availabilitySnapshotId`, `substituteFor`, `expiresAt`, `signature`, `signatureKeyId`, `proposalSignature` and `signatureValid`. Mocks written against the old contract (e.g. `src/client/workspace/mock-api.ts`) therefore still compile. The real server always sends them, and UI code should treat a missing value as "not available". See [Contract changes: fixes to apply on your side](#contract-changes-fixes-to-apply-on-your-side).
+
 The full contract is in `src/shared/contracts/*` and in `/api/openapi.json` (Swagger at `/api/docs`). Zones and rules are in `AGENTS.md`. Change only your own zone. A change to `src/shared/contracts/` needs both developers to agree.
 
 ## TL;DR
@@ -152,9 +154,72 @@ These answers come from `POST /api/agent/run`, `/api/extract`, `/api/proposals/f
 
 ---
 
+## Contract changes: fixes to apply on your side
+
+**What happened.** CI type-checks a branch merged with `main`. The frontend's `src/client/workspace/mock-api.ts` builds price quotes, policy decisions, proposal lines and approvals typed by the shared contracts. This branch had added required fields to those types, so the mocks failed `tsc` (`snapshotId`, `priceSnapshotId`, `availabilitySnapshotId`, `substituteFor` and `expiresAt` were missing). The JSON on the wire was never affected.
+
+**What the backend changed.** Those fields, plus a few more a mock might build, are now `.optional()` in the contracts. The server still always sends them:
+
+| Contract (file) | Field | Server sends | Mock value if you add it |
+| --- | --- | --- | --- |
+| `PriceQuote`, `Availability` (`products.ts`) | `snapshotId` | id of the stored Valio answer | `"mock-<productId>"` |
+| `PolicyLine` (`policy.ts`) | `priceSnapshotId`, `availabilitySnapshotId` | ids or `null` | `null` |
+| `ProposalLine` (`purchasing.ts`) | `substituteFor` | object or `null` | `null` |
+| `ProposalLine` | `priceSnapshotId`, `availabilitySnapshotId` | ids (absent on older proposals) | `null` |
+| `Approval` | `expiresAt` | ISO time | the proposal's `quoteExpiresAt` |
+| `Proposal` | `signature`, `signatureKeyId` | Ed25519 signature and key id (`null` on older proposals) | `null` |
+| `OrderReceipt` | `proposalSignature`, `signatureKeyId` | same | `null` |
+| `ProposalVerification` | `signatureValid`, `signatureKeyId`, `lines[].priceSnapshotId`, `lines[].availabilitySnapshotId` | values | `null` |
+
+The rest of this branch's contract changes are still **required** or **breaking**, so check them when you merge.
+
+### Frontend: fixes and checks
+
+1. **`mock-api.ts` (recommended, no longer needed for compiling).** Add the fields above, so mock mode looks like the real server:
+   - offers: `price.snapshotId` and `availability.snapshotId`;
+   - `evaluatePolicy` lines: `priceSnapshotId: null, availabilitySnapshotId: null`;
+   - proposal lines: `substituteFor: null`;
+   - approvals: `expiresAt: proposal.quoteExpiresAt`;
+   - proposals: `signature: null, signatureKeyId: null`.
+2. **Read optional fields safely.** Use `line.substituteFor ?? null`, `approval.expiresAt ?? proposal.quoteExpiresAt`, `quote.snapshotId ?? "—"`. Don't assume they are present.
+3. **New enum values.** Exhaustive maps such as `Record<ProposalStatus, …>` or a `switch` with a `never` check now fail to compile until you add the new values:
+   - `ProposalStatus` and `ApprovalStatus`: `EXPIRED`;
+   - `PolicyReasonCode`: `SUBSTITUTE_NOT_ALLOWED` and `MAY_CONTAIN_EXCLUDED_ALLERGEN`;
+   - error `code`s: `APPROVAL_EXPIRED`, `AGENT_NOT_CONFIGURED` and `MODEL_FAILED`.
+4. **Required new product fields.** If a mock builds a `ProductSummary` (search items, rank items) or a `ProductDetail`, fill these fields:
+   - `allergenNames: []`, `mayContainAllergens: []`, `dietaryTags: []`, `labels: []`, `contentPerSalesUnit: null`;
+   - on detail also `nutrition: null` and `claims: []`.
+
+   New response types are fully required: `RankProductsResponse`, `PendingApprovalCount`, `PublicKeyResponse` and `AgentErrorResponse`.
+5. **Meaning change.** `allergens` now lists only what the product **contains**. Any warning that relied on `allergens` for "may contain" must also read `mayContainAllergens`.
+6. **Removed types.** `CatalogProductDetail`, `CatalogSearchQuery` and `CatalogSearchResponse` (and their schemas) are gone from `shared/contracts/catalog.ts`. Use `ProductDetail`, `ProductSearchQuery` and `ProductSearchResponse` from `products.ts`. `CatalogProductSummary`, `NutritionProfile` and the inquiry schemas are still there.
+7. **Error bodies.** 502 and 503 from the agent endpoints carry `code` (`AgentErrorResponseSchema` in `errors.ts`). A 502 for a Valio failure has no `code`.
+
+### Agentic AI: fixes and checks
+
+1. **Imports.**
+   - `@/server/valio/types` → `@/shared/contracts/products`.
+   - `searchCatalogProducts` / `getCatalogProductDetail` (formerly in `services/inquiry.ts`) → `searchProducts` / `getProduct` in `services/catalog.ts`.
+   - `Catalog*Search*` / `CatalogProductDetail` types → `Product*` types.
+2. **Optional types.** `quote.snapshotId` and `availability.snapshotId` are now typed `string | undefined`. Write `quote.snapshotId ?? null` where a `string | null` is expected (as `services/policy.ts` and `services/selection.ts` do).
+3. **Errors.**
+   - Replace any `throw new Error("…GOOGLE_GENERATIVE_AI_API_KEY…")` with `requireGeminiApiKey()`.
+   - Wrap every `agent.generate(…)` together with its output parsing in `callModel(…)` (`agents/mode.ts`).
+   - Tests that matched the old error message still pass: the message still names the key.
+4. **Substitutes.** If your code builds proposal lines, set `substituteFor` for split, swap and fallback lines. Policy then applies `allowSubstitutes`.
+5. **Units.** Pass requested amounts through `toSalesUnits` (`server/valio/units.ts`), or use `rankProducts`, which does it. Don't send litres as a number of cases.
+
+### Rule from now on (both sides)
+
+- **New response fields are added as `.optional()`.** A required field breaks every mock or test that builds the type. Make a field required only once both sides have updated, by agreement (shared zone).
+- **Removing or renaming a field or enum value is breaking.** Announce it here and in the PR.
+- **Before pushing,** run `git fetch origin && git merge origin/main` locally (or rebase), then `pnpm check && pnpm test`. CI checks the merged result, not the branch alone.
+
+---
+
 ## For the frontend (`src/app`, `src/features`, `src/components`, `src/client`)
 
-Nothing you call today breaks. `getProduct`, `getOffers` and `evaluatePolicy` only gained fields, and the client tests pass. To do, roughly in priority order:
+`getProduct`, `getOffers` and `evaluatePolicy` only gained fields. Since the new response fields are optional, existing mocks compile; see [the fixes above](#contract-changes-fixes-to-apply-on-your-side) for the enum and product-field checks. Features to build, roughly in priority order:
 
 1. **Statuses:** add `EXPIRED` wherever proposal or approval statuses are rendered or filtered. Handle error code `APPROVAL_EXPIRED` as "expired, create a new proposal", like `QUOTE_EXPIRED`.
 2. **Approvals badge:** poll `GET /api/approvals/pending-count` for approvers. Show `count`, and `nextExpiresAt` as "expires in …". Show `approval.expiresAt` on each approval.

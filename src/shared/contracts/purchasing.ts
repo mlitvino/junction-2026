@@ -48,7 +48,8 @@ export const ProposalLineSchema = z.object({
   substituteFor: z
     .object({ requested: z.string(), reason: z.enum(["split", "swap", "fallback"]) })
     .nullable()
-    .meta({ description: "What this line stands in for; null when it is what was asked for." }),
+    .optional()
+    .meta({ description: "What this line stands in for; null (or absent) when it is what was asked for." }),
   priceSnapshotId: z.string().nullable().optional().meta({
     description: "Id of the recorded Valio price answer the price comes from (absent on older proposals).",
   }),
@@ -80,7 +81,7 @@ export const ApprovalSchema = z.object({
   decidedByName: z.string().nullable().meta({ description: "Username of the approver who decided.", example: "bob" }),
   decidedAt: isoDateTime.nullable(),
   comment: z.string().nullable(),
-  expiresAt: isoDateTime.nullable().meta({ description: "A pending approval expires then (the proposal's quote expiry)." }),
+  expiresAt: isoDateTime.nullable().optional().meta({ description: "A pending approval expires then (the proposal's quote expiry)." }),
 });
 
 export const ProposalSourceSchema = z.enum(["buyer", "agent", "recipe"]).meta({
@@ -119,11 +120,11 @@ export const ProposalSchema = z.object({
   }),
   decision: ProposalDecisionSchema,
   hash: z.string().meta({ description: "SHA-256 of the frozen content (lines, prices, total, decision)." }),
-  signature: z.string().nullable().meta({
+  signature: z.string().nullable().optional().meta({
     description:
       "Ed25519 signature (base64url) over id and hash; verify it with `GET /api/trust/public-key`. Null on older proposals.",
   }),
-  signatureKeyId: z.string().nullable().meta({ description: "Which server key signed it." }),
+  signatureKeyId: z.string().nullable().optional().meta({ description: "Which server key signed it." }),
   note: z.string().nullable(),
   approval: ApprovalSchema.nullable(),
   orderId: id.nullable(),
@@ -288,8 +289,8 @@ export const OrderReceiptSchema = z.object({
   status: z.literal("SIMULATED_CONFIRMED"),
   source: z.literal("LOCAL_SIMULATOR"),
   proposalHash: z.string(),
-  proposalSignature: z.string().nullable().meta({ description: "The proposal's Ed25519 signature (see `GET /api/trust/public-key`)." }),
-  signatureKeyId: z.string().nullable(),
+  proposalSignature: z.string().nullable().optional().meta({ description: "The proposal's Ed25519 signature (see `GET /api/trust/public-key`)." }),
+  signatureKeyId: z.string().nullable().optional(),
 });
 
 export const ProposalVerificationSchema = z.object({
@@ -297,16 +298,16 @@ export const ProposalVerificationSchema = z.object({
   storedHash: z.string(),
   recomputedHash: z.string(),
   hashValid: z.boolean().meta({ description: "True when the stored content still produces the stored hash." }),
-  signatureValid: z.boolean().nullable().meta({
+  signatureValid: z.boolean().nullable().optional().meta({
     description: "True when the signature matches id and hash under the server's key; null when unsigned.",
   }),
-  signatureKeyId: z.string().nullable(),
+  signatureKeyId: z.string().nullable().optional(),
   lines: z.array(
     z.object({
       productId,
       unitPriceExclVat: z.number().nullable(),
-      priceSnapshotId: z.string().nullable().meta({ description: "The matched price snapshot." }),
-      availabilitySnapshotId: z.string().nullable(),
+      priceSnapshotId: z.string().nullable().optional().meta({ description: "The matched price snapshot." }),
+      availabilitySnapshotId: z.string().nullable().optional(),
       snapshotFound: z.boolean().meta({
         description: "The recorded Valio price answer exists and has this price, product and date (by snapshot id; older proposals: by price).",
       }),
