@@ -30,6 +30,7 @@ export function AppHeader({ viewer }: { viewer?: ShellViewer }) {
       >
         <NotificationsPopover />
         <ThemeToggle />
+        <span aria-hidden="true" className="mx-1 h-6 w-px shrink-0 bg-border md:mx-3" />
         <AccountMenu viewer={viewer} />
       </div>
     </header>

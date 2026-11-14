@@ -7,7 +7,7 @@ import { apiClient, ApiError } from "@/client/api-client";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
-import { Icon } from "@/components/ui/icon";
+import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
 import type { Proposal, ProposalLine, Order } from "@/shared/contracts/purchasing";
@@ -146,7 +146,15 @@ const statusLabels: Record<string, string> = {
   ORDERED: "Order recorded",
   SIMULATED_CONFIRMED: "Recorded",
 };
-export function StatusBadge({ status, label }: { status: string; label?: string }) {
+export function StatusBadge({
+  status,
+  label,
+  icon,
+}: {
+  status: string;
+  label?: string;
+  icon?: IconName;
+}) {
   const tone = ["BLOCKED", "REJECTED"].includes(status)
     ? "bg-destructive/10 text-destructive"
     : ["APPROVED", "ORDERED", "SIMULATED_CONFIRMED"].includes(status)
@@ -158,7 +166,11 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
     <span
       className={`inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1 text-caption font-medium ${tone}`}
     >
-      <span className="size-1.5 shrink-0 rounded-full bg-current" />
+      {icon ? (
+        <Icon name={icon} className="size-3.5 shrink-0" />
+      ) : (
+        <span className="size-1.5 shrink-0 rounded-full bg-current" />
+      )}
       {label ?? statusLabels[status] ?? status}
     </span>
   );

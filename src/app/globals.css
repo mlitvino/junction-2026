@@ -238,11 +238,20 @@
     min-width: 0;
   }
   .conversation-composer {
+    --composer-bottom-gap: 5rem;
     position: sticky;
-    bottom: 5rem;
+    bottom: var(--composer-bottom-gap);
     z-index: 15;
     margin-top: 2rem;
     padding-top: 0.5rem;
+    background: var(--background);
+  }
+  .conversation-composer::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    inset-inline: 0;
+    height: var(--composer-bottom-gap);
     background: var(--background);
   }
   .review-drawer {
@@ -262,7 +271,7 @@
   }
   @media (min-width: 1024px) {
     .conversation-composer {
-      bottom: 1rem;
+      --composer-bottom-gap: 1rem;
     }
   }
   @media (min-width: 1280px) {

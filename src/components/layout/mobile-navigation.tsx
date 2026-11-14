@@ -92,7 +92,7 @@ export function MobileNavigation({ viewer }: { viewer?: ShellViewer }) {
             </Button>
           </div>
           <NavigationLinks viewer={viewer} onNavigate={close} />
-          <SidebarNote viewer={viewer} />
+          <SidebarNote onNavigate={close} />
         </div>
       </dialog>
     </>

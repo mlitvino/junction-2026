@@ -14,7 +14,6 @@ import {
   StatusBadge,
   OrderSummary,
   PriceDisplay,
-  EvidenceDisclosure,
   inputClass,
   displayDate,
   store,
@@ -298,87 +297,8 @@ export function Orders() {
     </Page>
   );
 }
-export function OrderDetail({ id }: { id: string }) {
-  const s = useWorkspace(),
-    error = useLoad(() => store.loadOrder(id), `order:${id}`);
-  const order = s.orders.find((o) => o.id === id),
-    proposal = s.proposals.find((p) => p.id === order?.proposalId);
-  const thread = s.local.threads.find((t) => t.proposals.includes(order?.proposalId ?? ""));
-  return (
-    <Page
-      title="Order details"
-      description={id}
-      action={
-        order && (
-          <Link href={`/checkout/${id}`} className={buttonVariants()}>
-            Continue to checkout
-          </Link>
-        )
-      }
-    >
-      <ErrorMessage error={error} />
-      {order ? (
-        <>
-          <OrderSummary order={order} />
-          <Panel>
-            <dl className="grid gap-5 text-sm sm:grid-cols-3">
-              <div>
-                <dt className="text-muted-foreground">Origin</dt>
-                <dd className="mt-2">{thread?.source ?? "Purchasing service"}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Needed by</dt>
-                <dd className="mt-2">{displayDate(proposal?.pricingDate)}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Approved by</dt>
-                <dd className="mt-2">
-                  {proposal?.approval?.decidedBy === s.user?.id
-                    ? (s.user?.username ?? "Organization approver")
-                    : proposal?.approval?.decidedBy
-                      ? "Authorized organization approver"
-                      : "Explicit purchasing policy"}
-                </dd>
-              </div>
-            </dl>
-          </Panel>
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href={`/proposals/${order.proposalId}`}
-              className={buttonVariants({ variant: "outline" })}
-            >
-              View purchase proposal
-            </Link>
-            {thread && (
-              <Link
-                href={`/buyer/conversations/${thread.id}`}
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Discuss in assistant
-              </Link>
-            )}
-          </div>
-          <ActivityTimeline resourceId={id} />
-          <EvidenceDisclosure title="View technical audit & snapshot evidence">
-            <p>
-              Order recorded by the purchasing service. Supplier dispatch, reserved delivery slots
-              and payment are not connected.
-            </p>
-            <p>
-              Content reference: <span className="break-all">{order.proposalHash}</span>
-            </p>
-            <p>
-              The global audit service is not connected. Activity shown here was observed in this
-              browser.
-            </p>
-          </EvidenceDisclosure>
-        </>
-      ) : (
-        !error && <p role="status">Loading order…</p>
-      )}
-    </Page>
-  );
-}
+export { OrderDetail } from "./order-detail";
+
 export function Checkout({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadOrder(id), `checkout:${id}`),
