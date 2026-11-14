@@ -123,9 +123,17 @@ Settings that steer the purchasing agent and the approval flow, per organization
 - **Rules:** `autoApproveBelow ≤ maxOrderValue` in every effective set (422 otherwise); `locked` only on `base` (422).
 - **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. The first consumer is the **policy check** (`POST /api/policy/evaluate`): it applies the buyer's effective preferences to a draft order and returns `ALLOW` / `REQUIRE_APPROVAL` / `DENY` with reasons.
 
+### Purchasing flow (proposals, approvals, orders)
+
+- **Proposal** = a frozen draft order: lines, server-side prices, total (EUR excl. VAT) and the policy decision, plus a SHA-256 `hash` of that content. It never changes; to change it, create a new one and cancel the old.
+- Lifecycle: create → `BLOCKED` (policy DENY, final) or `READY`. `READY` + ALLOW → order. `READY` + REQUIRE_APPROVAL → `PENDING_APPROVAL` (creator sends it) → `APPROVED` / `REJECTED` (an approver decides, sending the hash they reviewed; rejecting needs a comment). `APPROVED` → order. The creator can cancel while `READY`, `PENDING_APPROVAL` or `APPROVED`.
+- **Order**: one per proposal, simulated (Valio has no ordering API). The client sends an `idempotencyKey`: repeating it returns the same order; reusing it for another proposal is a 409.
+- Who: buyers create, send and order (send/cancel: only the creator); approvers list and decide approvals (a user with both roles may approve their own). Everyone in the organization reads proposals and orders.
+- Endpoints: `/api/proposals`, `/api/proposals/{id}/{cancel,approval,order}`, `/api/approvals`, `/api/approvals/{id}/decision`, `/api/orders`. Errors carry a `code` (`INVALID_STATE`, `HASH_MISMATCH`, `APPROVAL_REQUIRED`, `IDEMPOTENCY_CONFLICT`, …).
+
 ## Database (Drizzle)
 
-- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
+- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `procurement.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
 - Changing the schema: edit `src/server/db/schema/` → `pnpm db:generate` → review the SQL in `drizzle/` → commit both. Never edit a migration that has been applied anywhere; add a new one.
 - Migrations run automatically: `ensureDatabase()` (`src/server/db/migrate.ts`) applies pending ones once per process before the first query (locally, in scripts, in production).
 - Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback.
