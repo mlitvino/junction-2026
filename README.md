@@ -32,6 +32,8 @@ pnpm db:up   # local DB on 127.0.0.1:5432; pnpm dev runs this for you
 
 `DATABASE_URL` in `.env` (see `.env.example`) points to it. Mastra creates its own tables on first use.
 
+If the app fails with a migration error after pulling (e.g. `relation "approval" already exists`), your local database ran an older migration order: reset it with `pnpm db:reset && pnpm data:import` (deletes local data). Production is not affected.
+
 ## Valio catalog
 ```bash
 pnpm data:fetch    # once: download the product, CO2 and reliability files

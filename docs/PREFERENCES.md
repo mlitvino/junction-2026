@@ -25,13 +25,18 @@ The value a role gets is the first one found: **role layer → base → system d
 | `maxCo2PerKg` | number or null | null | Highest kg CO2-eq per kg of product. Products without CO2 data aren't excluded. |
 | `minDeliveryReliability` | 0–1 or null | null | Lowest acceptable delivery reliability. Products without data aren't excluded. |
 | `preferredOriginCountries` | list of ISO alpha-2 (lowercase) | [] | Countries of origin to prefer, e.g. `fi`. |
-| `excludedAllergens` | list of codes | [] | Allergens to avoid, as in the catalog (e.g. `AM`, `AW`). |
+| `excludedAllergens` | list | [] | Allergens to avoid: GS1 codes (`AM`, `AW`) or names (`milk`, `gluten`); a name covers all its codes. |
+| `dietaryRestrictions` | list | [] | Tags the agent's products must have, e.g. `lactose-free`, `vegetarian`. |
 | **Vendors and brands** | | | |
 | `preferredVendors` | list | [] | Vendors to prefer, spelled as in the catalog. |
 | `blockedVendors` | list | [] | Vendors never to order from. |
 | `preferredBrands` | list | [] | Brands to prefer. |
 | **Spending and approval** | | | |
 | `maxOrderValue` | number or null | null | Highest total of one order, EUR excl. VAT. |
+| `maxUnitPrice` | number or null | null | Unit price (EUR excl. VAT) above which a line needs approval. |
+| `maxLineQuantity` | number or null | null | Quantity of one line above which it needs approval. |
+| `allowedCategories` / `blockedCategories` | lists | [] | Valio category codes; outside allowed (if set) or blocked → approval. |
+| `allowedProductIds` / `blockedProductIds` | lists | [] | Product codes; outside allowed (if set) or blocked → approval. |
 | `autoApproveBelow` | number or null | null | Orders below this total (EUR excl. VAT) are approved automatically. Null: every order needs an approver. Can't exceed `maxOrderValue`. |
 | **AI behavior** | | | |
 | `autonomy` | `suggest_only` or `order_within_limits` | `suggest_only` | Whether the agent only proposes or may order within the limits. |
@@ -55,7 +60,7 @@ Backend only. The **policy check** (`POST /api/policy/evaluate`) applies the buy
 | Outcome | When |
 | --- | --- |
 | `DENY` | unknown product, no price, blocked vendor, excluded allergen, CO2 above `maxCo2PerKg`, reliability below `minDeliveryReliability`, total above `maxOrderValue`, sales-blocked or not deliverable on any date |
-| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it; earliest delivery later than the requested `date`; known stock below the quantity; no availability answer from Valio |
+| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it; unit price or line quantity above the caps; category or product outside the allow/block lists; earliest delivery later than the requested `date`; known stock below the quantity; no availability answer from Valio |
 | `ALLOW` | none of the above |
 
 Missing product data (no CO2, allergens or reliability) never triggers a rule. Preferred origins, vendors and brands aren't checked: they are for ranking, which the agent will do.
