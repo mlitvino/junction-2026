@@ -71,6 +71,13 @@
       "when": 1794688444253,
       "tag": "0009_approval_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794688918141,
+      "tag": "0010_drop_retired_procurement",
+      "breakpoints": true
     }
   ]
 }
