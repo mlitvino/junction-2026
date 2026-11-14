@@ -1,9 +1,11 @@
 import "server-only";
 
 import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { openAPI, username } from "better-auth/plugins";
 
-import { getPool } from "@/server/db/pool";
+import { getDb } from "@/server/db/client";
+import { account, session, user, verification } from "@/server/db/schema";
 
 function requireEnv(name: "BETTER_AUTH_SECRET" | "BETTER_AUTH_URL"): string {
   const value = process.env[name];
@@ -13,7 +15,8 @@ function requireEnv(name: "BETTER_AUTH_SECRET" | "BETTER_AUTH_URL"): string {
 
 function createAuth() {
   return betterAuth({
-    database: getPool(),
+    // Tables are defined in server/db/schema/auth.ts and migrated by Drizzle (drizzle/), not by Better Auth.
+    database: drizzleAdapter(getDb(), { provider: "pg", schema: { user, session, account, verification } }),
     secret: requireEnv("BETTER_AUTH_SECRET"),
     baseURL: requireEnv("BETTER_AUTH_URL"),
     // Login + password. Better Auth requires an email; the client sends a placeholder (see src/client/auth-client.ts).

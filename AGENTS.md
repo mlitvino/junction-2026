@@ -36,7 +36,7 @@ Before editing in a zone, read that zone's `AGENTS.md` (`src/<zone>/AGENTS.md`, 
 - Hono + `@hono/zod-openapi` for every `/api` route; OpenAPI 3.1 spec at `/api/openapi.json`, Swagger UI at `/api/docs` (both public)
 - Auth: Better Auth (login + password via its username plugin, sessions in Postgres), see "Auth" below
 - AI agents: Mastra (`@mastra/core`, `@mastra/pg`), server-side only, in `src/server/agents/`. Listed in `serverExternalPackages` in `next.config.ts`.
-- DB: Postgres + pgvector (`pgvector/pgvector:pg17`) via `pg`, connection from `DATABASE_URL`. Local: `pnpm db:up`. Migrations are additive only.
+- DB: Postgres + pgvector (`pgvector/pgvector:pg17`), **Drizzle ORM** over `pg`, connection from `DATABASE_URL`. Local: `pnpm db:up`. Migrations are additive only (see "Database" below).
 - ESLint (flat config, `eslint.config.mjs`) + Prettier
 - pnpm
 - **Forbidden:** Pages Router (`src/pages`), Server Actions (`"use server"`).
@@ -100,7 +100,7 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me/me.ts`. Plan: switch to default-deny before real data goes in.
 - **Pages:** `src/proxy.ts` redirects to `/login` without a session cookie (cookie check only; the API checks sessions for real). `/login` and `/signup` are public. Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
-- Its tables (`user`, `session`, `account`, `verification`) are created on first use. Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
+- Its tables (`user`, `session`, `account`, `verification`) are part of our Drizzle schema and migrations (Better Auth uses its Drizzle adapter). Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
 
 ### Organizations and roles
 
@@ -111,6 +111,14 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - **Colleagues** don't sign up: an approver creates their account with `POST /api/organization/members` (username, password, roles); it belongs only to that organization. Roles change with `PUT /api/organization/members/{userId}/roles`. An organization always keeps at least one approver.
 - `GET /api/me` returns the user with `organization` and `roles` (`shared/contracts/me.ts`): the frontend shows screens per role from it.
 - Server: guard routes with `requireRole("buyer" | "approver", …)`, and always scope data to `c.var.user.organization.id`.
+
+## Database (Drizzle)
+
+- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
+- Changing the schema: edit `src/server/db/schema/` → `pnpm db:generate` → review the SQL in `drizzle/` → commit both. Never edit a migration that has been applied anywhere; add a new one.
+- Migrations run automatically: `ensureDatabase()` (`src/server/db/migrate.ts`) applies pending ones once per process before the first query (locally, in scripts, in production).
+- Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback.
+- `drizzle/0000_auth.sql` is hand-edited to be idempotent (Better Auth's tables already existed on older databases). Mastra's `mastra_*` tables are managed by Mastra and excluded from Drizzle.
 
 ## Secrets
 
@@ -129,6 +137,9 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
 - `pnpm db:psql`: psql shell in the local DB
 - `pnpm db:reset`: **deletes all local data** (drops the volume) and starts a fresh DB
+- `pnpm db:generate`: turn schema changes (`src/server/db/schema/`) into a SQL migration in `drizzle/`
+- `pnpm db:migrate`: apply pending migrations (the app also does this by itself on first use)
+- `pnpm db:studio`: browse the database in Drizzle Studio
 - `pnpm bootstrap`: first-time setup after `cp .env.example .env`: install, start Postgres, `data:fetch --if-missing`, `data:import`
 - `pnpm data:fetch`: download the static Valio files into `data/valio/` (needs `VALIO_API_URL` and `VALIO_API_KEY`)
 - `pnpm data:import`: load `data/valio/` into Postgres (catalog tables); idempotent
@@ -142,4 +153,4 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 Push to `main` → `.github/workflows/deploy.yml` runs the checks, builds the `Dockerfile` (Next.js `output: "standalone"`), pushes to ghcr.io and restarts the app on the Hetzner server over SSH. Server templates and rollback steps: `deploy/README.md`.
 
 - The server's `.env` lives only on the server.
-- DB migrations are additive only (new tables/columns, no drops), so a rollback to an older image keeps working.
+- DB migrations are additive only (new tables/columns, no drops), so a rollback to an older image keeps working. The image contains `drizzle/`; the app applies pending migrations on first use.

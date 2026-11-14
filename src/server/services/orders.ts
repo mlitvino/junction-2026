@@ -2,8 +2,11 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { ensureCatalogSchema, type ProductRow } from "@/server/db/catalog-schema";
-import { getPool } from "@/server/db/pool";
+import { asc, ilike, or } from "drizzle-orm";
+
+import { getDb } from "@/server/db/client";
+import { ensureDatabase } from "@/server/db/migrate";
+import { valioProduct } from "@/server/db/schema";
 import { getPrices } from "@/server/services/catalog";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import type {
@@ -401,17 +404,25 @@ async function getCandidatesByProductType(productType: string): Promise<RawCatal
 
   if (process.env.DATABASE_URL) {
     try {
-      await ensureCatalogSchema();
-      const pool = getPool();
+      await ensureDatabase();
+      const db = getDb();
       const likePattern = `%${typeNorm.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-      const { rows } = await pool.query<ProductRow>(
-        `SELECT id, name, brand, vendor_name, category, sales_unit, allergens
-         FROM valio_product
-         WHERE LOWER(category) LIKE $1 OR search_text LIKE $1
-         ORDER BY name, id
-         LIMIT 50`,
-        [likePattern],
-      );
+      const rows = await db
+        .select({
+          id: valioProduct.id,
+          name: valioProduct.name,
+          brand: valioProduct.brand,
+          vendorName: valioProduct.vendorName,
+          category: valioProduct.category,
+          salesUnit: valioProduct.salesUnit,
+          allergens: valioProduct.allergens,
+        })
+        .from(valioProduct)
+        .where(
+          or(ilike(valioProduct.category, likePattern), ilike(valioProduct.searchText, likePattern)),
+        )
+        .orderBy(asc(valioProduct.name), asc(valioProduct.id))
+        .limit(50);
 
       if (rows.length > 0) {
         const today = new Date().toISOString().slice(0, 10);
@@ -459,8 +470,8 @@ async function getCandidatesByProductType(productType: string): Promise<RawCatal
             productType,
             category: r.category,
             brand: r.brand,
-            vendorName: r.vendor_name,
-            salesUnit: r.sales_unit,
+            vendorName: r.vendorName,
+            salesUnit: r.salesUnit,
             unitPriceEur: priceMap.get(r.id) ?? roundCurrency(2 + s * 12),
             dietaryTags,
             allergens,
