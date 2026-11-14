@@ -13,7 +13,13 @@ import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { purchaseOrder, valioProduct } from "@/server/db/schema";
 import { getMastra } from "@/server/mastra";
-import { getAvailability, getPrices, searchProducts } from "@/server/services/catalog";
+import {
+  getAvailability,
+  getPrices,
+  getProductSummaries,
+  getUnitFacts,
+  searchProducts,
+} from "@/server/services/catalog";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import {
   classifyStockStatus,
@@ -35,7 +41,15 @@ import {
   reviseProposal,
   type Actor,
 } from "@/server/services/purchasing";
+import { rankCandidates } from "@/server/purchasing/ranking";
+import { toSalesUnits } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+import type {
+  ProductSummary,
+  RankedProduct,
+  RankProductsRequest,
+  RankProductsResponse,
+} from "@/shared/contracts/products";
 import type { ExtractedProductItem } from "@/shared/contracts/extract";
 import type {
   CandidateProduct,
@@ -973,4 +987,128 @@ export async function reviseProposalFromRequest(
     date,
     appliedChanges: applied,
   });
+}
+
+// ---------- Ranking (POST /api/products/rank) ----------
+
+/**
+ * Good / better / best for a need ("1000 L of lactose-free milk"): candidates from the catalog,
+ * the organization's rules (excluded allergens, dietary tags, blocked vendors) applied, the amount
+ * converted per product, live prices and availability for the date, then `rankCandidates`.
+ */
+export async function rankProducts(actor: Actor, req: RankProductsRequest): Promise<RankProductsResponse> {
+  const date = req.date ?? todayIsoDate();
+  const rules = (await getEffectiveFor(actor.organizationId, "buyer")).values;
+  const found = req.productIds?.length
+    ? await getProductSummaries(req.productIds)
+    : (await searchProducts({ q: req.q, limit: 60, offset: 0, sort: "name" })).items;
+  if (req.q && !req.productIds?.length) {
+    // Most relevant first, and only real matches (the same gate as the agent's selection).
+    const score = new Map(found.map((p) => [p.id, computeNameMatchScore(req.q!, p.name)]));
+    const top = Math.max(0, ...score.values());
+    found.sort((a, b) => score.get(b.id)! - score.get(a.id)!);
+    found.splice(0, found.length, ...found.filter((p) => score.get(p.id)! >= Math.max(0.35, top * 0.7)));
+  }
+
+  const excluded: RankProductsResponse["excluded"] = [];
+  const allowed: ProductSummary[] = [];
+  const banned = allergenCodes(rules.excludedAllergens);
+  const blocked = new Set(rules.blockedVendors);
+  for (const p of found) {
+    const reasons: string[] = [];
+    const hits = p.allergens.filter((a) => banned.has(a.toUpperCase()));
+    if (hits.length) reasons.push(`contains excluded allergens: ${allergenNames(hits).join(", ")}`);
+    const missing = rules.dietaryRestrictions.filter((t) => !p.dietaryTags.includes(t.toLowerCase()));
+    if (missing.length) reasons.push(`not declared ${missing.join(", ")}`);
+    if (blocked.has(p.vendorName)) reasons.push(`vendor ${p.vendorName} is blocked`);
+    if (reasons.length) excluded.push({ product: p, reasons });
+    else allowed.push(p);
+  }
+  const candidates = allowed.slice(0, req.limit);
+  const ids = candidates.map((p) => p.id);
+  const [facts, prices, availability, history] = await Promise.all([
+    getUnitFacts(ids),
+    ids.length ? getPrices({ productIds: ids, date }) : null,
+    ids.length ? getAvailability({ productIds: ids, date }) : null,
+    loadHistoricalOrderRecords(actor.organizationId),
+  ]);
+  const priceBy = new Map((prices?.quotes ?? []).map((q) => [q.productId, q]));
+  const availBy = new Map((availability?.items ?? []).map((a) => [a.productId, a]));
+  const orderedIds = new Set(history.map((h) => h.productId));
+  const orderedBrands = new Set(history.map((h) => h.brand.toLowerCase()).filter(Boolean));
+  const conversions = new Map(
+    candidates.map((p) => {
+      const f = facts.get(p.id);
+      const conv = f ? toSalesUnits(req.quantity, req.unit, f) : null;
+      return [p.id, conv];
+    }),
+  );
+
+  const { ranked, unavailable } = rankCandidates(
+    candidates.map((p) => {
+      const quote = priceBy.get(p.id);
+      const avail = availBy.get(p.id);
+      const conv = conversions.get(p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        brand: p.brand,
+        vendorName: p.vendorName,
+        countryOfOrigin: p.countryOfOrigin,
+        labels: p.labels.map((l) => l.id),
+        unitPriceExclVat: quote?.found ? quote.priceExclVat : null,
+        salesUnit: p.salesUnit,
+        perSalesUnit: p.contentPerSalesUnit,
+        quantity: conv?.quantity ?? Math.ceil(req.quantity),
+        converted: req.unit ? (conv?.converted ?? false) : true,
+        orderable: avail ? avail.orderable : null,
+        salesBlock: avail?.salesBlock ?? false,
+        availableDate: avail?.availableDate ?? null,
+        availableQuantity: avail?.availableQuantity ?? null,
+        deliveryReliability: p.deliveryReliability,
+        co2PerKg: p.co2PerKg,
+        nameMatch: req.q ? computeNameMatchScore(req.q, p.name) : 1,
+        previouslyOrderedProduct: orderedIds.has(p.id),
+        previouslyOrderedBrand: !!p.brand && orderedBrands.has(p.brand.toLowerCase()),
+      };
+    }),
+    {
+      requestedDate: date,
+      preferredOriginCountries: rules.preferredOriginCountries,
+      preferredVendors: rules.preferredVendors,
+      preferredBrands: rules.preferredBrands,
+    },
+  );
+
+  const productBy = new Map(candidates.map((p) => [p.id, p]));
+  const toRanked = (r: (typeof ranked)[number]): RankedProduct => {
+    const conv = conversions.get(r.id);
+    return {
+      product: productBy.get(r.id)!,
+      tier: r.tier,
+      score: r.score,
+      quantity: r.quantity,
+      salesUnit: r.salesUnit,
+      conversion: conv
+        ? { converted: conv.converted, note: conv.note }
+        : { converted: false, note: "No packaging data for this product; quantity taken as sales units." },
+      unitPriceExclVat: r.unitPriceExclVat!,
+      lineTotalExclVat: r.lineTotalExclVat!,
+      pricePerContent: r.pricePerContent,
+      availableDate: r.availableDate,
+      availableQuantity: r.availableQuantity,
+      reasons: r.reasons,
+    };
+  };
+  const list = ranked.map(toRanked);
+  return {
+    date,
+    source: prices?.source ?? availability?.source ?? "mock",
+    best: list[0] ?? null,
+    better: list[1] ?? null,
+    good: list[2] ?? null,
+    ranked: list,
+    unavailable: unavailable.map((u) => ({ product: productBy.get(u.id)!, reason: u.reason })),
+    excluded,
+  };
 }

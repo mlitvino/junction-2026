@@ -46,13 +46,17 @@ describe("API surface", () => {
       "/api/orders/{id}/receipt",
       "/api/audit",
       "/api/policy/evaluate",
-      "/api/catalog/substitutions",
+      "/api/products/rank",
+      "/api/products/{id}/substitutes",
       "/api/intelligence/recurring-check",
       "/api/agent/run",
     ])
       assert.ok(paths.includes(p), `missing ${p}`);
     for (const p of [
       "/api/guardrails",
+      "/api/catalog/products",
+      "/api/catalog/products/{productId}",
+      "/api/catalog/substitutions",
       "/api/orders/from-recipe",
       "/api/orders/{orderId}/approval",
       "/api/orders/{orderId}/checkout",
@@ -68,7 +72,7 @@ describe("API surface", () => {
       "/api/orders",
       "/api/approvals",
       "/api/audit",
-      "/api/catalog/products?q=milk",
+      "/api/products?q=milk",
       "/api/inventory",
       "/api/recipes",
       "/api/intelligence/recommendations",

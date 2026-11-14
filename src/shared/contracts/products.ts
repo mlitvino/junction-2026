@@ -235,3 +235,51 @@ export const OffersResponseSchema = z.object({
 export type Offer = z.infer<typeof OfferSchema>;
 export type OffersRequest = z.infer<typeof OffersRequestSchema>;
 export type OffersResponse = z.infer<typeof OffersResponseSchema>;
+
+// ---------- Ranking (good / better / best) ----------
+
+export const RankProductsRequestSchema = z
+  .object({
+    q: z.string().trim().max(200).optional().meta({ description: "What is needed, e.g. 'lactose-free milk'." }),
+    productIds: z.array(productId).min(1).max(20).optional().meta({ description: "Rank these instead of searching." }),
+    quantity: z.number().positive().meta({ description: "How much is needed.", example: 1000 }),
+    unit: z.string().trim().max(20).optional().meta({
+      description: "Unit of `quantity`: L, dl, ml, kg, g, cases, pcs or a product unit code. Empty = sales units.",
+      example: "L",
+    }),
+    date: z.iso.date().optional().meta({ description: "Delivery date the goods are needed. Defaults to today (Helsinki)." }),
+    limit: z.number().int().min(1).max(20).default(10),
+  })
+  .refine((v) => !!v.q || !!v.productIds?.length, { message: "Give `q` or `productIds`", path: ["q"] });
+
+export const RankedProductSchema = z.object({
+  product: ProductSummarySchema,
+  tier: z.enum(["best", "better", "good"]).nullable(),
+  score: z.number().meta({ description: "0–1, weighted: price 35%, availability 25%, relevance, reliability, CO2, preferences 10% each." }),
+  quantity: z.number().meta({ description: "The requested amount in this product's sales units (rounded up)." }),
+  salesUnit: z.string(),
+  conversion: z.object({ converted: z.boolean(), note: z.string() }),
+  unitPriceExclVat: z.number(),
+  lineTotalExclVat: z.number(),
+  pricePerContent: z.object({ value: z.number(), unit: z.enum(["L", "KG"]) }).nullable(),
+  availableDate: z.string().nullable(),
+  availableQuantity: z.number().nullable(),
+  reasons: z.array(z.string()).meta({ description: "Why it ranks where it does, per factor." }),
+});
+
+export const RankProductsResponseSchema = z.object({
+  date: z.iso.date(),
+  source: DataSourceSchema,
+  best: RankedProductSchema.nullable(),
+  better: RankedProductSchema.nullable(),
+  good: RankedProductSchema.nullable(),
+  ranked: z.array(RankedProductSchema).meta({ description: "All orderable candidates, best first." }),
+  unavailable: z.array(z.object({ product: ProductSummarySchema, reason: z.string() })),
+  excluded: z
+    .array(z.object({ product: ProductSummarySchema, reasons: z.array(z.string()) }))
+    .meta({ description: "Matches the organization's rules exclude (allergens, dietary, blocked vendor)." }),
+});
+
+export type RankProductsRequest = z.infer<typeof RankProductsRequestSchema>;
+export type RankedProduct = z.infer<typeof RankedProductSchema>;
+export type RankProductsResponse = z.infer<typeof RankProductsResponseSchema>;

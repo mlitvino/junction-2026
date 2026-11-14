@@ -11,6 +11,8 @@ import {
   ProductDetailSchema,
   ProductSearchQuerySchema,
   ProductSearchResponseSchema,
+  RankProductsRequestSchema,
+  RankProductsResponseSchema,
 } from "@/shared/contracts/products";
 import { ProductSubstitutionRequestSchema, ProductSubstitutionResponseSchema } from "@/shared/contracts/intelligence";
 
@@ -89,6 +91,26 @@ export const getOffersRoute = createRoute({
   request: { body: { content: { "application/json": { schema: OffersRequestSchema } }, required: true } },
   responses: {
     200: { description: "The offers.", content: { "application/json": { schema: OffersResponseSchema } } },
+    502: upstreamError,
+    ...authErrors,
+  },
+});
+
+export const rankProductsRoute = createRoute({
+  method: "post",
+  path: "/products/rank",
+  tags: ["Catalog"],
+  summary: "Good / better / best for a need",
+  description:
+    "Finds candidates (`q`) or takes `productIds`, drops what the organization's rules exclude (allergens, dietary, " +
+    "blocked vendors; listed in `excluded`), converts `quantity` + `unit` (e.g. 1000 L) into each product's sales " +
+    "units, asks Valio for prices and availability on `date`, and ranks: price per litre/kg 35%, availability 25%, " +
+    "relevance, reliability, CO2 and preferred origin/vendor/brand or sustainability labels 10% each. Every product " +
+    "gets its reasons.",
+  security,
+  request: { body: { content: { "application/json": { schema: RankProductsRequestSchema } }, required: true } },
+  responses: {
+    200: { description: "Ranking.", content: { "application/json": { schema: RankProductsResponseSchema } } },
     502: upstreamError,
     ...authErrors,
   },

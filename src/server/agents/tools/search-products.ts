@@ -4,7 +4,11 @@ import { createTool } from "@mastra/core/tools";
 import { z } from "zod";
 
 import { searchProducts } from "@/server/services/catalog";
-import { ProductSearchResponseSchema } from "@/shared/contracts/products";
+import { actorFor } from "@/server/services/purchasing";
+import { rankProducts } from "@/server/services/selection";
+import { ProductSearchResponseSchema, RankProductsResponseSchema } from "@/shared/contracts/products";
+
+import { toolActor } from "./actor";
 
 export const searchProductsTool = createTool({
   id: "search-products",
@@ -35,4 +39,20 @@ export const searchProductsTool = createTool({
       limit: limit ?? 15,
       offset: 0,
     }),
+});
+
+export const rankProductsTool = createTool({
+  id: "rank-products",
+  description:
+    "Good / better / best for a need, e.g. 1000 L of lactose-free milk by a date: applies the organization's allergen, dietary and vendor rules, converts the amount into each product's sales units, asks Valio prices and availability, and ranks by price per litre/kg, availability, reliability, CO2 and preferences with reasons.",
+  inputSchema: z.object({
+    q: z.string().optional().describe("What is needed, e.g. 'lactose-free milk'."),
+    productIds: z.array(z.string()).max(20).optional(),
+    quantity: z.number().positive(),
+    unit: z.string().optional().describe("L, kg, cases, pcs … (empty = sales units)."),
+    date: z.string().optional().describe("Delivery date, YYYY-MM-DD."),
+  }),
+  outputSchema: RankProductsResponseSchema,
+  execute: async (input, context) =>
+    rankProducts(actorFor(toolActor(context), true), { ...input, limit: 10 }),
 });
