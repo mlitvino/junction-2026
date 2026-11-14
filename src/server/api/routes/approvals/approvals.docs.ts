@@ -7,9 +7,9 @@ import {
   ApprovalListSchema,
   DecideApprovalRequestSchema,
   ListApprovalsQuerySchema,
-  ProcurementErrorSchema,
+  PurchasingErrorSchema,
   ProposalSchema,
-} from "@/shared/contracts/procurement";
+} from "@/shared/contracts/purchasing";
 
 // OpenAPI definitions for approvals. Handlers live in ./approvals.ts.
 
@@ -51,7 +51,7 @@ export const decideApprovalRoute = createRoute({
     200: json(ProposalSchema, "Decided."),
     401: json(ErrorResponseSchema, "No valid session."),
     403: json(ErrorResponseSchema, "Not an approver."),
-    404: json(ProcurementErrorSchema, "No such approval in your organization."),
-    409: json(ProcurementErrorSchema, "Already decided or cancelled, or the hash doesn't match."),
+    404: json(PurchasingErrorSchema, "No such approval in your organization."),
+    409: json(PurchasingErrorSchema, "Already decided or cancelled, or the hash doesn't match."),
   },
 });

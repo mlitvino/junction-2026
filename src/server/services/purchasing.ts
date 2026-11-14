@@ -23,7 +23,7 @@ import {
   contentHash,
   initialStatus,
   type RuleResult,
-} from "@/server/procurement/rules";
+} from "@/server/purchasing/rules";
 import type {
   Approval,
   ApprovalStatus,
@@ -35,22 +35,22 @@ import type {
   Order,
   Proposal,
   ProposalStatus,
-} from "@/shared/contracts/procurement";
+} from "@/shared/contracts/purchasing";
 import type { PolicyOutcome } from "@/shared/contracts/policy";
 
 import { evaluateDraft } from "./policy";
 
 // Purchasing flow: proposals, approvals, orders. Every function takes the caller's organization
-// (and user) and only touches that organization's rows. Rules: server/procurement/rules.ts.
+// (and user) and only touches that organization's rows. Rules: server/purchasing/rules.ts.
 // State changes lock the proposal row (SELECT … FOR UPDATE), so concurrent clicks can't both win.
 
 /** Expected failures, mapped to HTTP statuses by the routes. */
-export class ProcurementError extends Error {
+export class PurchasingError extends Error {
   readonly status: 403 | 404 | 409 | 422;
   readonly code: string;
   constructor(status: 403 | 404 | 409 | 422, code: string, message: string) {
     super(message);
-    this.name = "ProcurementError";
+    this.name = "PurchasingError";
     this.status = status;
     this.code = code;
   }
@@ -65,10 +65,10 @@ async function db() {
 }
 
 function enforce(result: RuleResult) {
-  if (!result.ok) throw new ProcurementError(result.status, result.code, result.message);
+  if (!result.ok) throw new PurchasingError(result.status, result.code, result.message);
 }
 
-const notFound = (what: string) => new ProcurementError(404, "NOT_FOUND", `${what} not found`);
+const notFound = (what: string) => new PurchasingError(404, "NOT_FOUND", `${what} not found`);
 
 // ---------- Mapping ----------
 
@@ -235,7 +235,7 @@ export async function getProposal(actor: Actor, id: string): Promise<Proposal> {
 
 function requireCreator(row: ProposalRow, actor: Actor) {
   if (row.createdBy !== actor.userId)
-    throw new ProcurementError(403, "NOT_CREATOR", "Only the buyer who created this proposal can do this.");
+    throw new PurchasingError(403, "NOT_CREATOR", "Only the buyer who created this proposal can do this.");
 }
 
 export async function cancelProposal(actor: Actor, id: string): Promise<Proposal> {
@@ -328,7 +328,7 @@ async function orderByKey(tx: Tx, actor: Actor, key: string, proposalId: string)
     .where(and(eq(purchaseOrder.organizationId, actor.organizationId), eq(purchaseOrder.idempotencyKey, key)));
   if (!existing) return null;
   if (existing.proposalId !== proposalId)
-    throw new ProcurementError(409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for another proposal.");
+    throw new PurchasingError(409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for another proposal.");
   return { order: toOrder(existing), replayed: true };
 }
 

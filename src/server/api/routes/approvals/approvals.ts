@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ProcurementError, decideApproval, listApprovals } from "@/server/services/procurement";
+import { PurchasingError, decideApproval, listApprovals } from "@/server/services/purchasing";
 
 import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
@@ -33,7 +33,7 @@ approvalsRouter.openapi(decideApprovalRoute, async (c) => {
     );
     return c.json(proposal, 200);
   } catch (err) {
-    if (!(err instanceof ProcurementError)) throw err;
+    if (!(err instanceof PurchasingError)) throw err;
     const body = { error: err.message, code: err.code };
     return err.status === 404 ? c.json(body, 404) : c.json(body, 409);
   }

@@ -133,7 +133,7 @@ Settings that steer the purchasing agent and the approval flow, per organization
 
 ## Database (Drizzle)
 
-- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `procurement.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
+- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `purchasing.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
 - Changing the schema: edit `src/server/db/schema/` → `pnpm db:generate` → review the SQL in `drizzle/` → commit both. Never edit a migration that has been applied anywhere; add a new one.
 - Migrations run automatically: `ensureDatabase()` (`src/server/db/migrate.ts`) applies pending ones once per process before the first query (locally, in scripts, in production).
 - Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback.

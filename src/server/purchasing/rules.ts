@@ -3,10 +3,10 @@ import "server-only";
 import { createHash } from "node:crypto";
 
 import type { PolicyOutcome } from "@/shared/contracts/policy";
-import type { ApprovalStatus, ProposalStatus } from "@/shared/contracts/procurement";
+import type { ApprovalStatus, ProposalStatus } from "@/shared/contracts/purchasing";
 
 // The purchasing flow's rules, as pure functions (no database). Type-only imports, so
-// `pnpm test:server` (plain Node) can run them. The service (server/services/procurement.ts)
+// `pnpm test:server` (plain Node) can run them. The service (server/services/purchasing.ts)
 // applies them inside transactions.
 
 /** SHA-256 of a value as canonical JSON (object keys sorted), so equal content = equal hash. */

@@ -139,7 +139,7 @@ export const ProposalListSchema = z.object({ items: z.array(ProposalSchema) });
 export const ApprovalListSchema = z.object({ items: z.array(ApprovalWithProposalSchema) });
 export const OrderListSchema = z.object({ items: z.array(OrderSchema) });
 
-export const ProcurementErrorSchema = z.object({
+export const PurchasingErrorSchema = z.object({
   error: z.string(),
   code: z.string().meta({ example: "INVALID_STATE" }),
 });

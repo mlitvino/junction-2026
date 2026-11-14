@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ProcurementError, getOrder, listOrders } from "@/server/services/procurement";
+import { PurchasingError, getOrder, listOrders } from "@/server/services/purchasing";
 
 import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
@@ -23,7 +23,7 @@ ordersRouter.openapi(getOrderRoute, async (c) => {
   try {
     return c.json(await getOrder(actor(c.var.user), c.req.valid("param").id), 200);
   } catch (err) {
-    if (!(err instanceof ProcurementError)) throw err;
+    if (!(err instanceof PurchasingError)) throw err;
     return c.json({ error: err.message, code: err.code }, 404);
   }
 });

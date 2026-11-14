@@ -8,10 +8,10 @@ import {
   ListProposalsQuerySchema,
   OrderSchema,
   PlaceOrderRequestSchema,
-  ProcurementErrorSchema,
+  PurchasingErrorSchema,
   ProposalListSchema,
   ProposalSchema,
-} from "@/shared/contracts/procurement";
+} from "@/shared/contracts/purchasing";
 
 // OpenAPI definitions for proposals (and ordering one). Handlers live in ./proposals.ts.
 
@@ -22,11 +22,11 @@ const json = <T extends z.ZodType>(schema: T, description: string) => ({
 });
 const auth = {
   401: json(ErrorResponseSchema, "No valid session."),
-  403: json(ProcurementErrorSchema, "Missing role, or not the proposal's creator."),
+  403: json(PurchasingErrorSchema, "Missing role, or not the proposal's creator."),
 };
-const notFound = { 404: json(ProcurementErrorSchema, "No such proposal in your organization.") };
-const conflict = { 409: json(ProcurementErrorSchema, "Not possible in the proposal's current state.") };
-const notAllowed = { 422: json(ProcurementErrorSchema, "Not allowed by the policy decision.") };
+const notFound = { 404: json(PurchasingErrorSchema, "No such proposal in your organization.") };
+const conflict = { 409: json(PurchasingErrorSchema, "Not possible in the proposal's current state.") };
+const notAllowed = { 422: json(PurchasingErrorSchema, "Not allowed by the policy decision.") };
 const IdParam = z.object({ id: z.string().meta({ description: "Proposal id." }) });
 
 export const createProposalRoute = createRoute({

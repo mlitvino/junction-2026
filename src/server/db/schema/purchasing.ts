@@ -6,7 +6,7 @@ import { check, date, doublePrecision, index, jsonb, pgTable, text, timestamp, u
 import { user } from "./auth.ts";
 import { organization } from "./organization.ts";
 
-// Purchasing flow (shared/contracts/procurement.ts): proposal → approval → order.
+// Purchasing flow (shared/contracts/purchasing.ts): proposal → approval → order.
 // A proposal's lines, prices, total and decision are frozen at creation (`hash` covers them);
 // only `status` and `updated_at` change. One approval and at most one order per proposal.
 

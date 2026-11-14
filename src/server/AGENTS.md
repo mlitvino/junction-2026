@@ -40,7 +40,7 @@ The policy check applies preferences to a draft order. Rules: `server/policy/eva
 
 ## Purchasing flow
 
-Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval`, `purchase_order` (`server/db/schema/procurement.ts`; lines and decision as jsonb). Pure rules (hash, allowed transitions) in `server/procurement/rules.ts` with tests; `server/services/procurement.ts` applies them in transactions that lock the proposal row (`FOR UPDATE`), so parallel requests can't create two orders; the idempotency key is UNIQUE per organization. Routes: `server/api/routes/{proposals,approvals,orders}/`; `ProcurementError(status, code)` maps to the response. Proposal creation runs `evaluateDraft` (policy check).
+Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval`, `purchase_order` (`server/db/schema/purchasing.ts`; lines and decision as jsonb). Pure rules (hash, allowed transitions) in `server/purchasing/rules.ts` with tests; `server/services/purchasing.ts` applies them in transactions that lock the proposal row (`FOR UPDATE`), so parallel requests can't create two orders; the idempotency key is UNIQUE per organization. Routes: `server/api/routes/{proposals,approvals,orders}/`; `PurchasingError(status, code)` maps to the response. Proposal creation runs `evaluateDraft` (policy check).
 
 ## Valio data
 

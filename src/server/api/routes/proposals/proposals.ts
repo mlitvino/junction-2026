@@ -1,14 +1,14 @@
 import "server-only";
 
 import {
-  ProcurementError,
+  PurchasingError,
   cancelProposal,
   createProposal,
   getProposal,
   listProposals,
   placeOrder,
   requestApproval,
-} from "@/server/services/procurement";
+} from "@/server/services/purchasing";
 import { ValioApiError } from "@/server/valio/client";
 
 import { requireRole } from "../../middleware/session";
@@ -40,7 +40,7 @@ const actor = (user: { id: string; organization: { id: string } }) => ({
 
 /** Expected failures as JSON; anything else goes to the app's 500 handler. */
 function failure(err: unknown) {
-  if (err instanceof ProcurementError) return { body: { error: err.message, code: err.code }, status: err.status };
+  if (err instanceof PurchasingError) return { body: { error: err.message, code: err.code }, status: err.status };
   throw err;
 }
 

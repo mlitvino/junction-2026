@@ -3,7 +3,7 @@ import "server-only";
 import { createRoute, z } from "@hono/zod-openapi";
 
 import { ErrorResponseSchema } from "@/shared/contracts/errors";
-import { OrderListSchema, OrderSchema, ProcurementErrorSchema } from "@/shared/contracts/procurement";
+import { OrderListSchema, OrderSchema, PurchasingErrorSchema } from "@/shared/contracts/purchasing";
 
 // OpenAPI definitions for orders (created via POST /proposals/{id}/order). Handlers live in ./orders.ts.
 
@@ -37,6 +37,6 @@ export const getOrderRoute = createRoute({
   responses: {
     200: json(OrderSchema, "The order."),
     ...auth,
-    404: json(ProcurementErrorSchema, "No such order in your organization."),
+    404: json(PurchasingErrorSchema, "No such order in your organization."),
   },
 });
