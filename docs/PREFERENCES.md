@@ -54,8 +54,8 @@ Backend only. The **policy check** (`POST /api/policy/evaluate`) applies the buy
 
 | Outcome | When |
 | --- | --- |
-| `DENY` | unknown product, no price, blocked vendor, excluded allergen, CO2 above `maxCo2PerKg`, reliability below `minDeliveryReliability`, total above `maxOrderValue` |
-| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it |
+| `DENY` | unknown product, no price, blocked vendor, excluded allergen, CO2 above `maxCo2PerKg`, reliability below `minDeliveryReliability`, total above `maxOrderValue`, sales-blocked or not deliverable on any date |
+| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it; earliest delivery later than the requested `date`; known stock below the quantity; no availability answer from Valio |
 | `ALLOW` | none of the above |
 
 Missing product data (no CO2, allergens or reliability) never triggers a rule. Preferred origins, vendors and brands aren't checked: they are for ranking, which the agent will do.

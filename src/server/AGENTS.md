@@ -36,11 +36,11 @@ Model, rules and endpoints: root AGENTS.md, "Preferences". Code: layers table `p
 
 ## Policy
 
-The policy check applies preferences to a draft order. Rules: `server/policy/evaluate.ts` (pure, no DB; unit tests next to it, `pnpm test:server`). `server/services/policy.ts` (`evaluateDraft`) loads the buyer's effective preferences, product facts and server-side prices (`getPrices`) and calls it; route `POST /api/policy/evaluate` in `server/api/routes/policy/`. Stateless for now: when proposals exist, they call `evaluateDraft` and store the decision. Missing product data never triggers a rule (that is the agent's call).
+The policy check applies preferences to a draft order. Rules: `server/policy/evaluate.ts` (pure, no DB; unit tests next to it, `pnpm test:server`). `server/services/policy.ts` (`evaluateDraft`) loads the buyer's effective preferences, product facts and server-side prices and availability for the requested date (`getPrices`, `getAvailability`) and calls it; route `POST /api/policy/evaluate` in `server/api/routes/policy/`. Stateless for now: when proposals exist, they call `evaluateDraft` and store the decision. Missing product data never triggers a rule (that is the agent's call).
 
 ## Purchasing flow
 
-Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval`, `purchase_order` (`server/db/schema/purchasing.ts`; lines and decision as jsonb). Pure rules (hash, allowed transitions) in `server/purchasing/rules.ts` with tests; `server/services/purchasing.ts` applies them in transactions that lock the proposal row (`FOR UPDATE`), so parallel requests can't create two orders; the idempotency key is UNIQUE per organization. Routes: `server/api/routes/{proposals,approvals,orders}/`; `PurchasingError(status, code)` maps to the response. Proposal creation runs `evaluateDraft` (policy check).
+Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval`, `purchase_order` (`server/db/schema/purchasing.ts`; lines and decision as jsonb). Pure rules (hash, allowed transitions) in `server/purchasing/rules.ts` with tests; `server/services/purchasing.ts` applies them in transactions that lock the proposal row (`FOR UPDATE`), so parallel requests can't create two orders; the idempotency key is UNIQUE per organization. Routes: `server/api/routes/{proposals,approvals,orders}/`; `PurchasingError(status, code)` maps to the response. Proposal creation runs `evaluateDraft` (policy check, incl. availability) and sets `quote_expires_at` (+24 h, `QUOTE_TTL_HOURS`). `placeOrder` re-checks prices and availability (`checkLiveOffer`) with a Valio call made before the locked transaction, never inside it.
 
 ## Valio data
 

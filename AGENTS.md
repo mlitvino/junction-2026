@@ -127,9 +127,10 @@ Settings that steer the purchasing agent and the approval flow, per organization
 
 - **Proposal** = a frozen draft order: lines, server-side prices, total (EUR excl. VAT) and the policy decision, plus a SHA-256 `hash` of that content. It never changes; to change it, create a new one and cancel the old.
 - Lifecycle: create → `BLOCKED` (policy DENY, final) or `READY`. `READY` + ALLOW → order. `READY` + REQUIRE_APPROVAL → `PENDING_APPROVAL` (creator sends it) → `APPROVED` / `REJECTED` (an approver decides, sending the hash they reviewed; rejecting needs a comment). `APPROVED` → order. The creator can cancel while `READY`, `PENDING_APPROVAL` or `APPROVED`.
-- **Order**: one per proposal, simulated (Valio has no ordering API). The client sends an `idempotencyKey`: repeating it returns the same order; reusing it for another proposal is a 409.
+- **Fixed prices:** a proposal's `date` is the delivery date the goods are needed; prices and availability are checked for it. The prices hold for 24 h (`quoteExpiresAt`): after that, sending, approving and ordering give 409 `QUOTE_EXPIRED`. At order time the server re-checks Valio (5-minute cache): a different price → 409 `PRICE_CHANGED`, now sales-blocked/undeliverable → 409 `AVAILABILITY_CHANGED`. In all three cases the buyer creates a new proposal.
+- **Order**: one per proposal, simulated (Valio has no ordering API). The client sends an `idempotencyKey`: repeating it returns the same order (no re-check); reusing it for another proposal is a 409.
 - Who: buyers create, send and order (send/cancel: only the creator); approvers list and decide approvals (a user with both roles may approve their own). Everyone in the organization reads proposals and orders.
-- Endpoints: `/api/proposals`, `/api/proposals/{id}/{cancel,approval,order}`, `/api/approvals`, `/api/approvals/{id}/decision`, `/api/orders`. Errors carry a `code` (`INVALID_STATE`, `HASH_MISMATCH`, `APPROVAL_REQUIRED`, `IDEMPOTENCY_CONFLICT`, …).
+- Endpoints: `/api/proposals`, `/api/proposals/{id}/{cancel,approval,order}`, `/api/approvals`, `/api/approvals/{id}/decision`, `/api/orders`. Errors carry a `code` (`INVALID_STATE`, `HASH_MISMATCH`, `APPROVAL_REQUIRED`, `QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED`, `IDEMPOTENCY_CONFLICT`, …).
 
 ## Database (Drizzle)
 
