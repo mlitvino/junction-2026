@@ -25,6 +25,17 @@ import { proposalsRouter } from "./routes/proposals/proposals";
  */
 export const app = createRouter().basePath("/api");
 
+// TODO(default-deny): switch the API to deny by default, so a route that forgets `requireRole`
+// can't leak organization data. Every route except /health is guarded per router today.
+// To switch: uncomment this, add `import { requireSession } from "./middleware/session";`,
+// and keep the per-route `requireRole` checks (they still decide the role).
+//
+// const PUBLIC_PATHS = ["/api/health", "/api/docs", "/api/openapi.json"];
+// app.use("*", async (c, next) => {
+//   if (PUBLIC_PATHS.includes(c.req.path) || c.req.path.startsWith("/api/auth/")) return next();
+//   return requireSession(c, next);
+// });
+
 // Better Auth: sign-up, sign-in, sign-out, session, its own OpenAPI reference (/api/auth/reference).
 app.on(["GET", "POST"], "/auth/*", async (c) => {
   await ensureDatabase();

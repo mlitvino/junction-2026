@@ -65,7 +65,7 @@ src/
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
 4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints live in one folder per area, `src/server/api/routes/<name>/`, with two files: `<name>.docs.ts` (OpenAPI `createRoute` definitions using schemas from `shared/contracts`) and `<name>.ts` (router + handlers that call `server/services`). No logic in either.
 5. Every file in `src/server/` starts with `import "server-only";`.
-6. `api-client.ts` is typed by `shared/contracts` and serves data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready.
+6. `api-client.ts` is typed by `shared/contracts`. Methods the mock-mode UI uses serve data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready. Methods only connected mode uses (today `getProduct`, `getOffers`, `evaluatePolicy`) have no mock and throw in mock mode; give one a mock before mock-mode UI calls it.
 
 Never disable these lint rules to make an import work. Move the code to the right zone, or put the shared type in `shared/contracts`.
 
@@ -97,7 +97,7 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 
 ## Auth
 
-- **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me/me.ts`. Plan: switch to default-deny before real data goes in.
+- **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me/me.ts`. Plan: switch to default-deny (real data is in now); the ready-made middleware is commented out in `src/server/api/app.ts` (`TODO(default-deny)`).
 - **Pages:** `src/proxy.ts` redirects to `/login` without a session cookie (cookie check only; the API checks sessions for real). `/login` and `/signup` are public. Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
 - Its tables (`user`, `session`, `account`, `verification`) are part of our Drizzle schema and migrations (Better Auth uses its Drizzle adapter). Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
