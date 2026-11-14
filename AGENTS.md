@@ -123,6 +123,13 @@ The organization's single set of rules for the agent and the approval flow: prod
 - **Rules:** `autoApproveBelow ≤ maxOrderValue` in every effective set (422 otherwise); `locked` only on `base` (422).
 - **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. The first consumer is the **policy check** (`POST /api/policy/evaluate`): it applies the buyer's effective preferences to a draft order and returns `ALLOW` / `REQUIRE_APPROVAL` / `DENY` with reasons.
 
+### Catalog: search, ranking, units
+
+- **One search:** `GET /api/products` (static data, no Valio calls) with filters: words, category, `excludeAllergens` (names or GS1 codes) + `excludeMayContain`, `dietary` (lactose-free, gluten-free, vegan, vegetarian), `origin`, `maxCo2PerKg`, `minReliability`, `vendor`, `brand`, `label`; `sort` name / co2 / reliability. Results carry allergens (contains and may contain), dietary tags, labels and content per sales unit (e.g. 5 L per case); details add nutrition per 100 g/ml and claims. All from the imported Valio data.
+- **Ranking:** `POST /api/products/rank` (`q` or `productIds`, `quantity` + `unit`, `date`) → best / better / good with reasons: price per litre/kg 35%, availability by the date 25%, relevance, reliability, CO2 and preferred origin/vendor/brand or sustainability labels 10% each; `excluded` lists what the organization's rules drop. The agent's selection uses the same ranking.
+- **Units:** requests in L, dl, ml, kg, g, cases or pieces are converted into each product's sales unit through the declared content (`server/valio/units.ts`): 1000 L of milk in 5 × 1 L cases → 200 cases. When the catalog has no content for a product, the amount is taken as sales units and the proposal carries a warning.
+- Substitutes: `POST /api/products/{id}/substitutes`.
+
 ### Purchasing flow (proposals, approvals, orders)
 
 - **Proposal** = a frozen draft order: lines, server-side prices, total (EUR excl. VAT) and the policy decision, plus a SHA-256 `hash` of that content. It never changes; to change it, create a new one and cancel the old.
@@ -150,7 +157,7 @@ The organization's single set of rules for the agent and the approval flow: prod
 
 ## Commands
 
-- `pnpm dev`: starts the local Postgres (waits until it is ready), then the dev server (http://localhost:3000). Needs Docker.
+- `pnpm dev`: starts the local Postgres (waits until it is ready), applies pending migrations (`pnpm db:migrate`), then the dev server (http://localhost:3000). Needs Docker. After `git pull` with a dev server already running, run `pnpm db:migrate`.
 - `pnpm dev:app`: dev server only, no Docker (frontend work with `NEXT_PUBLIC_USE_MOCKS=true`)
 - `pnpm build`: production build
 - `pnpm lint`: ESLint

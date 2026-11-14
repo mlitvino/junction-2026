@@ -46,9 +46,9 @@ Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval
 
 ## Catalog data rules
 
-- Real products only carry real data: no invented prices, stock, nutrition or sustainability labels. Candidates without a Valio price are skipped. Nutrition (`nutritionFact`) and labels (`packagingMarkedLabel`) exist in `products.json` but aren't imported yet, so they are null/empty.
+- Real products only carry real data: no invented prices or stock (candidates without a Valio price are skipped). Nutrition (`nutritionFact`), labels (`packagingMarkedLabel`, storage temperatures removed), claims (`nutritionalClaim`, `nonAllergen` FREE_FROM), content per base unit (`unitConversions[].volume`) and dietary tags (from claims) are imported by `server/catalog/valio-data.ts`; label names in `shared/contracts/labels.ts`.
 - Synthetic products (`services/mock-catalog.ts`) have `SYN-` ids and are used only when the real catalog is empty (`syntheticCatalogEnabled()`), together with demo history and demo kitchen stock.
-- Allergens: GS1 codes in the data; names or codes in settings and filters, mapped by `shared/contracts/allergens.ts`. The import keeps the codes but not their `CONTAINS` / `MAY_CONTAIN` qualifier.
+- Allergens: GS1 codes in the data, imported with their qualifier: `allergens` = CONTAINS, `may_contain_allergens` = MAY_CONTAIN (UNDECLARED dropped). Names or codes in settings and filters, mapped by `shared/contracts/allergens.ts`. Policy: contains an excluded allergen → DENY, may contain → approval.
 
 ## Valio data
 
@@ -66,6 +66,6 @@ Two folders with different jobs:
 
 - Tables (Drizzle schema + migrations, additive only): `valio_product`, `valio_product_unit`, `valio_product_substitute` (static, loaded by `pnpm data:import`), and insert-only `valio_price_snapshot` / `valio_availability_snapshot` (every live answer we fetched: the audit trail and a 5-minute cache).
 - `server/valio/client.ts`: `fetchPrices` / `fetchAvailability`. Without `VALIO_API_KEY` it runs in **mock mode** (deterministic fake data, `source: "mock"`). Never call it for the whole catalog: Valio rate-limits; narrow down with the static data first.
-- `server/services/catalog.ts`: search, product details, prices and availability (cache → Valio → snapshot) and `getOffers` (price + availability per product). Exposed as `GET /api/products`, `/api/products/{id}`, `/api/products/{id}/offer` and `POST /api/offers` (`routes/products/`, buyer or approver; Valio failures → 502). Agent tools (`server/agents/tools/`) call the service directly, not the HTTP routes.
+- `server/services/catalog.ts`: search with filters (all in SQL), product details, unit facts, prices and availability (cache → Valio → snapshot) and `getOffers`. Exposed as `GET /api/products`, `/api/products/{id}`, `/offer`, `POST /api/offers`, `POST /api/products/rank` (ranking in `server/purchasing/ranking.ts`, pure, with tests) and `POST /api/products/{id}/substitutes`. Unit conversion: `server/valio/units.ts` (pure, with tests). Agent tools call the services directly.
 - Data quality: `pnpm data:analyze` and `docs/valio-data-anomalies.md`. Trust `storageTempC` over `temperatureCondition`; CO2 is a group average.
 - Files used by the Node scripts (`scripts/*.ts`) import each other with relative `.ts` paths, not `@/`: plain Node doesn't know the alias.
