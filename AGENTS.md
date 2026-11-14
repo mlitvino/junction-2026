@@ -12,6 +12,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 Trusted Trade Agents (Junction 2026, Valio Aimo challenge): a prototype interface that lets an external purchasing agent look up products, prices and availability in a mock Valio Aimo backend, place an order within its permissions, or send it to a human for approval, and leave a readable audit trail of why.
 
+Valio Aimo's real challenge API (OpenAPI 3.1, auth via `X-API-Key` header) is saved in `docs/valio-aimo-openapi.json`. Key constraints: max 1 000 products per price/availability request, undisclosed rate limits, so never poll prices or availability for all products. Narrow down from the static product data first. The product, delivery-reliability and carbon-footprint files are static: download them once.
+
 This file is the shared instruction set for every AI coding agent in this repo (Codex reads it directly, Claude Code imports it from `CLAUDE.md`). Keep tool-specific notes out of it.
 
 ## Ownership
@@ -100,6 +102,16 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
 - Its tables (`user`, `session`, `account`, `verification`) are created on first use. Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
 
+### Organizations and roles
+
+- Every user belongs to exactly one **organization**. Roles are per organization, and a user can hold several:
+  - `buyer`: searches products and places orders
+  - `approver`: approves buyers' orders, sets the organization's AI settings and manages its members
+- **Self sign-up** creates a new organization ("<username>'s organization") where the user is buyer + approver.
+- **Colleagues** don't sign up: an approver creates their account with `POST /api/organization/members` (username, password, roles); it belongs only to that organization. Roles change with `PUT /api/organization/members/{userId}/roles`. An organization always keeps at least one approver.
+- `GET /api/me` returns the user with `organization` and `roles` (`shared/contracts/me.ts`): the frontend shows screens per role from it.
+- Server: guard routes with `requireRole("buyer" | "approver", …)`, and always scope data to `c.var.user.organization.id`.
+
 ## Secrets
 
 - Never read, print or edit `.env*` files, except `.env.example`. Ask the developer for the value you need.
@@ -117,6 +129,10 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 - `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
 - `pnpm db:psql`: psql shell in the local DB
 - `pnpm db:reset`: **deletes all local data** (drops the volume) and starts a fresh DB
+- `pnpm bootstrap`: first-time setup after `cp .env.example .env`: install, start Postgres, `data:fetch --if-missing`, `data:import`
+- `pnpm data:fetch`: download the static Valio files into `data/valio/` (needs `VALIO_API_URL` and `VALIO_API_KEY`)
+- `pnpm data:import`: load `data/valio/` into Postgres (catalog tables); idempotent
+- `pnpm data:analyze`: data-quality report and anomalies (`data/valio/analysis.json`)
 - `pnpm docker:build` / `pnpm docker:run`: build and run the production image locally (http://localhost:3000)
 
 **After any change, run `pnpm check` and fix every error before finishing.** CI runs `pnpm check` and `pnpm build` on every pull request and before every deploy.

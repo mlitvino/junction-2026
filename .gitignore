@@ -46,3 +46,6 @@ next-env.d.ts
 
 # local notes
 *.docx
+
+# Valio challenge data (pnpm data:fetch): company data, not committed
+/data/
