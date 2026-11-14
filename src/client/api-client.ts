@@ -6,7 +6,6 @@ import { MeResponseSchema, type MeResponse } from "@/shared/contracts/me";
 import { healthMock } from "./mocks/health";
 import { meMock } from "./mocks/me";
 import { createMockProcurementService } from "./mocks/mock-service";
-import { createUnavailableProcurementService } from "./provisional/unavailable-service";
 import type { ProvisionalProcurementService } from "./provisional/types";
 
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
@@ -44,11 +43,12 @@ async function request<S extends z.ZodType>(
 }
 
 export const apiClient = {
-  procurement: (USE_MOCKS
-    ? createMockProcurementService({
-        storage: () => (typeof window === "undefined" ? null : window.sessionStorage),
-      })
-    : createUnavailableProcurementService()) as ProvisionalProcurementService,
+  // The procurement flow has no backend yet: both modes run the local simulator. In connected
+  // mode ("simulated") it acts for the signed-in user (see use-viewer.ts) with their real roles.
+  procurement: createMockProcurementService({
+    storage: () => (typeof window === "undefined" ? null : window.sessionStorage),
+    mode: USE_MOCKS ? "mock" : "simulated",
+  }) as ProvisionalProcurementService,
   getHealth: (): Promise<HealthResponse> =>
     request("/api/health", HealthResponseSchema, healthMock),
   getMe: (): Promise<MeResponse> => request("/api/me", MeResponseSchema, meMock),

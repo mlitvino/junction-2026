@@ -300,9 +300,23 @@ export type ProvisionalRequest = {
   message: string;
   clientRequestId: string;
 };
+/**
+ * The signed-in user the local simulator acts for in connected ("simulated") mode. Comes from
+ * GET /api/me (src/client/viewer.ts); in mock mode the demo role selector is used instead.
+ */
+export type ProvisionalActor = {
+  id: string;
+  displayName: string;
+  roles: readonly ProvisionalDemoState["role"][];
+};
+
 export type ProvisionalSnapshot = {
   ready: boolean;
-  mode: "mock" | "unavailable";
+  /**
+   * mock: demo identity + local simulator. simulated: real signed-in user + local simulator.
+   * unavailable: no procurement data source.
+   */
+  mode: "mock" | "simulated" | "unavailable";
   storageNotice: string | null;
   state: ProvisionalDemoState;
   scenarios: readonly ProvisionalScenario[];
@@ -314,6 +328,8 @@ export interface ProvisionalProcurementService {
   subscribe(listener: () => void): () => void;
   getSnapshot(): ProvisionalSnapshot;
   getServerSnapshot(): ProvisionalSnapshot;
+  /** Connected mode: the signed-in user (null when signed out). Ignored in mock mode. */
+  setActor(actor: ProvisionalActor | null): void;
   startConversation(request: ProvisionalRequest): Promise<string>;
   requestApproval(proposalId: string, expectedVersion: number): Promise<string>;
   commitOrder(proposalId: string, expectedVersion: number, idempotencyKey: string): Promise<string>;

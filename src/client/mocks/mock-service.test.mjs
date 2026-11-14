@@ -289,3 +289,69 @@ test("a second different request cannot run concurrently with the first", async 
   assert.equal(state(s).conversations.length, 1);
   assert.equal(state(s).orders.length, 1);
 });
+
+// ----- Connected mode ("simulated"): the signed-in user's real roles decide, data per user.
+const actor = (id, roles) => ({ id, displayName: id, roles });
+const simulated = (storage = memory()) => service(storage, { mode: "simulated" });
+
+test("simulated mode waits for the signed-in user before loading", async () => {
+  const s = simulated();
+  s.initialize();
+  assert.equal(s.getSnapshot().ready, false);
+  assert.equal(s.getSnapshot().mode, "simulated");
+  await rejectsCode(s.startConversation(request("happy-path-auto")), "NOT_SIGNED_IN");
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  assert.equal(s.getSnapshot().ready, true);
+});
+
+test("a user with both roles can request and approve; activity names the user", async () => {
+  const s = simulated();
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  const approvalId = await pending(s);
+  const hash = state(s).approvals[0].proposalHash;
+  await s.decideApproval(approvalId, hash, "APPROVED", "");
+  assert.equal(state(s).orders.length, 1);
+  assert.equal(state(s).approvals[0].decidedByUserId, "alice");
+  assert(state(s).activities.some((a) => a.actorType === "USER" && a.actorId === "alice"));
+  assert(
+    !state(s).activities.some(
+      (a) => a.actorId.startsWith("demo-b") || a.actorId === "demo-approver",
+    ),
+  );
+});
+
+test("buyer-only can't approve and approver-only can't request", async () => {
+  const storage = memory();
+  const buyer = simulated(storage);
+  buyer.setActor(actor("bob", ["BUYER"]));
+  const approvalId = await pending(buyer);
+  const hash = state(buyer).approvals[0].proposalHash;
+  await rejectsCode(buyer.decideApproval(approvalId, hash, "APPROVED", ""), "ROLE_REQUIRED");
+
+  const approver = simulated(memory());
+  approver.setActor(actor("carol", ["APPROVER"]));
+  await rejectsCode(approver.startConversation(request("happy-path-auto")), "ROLE_REQUIRED");
+});
+
+test("roles come from the account: the demo role switch is refused", async () => {
+  const s = simulated();
+  s.setActor(actor("bob", ["BUYER"]));
+  await rejectsCode(s.setDemoRole("APPROVER"), "ROLE_FROM_ACCOUNT");
+});
+
+test("each user gets their own simulation; switching users doesn't leak data", async () => {
+  const storage = memory();
+  const s = simulated(storage);
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).orders.length, 1);
+
+  s.setActor(actor("bob", ["BUYER"]));
+  assert.equal(state(s).conversations.length, 0);
+  assert.equal(state(s).orders.length, 0);
+  assert.notEqual(storage.getItem(`${DEMO_STORAGE_KEY}:alice`), null);
+  assert.equal(storage.getItem(DEMO_STORAGE_KEY), null);
+
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  assert.equal(state(s).orders.length, 1);
+});

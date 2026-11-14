@@ -17,7 +17,7 @@ export const demoScenarios = [
   {
     id: "human-approval-budget",
     label: "Manager approval needed",
-    description: "A larger milk purchase · review by a Demo Approver",
+    description: "A larger milk purchase · review by an approver",
     prompt:
       "Order 400 litres of lactose-free milk for 20 November 2026. Budget €800. Prefer Finnish products.",
   },
@@ -131,7 +131,7 @@ export function scenarioFixture(id: ProvisionalScenario["id"], timestamp: string
         ? {
             code: "SPEND_LIMIT_EXCEEDED",
             message:
-              "The prepared €620 purchase exceeds the fictional €250 agent limit. A Demo Approver must decide.",
+              "The prepared €620 purchase exceeds the fictional €250 agent limit. An approver must decide.",
           }
         : {
             code: "WITHIN_DEMO_LIMIT",

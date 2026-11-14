@@ -4,6 +4,7 @@ import {
   IntentSchema,
   ProposalSchema,
   type ProvisionalActivity,
+  type ProvisionalActor,
   type ProvisionalAgentEvent,
   type ProvisionalApproval,
   type ProvisionalDemoState,
@@ -40,19 +41,25 @@ function freeze<T>(value: T): T {
 }
 
 // Pure demo service: deterministic decisions, no network, authorization or security guarantees.
+// mode "mock": the demo role selector decides the role (state.role).
+// mode "simulated": connected mode. The signed-in user (setActor, from GET /api/me) and their real
+// roles decide; data is stored per user. The purchasing data itself stays a local simulation.
 export function createMockProcurementService(
   options: {
     storage?: () => DemoStorage | null;
     wait?: () => Promise<void>;
     now?: () => string;
+    mode?: "mock" | "simulated";
   } = {},
 ) {
+  const mode = options.mode ?? "mock";
+  let actor: ProvisionalActor | null = null;
   const now = options.now ?? (() => new Date().toISOString());
   const wait = options.wait ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
   const listeners = new Set<() => void>();
   const serverSnapshot: ProvisionalSnapshot = freeze({
     ready: false,
-    mode: "mock",
+    mode,
     storageNotice: null,
     state: emptyState(),
     scenarios: demoScenarios,
@@ -61,9 +68,16 @@ export function createMockProcurementService(
   let snapshot = serverSnapshot;
   let generation = 0;
   const emit = () => listeners.forEach((listener) => listener());
+  // Connected mode keeps each user's simulation apart, so a different sign-in in the same tab
+  // never sees the previous user's conversations, approvals or orders.
+  function storageKey(): string | null {
+    if (mode === "mock") return DEMO_STORAGE_KEY;
+    return actor ? `${DEMO_STORAGE_KEY}:${actor.id}` : null;
+  }
   function save(state: ProvisionalDemoState, notice = snapshot.storageNotice) {
     try {
-      options.storage?.()?.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
+      const key = storageKey();
+      if (key) options.storage?.()?.setItem(key, JSON.stringify(state));
     } catch {
       notice = "Local demo storage is unavailable. This demonstration will reset on refresh.";
     }
@@ -72,10 +86,13 @@ export function createMockProcurementService(
   }
   function initialize() {
     if (snapshot.ready) return;
+    // Connected mode waits for the signed-in user (setActor) before loading anything.
+    if (mode === "simulated" && !actor) return;
     let state = emptyState();
     let notice: string | null = null;
     try {
-      const raw = options.storage?.()?.getItem(DEMO_STORAGE_KEY);
+      const key = storageKey();
+      const raw = key ? options.storage?.()?.getItem(key) : null;
       if (raw) {
         state = DemoStateSchema.parse(JSON.parse(raw));
         // Schema validation alone cannot establish the demo's relational consistency.
@@ -111,8 +128,12 @@ export function createMockProcurementService(
     }
     save(state, notice);
   }
-  function update<T>(mutate: (draft: ProvisionalDemoState) => T): T {
+  function ensureReady() {
     initialize();
+    if (!snapshot.ready) fail("NOT_SIGNED_IN", "Your account is still loading. Try again.", 401);
+  }
+  function update<T>(mutate: (draft: ProvisionalDemoState) => T): T {
+    ensureReady();
     const state = structuredClone(snapshot.state);
     const result = mutate(state);
     save(DemoStateSchema.parse(state));
@@ -123,6 +144,15 @@ export function createMockProcurementService(
     throw new ProvisionalApiError(code, message, status);
   }
   function requireRole(state: ProvisionalDemoState, role: ProvisionalDemoState["role"]) {
+    if (mode === "simulated") {
+      if (!actor?.roles.includes(role))
+        fail(
+          "ROLE_REQUIRED",
+          `Your account doesn't have the ${role === "BUYER" ? "buyer" : "approver"} role in your organization.`,
+          403,
+        );
+      return;
+    }
     if (state.role !== role)
       fail(
         "DEMO_ROLE_REQUIRED",
@@ -130,6 +160,10 @@ export function createMockProcurementService(
         403,
       );
   }
+  /** Who a USER activity is attributed to: the signed-in user's name, or the demo role. */
+  const userActorId = (state: ProvisionalDemoState) =>
+    mode === "simulated" && actor ? actor.displayName : `demo-${state.role.toLowerCase()}`;
+  const approverLabel = () => (mode === "simulated" ? "an approver" : "a Demo Approver");
   function proposalById(state: ProvisionalDemoState, proposalId: string) {
     return (
       state.proposals.find((p) => p.id === proposalId) ??
@@ -148,7 +182,7 @@ export function createMockProcurementService(
       timestamp: now(),
       traceId: proposal.traceId,
       actorType,
-      actorId: actorType === "USER" ? `demo-${state.role.toLowerCase()}` : "demo-simulator",
+      actorId: actorType === "USER" ? userActorId(state) : "demo-simulator",
       action,
       resourceId: proposal.id,
       result: proposal.status,
@@ -228,7 +262,7 @@ export function createMockProcurementService(
   async function* streamAgentChat(
     request: ProvisionalRequest,
   ): AsyncGenerator<ProvisionalAgentEvent> {
-    initialize();
+    ensureReady();
     const scenario = demoScenarios.find((s) => s.id === request.scenarioId);
     if (!scenario || request.message.trim() !== scenario.prompt)
       fail(
@@ -449,7 +483,7 @@ export function createMockProcurementService(
         fixture.outcome === "ALLOW"
           ? "Your simulated purchase has been recorded locally. Nothing was submitted to Valio."
           : fixture.outcome === "REQUIRE_APPROVAL"
-            ? "I’ve prepared a demo recommendation. It exceeds the fictional agent limit. Review it and send it to a Demo Approver."
+            ? `I’ve prepared a demo recommendation. It exceeds the fictional agent limit. Review it and send it to ${approverLabel()}.`
             : "I can’t confirm the mandatory milk-allergen requirement in this fixture. The purchase is blocked. Review the missing evidence or revise the request.";
       yield record("message.delta", { text });
       yield record("done", {
@@ -523,7 +557,7 @@ export function createMockProcurementService(
           state,
           proposal,
           "APPROVAL_REQUESTED",
-          "Sent this exact proposal version to the Demo Approver.",
+          `Sent this exact proposal version to ${approverLabel()}.`,
           "USER",
         );
         return approval.id;
@@ -562,7 +596,7 @@ export function createMockProcurementService(
           fail("REASON_REQUIRED", "Add a reason for rejecting this demo request.", 422);
         approval.status = decision;
         approval.decidedAt = now();
-        approval.decidedByUserId = "demo-approver";
+        approval.decidedByUserId = mode === "simulated" && actor ? actor.id : "demo-approver";
         approval.note = note.trim() || null;
         proposal.status = decision;
         activity(
@@ -570,15 +604,30 @@ export function createMockProcurementService(
           proposal,
           `APPROVAL_${decision}`,
           decision === "APPROVED"
-            ? "Demo Approver approved this exact proposal. This is not real authorization."
-            : `Demo Approver rejected the request: ${note.trim()}`,
+            ? mode === "simulated"
+              ? `${userActorId(state)} approved this exact proposal.`
+              : "Demo Approver approved this exact proposal. This is not real authorization."
+            : `${mode === "simulated" ? userActorId(state) : "Demo Approver"} rejected the request: ${note.trim()}`,
           "USER",
         );
         if (decision === "APPROVED")
           commit(state, proposal.id, proposal.version, `${approval.id}:approved`);
       });
     },
+    setActor(next) {
+      if (mode !== "simulated") return;
+      const sameUser = actor?.id === next?.id;
+      actor = next;
+      if (sameUser) return;
+      // A different user: stop any running script and load that user's own simulation.
+      generation++;
+      snapshot = serverSnapshot;
+      emit();
+      initialize();
+    },
     async setDemoRole(role) {
+      if (mode === "simulated")
+        fail("ROLE_FROM_ACCOUNT", "Roles come from your account in connected mode.", 403);
       update((state) => {
         state.role = role;
       });
