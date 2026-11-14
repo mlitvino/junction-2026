@@ -20,10 +20,17 @@ export const defaultPreferences: Preferences = {
   minDeliveryReliability: null,
   preferredOriginCountries: ["fi"],
   excludedAllergens: [],
+  dietaryRestrictions: [],
+  allowedCategories: [],
+  blockedCategories: [],
+  allowedProductIds: [],
+  blockedProductIds: [],
   preferredVendors: [],
   blockedVendors: [],
   preferredBrands: [],
   maxOrderValue: null,
+  maxUnitPrice: null,
+  maxLineQuantity: null,
   autoApproveBelow: null,
   autonomy: "suggest_only",
   allowSubstitutes: false,
@@ -413,6 +420,9 @@ export function createMockApi(
         id: id("P"),
         status: decision.outcome === "DENY" ? "BLOCKED" : "READY",
         createdBy: data.user.id,
+        createdByName: data.user.username,
+        source: "buyer",
+        selection: null,
         createdAt: now(),
         updatedAt: now(),
         lines: decision.lines.map((l) => ({
@@ -435,7 +445,7 @@ export function createMockApi(
         note: body.note ?? null,
         approval: null,
         orderId: null,
-      });
+      } satisfies z.input<typeof ProposalSchema>);
       data.proposals.unshift(p);
       save();
       return structuredClone(p);
@@ -462,8 +472,10 @@ export function createMockApi(
         proposalHash: p.hash,
         status: "PENDING",
         requestedBy: data.user.id,
+        requestedByName: data.user.username,
         requestedAt: now(),
         decidedBy: null,
+        decidedByName: null,
         decidedAt: null,
         comment: null,
       };
@@ -497,6 +509,7 @@ export function createMockApi(
       p.approval.status = body.decision;
       p.approval.comment = body.comment ?? null;
       p.approval.decidedBy = data.user.id;
+      p.approval.decidedByName = data.user.username;
       p.approval.decidedAt = now();
       p.status = body.decision;
       save();
@@ -528,13 +541,14 @@ export function createMockApi(
         status: "SIMULATED_CONFIRMED",
         source: "LOCAL_SIMULATOR",
         createdBy: data.user.id,
+        createdByName: data.user.username,
         createdAt: now(),
         idempotencyKey: key,
         proposalHash: p.hash,
         lines: p.lines,
         totalExclVat: p.totalExclVat,
         currency: p.currency,
-      });
+      } satisfies z.input<typeof OrderSchema>);
       data.orders.unshift(order);
       p.orderId = order.id;
       p.status = "ORDERED";

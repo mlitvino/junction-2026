@@ -101,10 +101,17 @@ const fieldLabels: Record<SettingKey, string> = {
   minDeliveryReliability: "Minimum delivery reliability (0–1)",
   preferredOriginCountries: "Preferred origin countries",
   excludedAllergens: "Excluded allergen codes",
+  dietaryRestrictions: "Required dietary tags",
+  allowedCategories: "Categories allowed without approval",
+  blockedCategories: "Categories requiring approval",
+  allowedProductIds: "Products allowed without approval",
+  blockedProductIds: "Products requiring approval",
   preferredVendors: "Preferred vendors",
   blockedVendors: "Blocked vendors",
   preferredBrands: "Preferred brands",
   maxOrderValue: "Maximum order value, EUR excl. VAT",
+  maxUnitPrice: "Unit price requiring approval, EUR excl. VAT",
+  maxLineQuantity: "Line quantity requiring approval, sales units",
   autoApproveBelow: "Automatic approval below, EUR excl. VAT",
   autonomy: "Purchasing mode",
   allowSubstitutes: "Allow substitutes",
@@ -113,11 +120,23 @@ const fieldLabels: Record<SettingKey, string> = {
 const listKeys = [
   "preferredOriginCountries",
   "excludedAllergens",
+  "dietaryRestrictions",
+  "allowedCategories",
+  "blockedCategories",
+  "allowedProductIds",
+  "blockedProductIds",
   "preferredVendors",
   "blockedVendors",
   "preferredBrands",
 ];
-const nullableKeys = ["maxCo2PerKg", "minDeliveryReliability", "maxOrderValue", "autoApproveBelow"];
+const nullableKeys = [
+  "maxCo2PerKg",
+  "minDeliveryReliability",
+  "maxOrderValue",
+  "maxUnitPrice",
+  "maxLineQuantity",
+  "autoApproveBelow",
+];
 const keys = Object.keys(PreferencesSchema.shape) as SettingKey[];
 function LayerEditor({ scope, layers }: { scope: LayerScope; layers: LayersResponse }) {
   const initial = layers[scope],

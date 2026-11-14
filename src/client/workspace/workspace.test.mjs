@@ -35,6 +35,7 @@ const { createWorkspaceService, compatibleQuantity, recipeNeeds } = require(
   join(output, "src/client/workspace/service.js"),
 );
 const { ProposalSchema, OrderSchema } = require(join(output, "src/shared/contracts/purchasing.js"));
+const { EffectiveResponseSchema } = require(join(output, "src/shared/contracts/preferences.js"));
 const memory = () => {
   const values = new Map();
   return { getItem: (k) => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), values };
@@ -59,15 +60,22 @@ test("approval-first, same review object and idempotent canonical order", async 
   const proposal = ProposalSchema.parse(state(service).proposals[0]);
   assert.equal(proposal.status, "PENDING_APPROVAL");
   assert.equal(proposal.totalExclVat, 155);
+  assert.equal(proposal.createdByName, "anna.lindholm");
+  assert.equal(proposal.source, "buyer");
+  assert.equal(proposal.selection, null);
+  assert.equal(proposal.approval.requestedByName, "anna.lindholm");
+  assert.equal(proposal.approval.decidedByName, null);
   assert.equal(state(service).orders.length, 0);
   assert.equal(state(service).approvals[0].id, proposal.approval.id);
   await service.approve(proposal.id, "APPROVED");
+  assert.equal(state(service).proposals[0].approval.decidedByName, "anna.lindholm");
   const [a, b] = await Promise.all([
     service.placeOrder(proposal.id),
     service.placeOrder(proposal.id),
   ]);
   assert.equal(a.id, b.id);
   OrderSchema.parse(a);
+  assert.equal(a.createdByName, "anna.lindholm");
   assert.equal(state(service).orders.length, 1);
   assert.equal(state(service).proposals[0].status, "ORDERED");
 });
@@ -197,6 +205,44 @@ test("layer inheritance, base locks, and invalid limit combinations remain disti
   await service.loadSettings();
   assert.equal(state(service).effective.buyer.values.language, "fi");
   assert.equal(state(service).effective.buyer.sources.language, "organization");
+});
+
+test("expanded preference lists and nullable limits round-trip through effective settings", async () => {
+  const { service, mock } = await setup();
+  const initial = EffectiveResponseSchema.parse(await mock.api.getEffective());
+  for (const role of ["buyer", "approver"]) {
+    for (const key of [
+      "dietaryRestrictions",
+      "allowedCategories",
+      "blockedCategories",
+      "allowedProductIds",
+      "blockedProductIds",
+    ])
+      assert.deepEqual(initial[role].values[key], []);
+    assert.equal(initial[role].values.maxUnitPrice, null);
+    assert.equal(initial[role].values.maxLineQuantity, null);
+  }
+  const values = {
+    dietaryRestrictions: ["vegetarian"],
+    allowedCategories: ["FOOD"],
+    blockedCategories: ["REVIEW"],
+    allowedProductIds: ["milk"],
+    blockedProductIds: ["oat"],
+    maxUnitPrice: 20,
+    maxLineQuantity: 100,
+  };
+  await service.saveLayer("base", { values, locked: ["dietaryRestrictions"] });
+  const effective = EffectiveResponseSchema.parse(await mock.api.getEffective());
+  for (const [key, value] of Object.entries(values)) {
+    assert.deepEqual(effective.buyer.values[key], value);
+    assert.equal(effective.buyer.sources[key], "organization");
+  }
+  await assert.rejects(service.saveLayer("buyer", { values: { dietaryRestrictions: [] } }));
+  await service.saveLayer("buyer", { values: { maxUnitPrice: null, maxLineQuantity: null } });
+  const buyer = EffectiveResponseSchema.parse(await mock.api.getEffective()).buyer;
+  assert.equal(buyer.values.maxUnitPrice, null);
+  assert.equal(buyer.values.maxLineQuantity, null);
+  assert.equal(buyer.sources.maxUnitPrice, "buyer");
 });
 test("HTTP adapter uses canonical paths/hash/net amounts and preserves explicit error codes", async () => {
   const { mock } = await setup();
