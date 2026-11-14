@@ -14,16 +14,25 @@ import {
   ModifyOrderRequestSchema,
   ModifyOrderResponseSchema,
   OrderAuditResponseSchema,
-  OrderDetailResponseSchema,
-  OrderListResponseSchema,
   OrderReceiptSchema,
 } from "@/shared/contracts/orders";
+import { OrderListSchema, OrderSchema, PurchasingErrorSchema } from "@/shared/contracts/purchasing";
 import {
   CreateOrderFromRecipeRequestSchema,
   CreateOrderFromRecipeResponseSchema,
 } from "@/shared/contracts/recipes";
 
-// OpenAPI definitions for procurement order lifecycle routes. Handlers live in ./orders.ts.
+// OpenAPI definitions for purchasing orders (feat/integrate-frontend) and procurement order lifecycle routes.
+
+const security = [{ sessionCookie: [] }];
+const json = <T extends z.ZodType>(schema: T, description: string) => ({
+  description,
+  content: { "application/json": { schema } },
+});
+const auth = {
+  401: json(ErrorResponseSchema, "No valid session."),
+  403: json(ErrorResponseSchema, "Neither buyer nor approver."),
+};
 
 const orderIdParams = z.object({
   orderId: z.string().min(1).meta({ example: "ORD-8A7B6C5D" }),
@@ -62,35 +71,24 @@ export const postOrdersRoute = createRoute({
 export const listOrdersRoute = createRoute({
   method: "get",
   path: "/orders",
-  tags: ["Orders"],
-  summary: "List procurement orders",
-  description:
-    "Lists procurement orders ordered newest-first (scoped to the caller's organization when signed in).",
-  responses: {
-    200: {
-      description: "List of orders.",
-      content: { "application/json": { schema: OrderListResponseSchema } },
-    },
-  },
+  tags: ["Purchasing"],
+  summary: "List orders",
+  description: "The organization's simulated orders, newest first (max 200).",
+  security,
+  responses: { 200: json(OrderListSchema, "Orders."), ...auth },
 });
 
-export const getOrderDetailRoute = createRoute({
+export const getOrderRoute = createRoute({
   method: "get",
-  path: "/orders/{orderId}",
-  tags: ["Orders"],
-  summary: "Get full order details, candidate alternatives, inquiry quote, and audit trail",
-  request: {
-    params: orderIdParams,
-  },
+  path: "/orders/{id}",
+  tags: ["Purchasing"],
+  summary: "Get an order",
+  security,
+  request: { params: z.object({ id: z.string().meta({ description: "Order id." }) }) },
   responses: {
-    200: {
-      description: "Order detail with procurement trace and suggested product swaps.",
-      content: { "application/json": { schema: OrderDetailResponseSchema } },
-    },
-    404: {
-      description: "Order not found.",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    200: json(OrderSchema, "The order."),
+    ...auth,
+    404: json(PurchasingErrorSchema, "No such order in your organization."),
   },
 });
 

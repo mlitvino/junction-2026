@@ -4,6 +4,7 @@ import {
   IntentSchema,
   ProposalSchema,
   type ProvisionalActivity,
+  type ProvisionalActor,
   type ProvisionalAgentEvent,
   type ProvisionalApproval,
   type ProvisionalDemoState,
@@ -13,7 +14,15 @@ import {
   type ProvisionalSnapshot,
 } from "../provisional/types";
 import { ProvisionalApiError } from "../provisional/errors";
-import { demoProducts, demoScenarios, scenarioFixture } from "./scenarios";
+import {
+  demoProducts,
+  demoScenarios,
+  realScenarioFixture,
+  realScenarioLine,
+  scenarioFixture,
+  type RealCatalog,
+  type RealPolicyDecision,
+} from "./scenarios";
 
 export const DEMO_STORAGE_KEY = "aimo-procurement-demo-v1";
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
@@ -40,19 +49,29 @@ function freeze<T>(value: T): T {
 }
 
 // Pure demo service: deterministic decisions, no network, authorization or security guarantees.
+// mode "mock": the demo role selector decides the role (state.role).
+// mode "simulated": connected mode. The signed-in user (setActor, from GET /api/me) and their real
+// roles decide; data is stored per user. The purchasing data itself stays a local simulation.
 export function createMockProcurementService(
   options: {
     storage?: () => DemoStorage | null;
     wait?: () => Promise<void>;
     now?: () => string;
+    mode?: "mock" | "simulated";
+    /** Connected mode: real products, prices and availability for the scenarios (real-catalog.ts). */
+    catalog?: () => Promise<RealCatalog>;
+    /** Connected mode: the organization's policy decision for a scenario's order line. */
+    policy?: (line: { productId: string; quantity: number }) => Promise<RealPolicyDecision>;
   } = {},
 ) {
+  const mode = options.mode ?? "mock";
+  let actor: ProvisionalActor | null = null;
   const now = options.now ?? (() => new Date().toISOString());
   const wait = options.wait ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 300)));
   const listeners = new Set<() => void>();
   const serverSnapshot: ProvisionalSnapshot = freeze({
     ready: false,
-    mode: "mock",
+    mode,
     storageNotice: null,
     state: emptyState(),
     scenarios: demoScenarios,
@@ -61,21 +80,45 @@ export function createMockProcurementService(
   let snapshot = serverSnapshot;
   let generation = 0;
   const emit = () => listeners.forEach((listener) => listener());
+  // Connected mode keeps each user's simulation apart, so a different sign-in in the same tab
+  // never sees the previous user's conversations, approvals or orders.
+  function storageKey(): string | null {
+    if (mode === "mock") return DEMO_STORAGE_KEY;
+    return actor ? `${DEMO_STORAGE_KEY}:${actor.id}` : null;
+  }
   function save(state: ProvisionalDemoState, notice = snapshot.storageNotice) {
     try {
-      options.storage?.()?.setItem(DEMO_STORAGE_KEY, JSON.stringify(state));
+      const key = storageKey();
+      if (key) options.storage?.()?.setItem(key, JSON.stringify(state));
     } catch {
       notice = "Local demo storage is unavailable. This demonstration will reset on refresh.";
     }
     snapshot = freeze({ ...snapshot, ready: true, state, storageNotice: notice });
     emit();
   }
+  // Real product names for the screens (a reload shows saved proposals without running a scenario).
+  // Best effort: a failed load only means a scenario run reports the error itself.
+  function showCatalogProducts() {
+    options
+      .catalog?.()
+      .then((catalog) => {
+        const known = new Set(snapshot.products.map((p) => p.productId));
+        const added = catalog.products.filter((p) => !known.has(p.productId));
+        if (!added.length) return;
+        snapshot = freeze({ ...snapshot, products: [...snapshot.products, ...added] });
+        emit();
+      })
+      .catch(() => {});
+  }
   function initialize() {
     if (snapshot.ready) return;
+    // Connected mode waits for the signed-in user (setActor) before loading anything.
+    if (mode === "simulated" && !actor) return;
     let state = emptyState();
     let notice: string | null = null;
     try {
-      const raw = options.storage?.()?.getItem(DEMO_STORAGE_KEY);
+      const key = storageKey();
+      const raw = key ? options.storage?.()?.getItem(key) : null;
       if (raw) {
         state = DemoStateSchema.parse(JSON.parse(raw));
         // Schema validation alone cannot establish the demo's relational consistency.
@@ -111,8 +154,12 @@ export function createMockProcurementService(
     }
     save(state, notice);
   }
-  function update<T>(mutate: (draft: ProvisionalDemoState) => T): T {
+  function ensureReady() {
     initialize();
+    if (!snapshot.ready) fail("NOT_SIGNED_IN", "Your account is still loading. Try again.", 401);
+  }
+  function update<T>(mutate: (draft: ProvisionalDemoState) => T): T {
+    ensureReady();
     const state = structuredClone(snapshot.state);
     const result = mutate(state);
     save(DemoStateSchema.parse(state));
@@ -123,6 +170,15 @@ export function createMockProcurementService(
     throw new ProvisionalApiError(code, message, status);
   }
   function requireRole(state: ProvisionalDemoState, role: ProvisionalDemoState["role"]) {
+    if (mode === "simulated") {
+      if (!actor?.roles.includes(role))
+        fail(
+          "ROLE_REQUIRED",
+          `Your account doesn't have the ${role === "BUYER" ? "buyer" : "approver"} role in your organization.`,
+          403,
+        );
+      return;
+    }
     if (state.role !== role)
       fail(
         "DEMO_ROLE_REQUIRED",
@@ -130,6 +186,10 @@ export function createMockProcurementService(
         403,
       );
   }
+  /** Who a USER activity is attributed to: the signed-in user's name, or the demo role. */
+  const userActorId = (state: ProvisionalDemoState) =>
+    mode === "simulated" && actor ? actor.displayName : `demo-${state.role.toLowerCase()}`;
+  const approverLabel = () => (mode === "simulated" ? "an approver" : "a Demo Approver");
   function proposalById(state: ProvisionalDemoState, proposalId: string) {
     return (
       state.proposals.find((p) => p.id === proposalId) ??
@@ -148,7 +208,7 @@ export function createMockProcurementService(
       timestamp: now(),
       traceId: proposal.traceId,
       actorType,
-      actorId: actorType === "USER" ? `demo-${state.role.toLowerCase()}` : "demo-simulator",
+      actorId: actorType === "USER" ? userActorId(state) : "demo-simulator",
       action,
       resourceId: proposal.id,
       result: proposal.status,
@@ -228,7 +288,7 @@ export function createMockProcurementService(
   async function* streamAgentChat(
     request: ProvisionalRequest,
   ): AsyncGenerator<ProvisionalAgentEvent> {
-    initialize();
+    ensureReady();
     const scenario = demoScenarios.find((s) => s.id === request.scenarioId);
     if (!scenario || request.message.trim() !== scenario.prompt)
       fail(
@@ -279,7 +339,9 @@ export function createMockProcurementService(
       });
       return conversationId;
     });
-    const fixture = scenarioFixture(scenario.id, now());
+    // Synthetic by default; in connected mode the real catalog replaces it once loaded (below).
+    let fixture: ReturnType<typeof scenarioFixture> | ReturnType<typeof realScenarioFixture> =
+      scenarioFixture(scenario.id, now());
     function record(event: ProvisionalAgentEvent["event"], data: unknown): ProvisionalAgentEvent {
       if (generation !== runGeneration)
         fail("DEMO_RESET", "The demo was reset. This run was stopped.");
@@ -315,6 +377,18 @@ export function createMockProcurementService(
         phase: "understanding",
         message: "Reading the prepared demo request…",
       });
+      if (options.catalog) {
+        const catalog = await options.catalog().catch(() => {
+          throw new Error("Couldn't load products and prices from the catalog. Try again.");
+        });
+        const { productId, quantity } = realScenarioLine(scenario.id, catalog);
+        if (!options.policy) throw new Error("No policy check is configured.");
+        const decision = await options.policy({ productId, quantity }).catch(() => {
+          throw new Error("Couldn't check the purchase against your organization's rules. Try again.");
+        });
+        fixture = realScenarioFixture(scenario.id, catalog, decision);
+        showCatalogProducts();
+      }
       await wait();
       if (generation !== runGeneration) return;
       const intent = update((state) => {
@@ -355,12 +429,16 @@ export function createMockProcurementService(
       yield record("intent.ready", { intent });
       yield record("status", {
         phase: "catalog_search",
-        message: "Loading products from the synthetic scenario…",
+        message: fixture.real
+          ? "Loading products from the Valio catalog…"
+          : "Loading products from the synthetic scenario…",
       });
       await wait();
       yield record("status", {
         phase: "offer_check",
-        message: "Reading fixture prices and availability — no supplier request is made.",
+        message: fixture.real
+          ? "Reading live prices and availability from the Valio catalog…"
+          : "Reading fixture prices and availability — no supplier request is made.",
       });
       await wait();
       yield record("status", {
@@ -370,7 +448,9 @@ export function createMockProcurementService(
       await wait();
       yield record("status", {
         phase: "policy_check",
-        message: "Applying the scripted demonstration decision…",
+        message: fixture.real
+          ? "Checking your organization’s purchasing rules…"
+          : "Applying the scripted demonstration decision…",
       });
       await wait();
       if (generation !== runGeneration) return;
@@ -390,8 +470,8 @@ export function createMockProcurementService(
               requestedLineId: "demo-line-1",
               productId: fixture.productId,
               requestedQuantity: { value: fixture.quantity, unit: "L" },
-              selectedSalesQuantity: { value: fixture.quantity, unit: "ST" },
-              estimatedPhysicalQuantity: { value: fixture.quantity, unit: "L" },
+              selectedSalesQuantity: { value: fixture.salesQuantity, unit: fixture.salesUnit },
+              estimatedPhysicalQuantity: { value: fixture.physicalQuantity, unit: "L" },
               unitPriceGross: fixture.evidence.offer.priceGross,
               lineTotalGross: { currency: "EUR", amountMinor: fixture.total },
               evidence: fixture.evidence,
@@ -403,7 +483,7 @@ export function createMockProcurementService(
           unknownCharges: [],
           policyDecision: {
             outcome: fixture.outcome,
-            reasons: [fixture.reason],
+            reasons: fixture.reasons,
             evaluatedAt: now(),
             policyVersion: 1,
           },
@@ -418,10 +498,18 @@ export function createMockProcurementService(
           state,
           proposal,
           "PROPOSAL_CREATED",
-          "Prepared proposal version 1 from synthetic scenario data.",
+          fixture.real
+            ? "Prepared proposal version 1 from real catalog prices (the request and policy are scripted)."
+            : "Prepared proposal version 1 from synthetic scenario data.",
           "AGENT",
         );
-        activity(state, proposal, `POLICY_${fixture.outcome}`, fixture.reason.message, "AGENT");
+        activity(
+          state,
+          proposal,
+          `POLICY_${fixture.outcome}`,
+          fixture.reasons.map((r) => r.message).join(" "),
+          "AGENT",
+        );
         return proposal;
       });
       yield record("proposal.ready", { proposal });
@@ -445,12 +533,18 @@ export function createMockProcurementService(
           message: "Your review is needed before this proposal can be sent for demo approval.",
         });
       }
-      const text =
-        fixture.outcome === "ALLOW"
+      const why = fixture.reasons.map((r) => r.message).join(" ");
+      const text = !fixture.real
+        ? fixture.outcome === "ALLOW"
           ? "Your simulated purchase has been recorded locally. Nothing was submitted to Valio."
           : fixture.outcome === "REQUIRE_APPROVAL"
-            ? "I’ve prepared a demo recommendation. It exceeds the fictional agent limit. Review it and send it to a Demo Approver."
-            : "I can’t confirm the mandatory milk-allergen requirement in this fixture. The purchase is blocked. Review the missing evidence or revise the request.";
+            ? `I’ve prepared a demo recommendation. It exceeds the fictional agent limit. Review it and send it to ${approverLabel()}.`
+            : "I can’t confirm the mandatory milk-allergen requirement in this fixture. The purchase is blocked. Review the missing evidence or revise the request."
+        : fixture.outcome === "ALLOW"
+          ? `Your organization's rules allow this purchase. ${why} The simulated order has been recorded locally; nothing was submitted to Valio.`
+          : fixture.outcome === "REQUIRE_APPROVAL"
+            ? `I’ve prepared a recommendation. Your organization's rules need an approver: ${why} Review it and send it to ${approverLabel()}.`
+            : `This purchase is blocked. ${why} Review the reasons or revise the request.`;
       yield record("message.delta", { text });
       yield record("done", {
         conversationId,
@@ -523,7 +617,7 @@ export function createMockProcurementService(
           state,
           proposal,
           "APPROVAL_REQUESTED",
-          "Sent this exact proposal version to the Demo Approver.",
+          `Sent this exact proposal version to ${approverLabel()}.`,
           "USER",
         );
         return approval.id;
@@ -562,7 +656,7 @@ export function createMockProcurementService(
           fail("REASON_REQUIRED", "Add a reason for rejecting this demo request.", 422);
         approval.status = decision;
         approval.decidedAt = now();
-        approval.decidedByUserId = "demo-approver";
+        approval.decidedByUserId = mode === "simulated" && actor ? actor.id : "demo-approver";
         approval.note = note.trim() || null;
         proposal.status = decision;
         activity(
@@ -570,15 +664,31 @@ export function createMockProcurementService(
           proposal,
           `APPROVAL_${decision}`,
           decision === "APPROVED"
-            ? "Demo Approver approved this exact proposal. This is not real authorization."
-            : `Demo Approver rejected the request: ${note.trim()}`,
+            ? mode === "simulated"
+              ? `${userActorId(state)} approved this exact proposal.`
+              : "Demo Approver approved this exact proposal. This is not real authorization."
+            : `${mode === "simulated" ? userActorId(state) : "Demo Approver"} rejected the request: ${note.trim()}`,
           "USER",
         );
         if (decision === "APPROVED")
           commit(state, proposal.id, proposal.version, `${approval.id}:approved`);
       });
     },
+    setActor(next) {
+      if (mode !== "simulated") return;
+      const sameUser = actor?.id === next?.id;
+      actor = next;
+      if (sameUser) return;
+      // A different user: stop any running script and load that user's own simulation.
+      generation++;
+      snapshot = serverSnapshot;
+      emit();
+      initialize();
+      showCatalogProducts();
+    },
     async setDemoRole(role) {
+      if (mode === "simulated")
+        fail("ROLE_FROM_ACCOUNT", "Roles come from your account in connected mode.", 403);
       update((state) => {
         state.role = role;
       });

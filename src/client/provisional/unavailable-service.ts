@@ -36,6 +36,7 @@ export function createUnavailableProcurementService(): ProvisionalProcurementSer
     },
     getSnapshot: () => snapshot,
     getServerSnapshot: () => snapshot,
+    setActor() {},
     startConversation: unavailable,
     requestApproval: unavailable,
     commitOrder: unavailable,

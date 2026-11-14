@@ -289,3 +289,164 @@ test("a second different request cannot run concurrently with the first", async 
   assert.equal(state(s).conversations.length, 1);
   assert.equal(state(s).orders.length, 1);
 });
+
+// ----- Connected mode ("simulated"): the signed-in user's real roles decide, data per user.
+const actor = (id, roles) => ({ id, displayName: id, roles });
+const simulated = (storage = memory()) => service(storage, { mode: "simulated" });
+
+test("simulated mode waits for the signed-in user before loading", async () => {
+  const s = simulated();
+  s.initialize();
+  assert.equal(s.getSnapshot().ready, false);
+  assert.equal(s.getSnapshot().mode, "simulated");
+  await rejectsCode(s.startConversation(request("happy-path-auto")), "NOT_SIGNED_IN");
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  assert.equal(s.getSnapshot().ready, true);
+});
+
+test("a user with both roles can request and approve; activity names the user", async () => {
+  const s = simulated();
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  const approvalId = await pending(s);
+  const hash = state(s).approvals[0].proposalHash;
+  await s.decideApproval(approvalId, hash, "APPROVED", "");
+  assert.equal(state(s).orders.length, 1);
+  assert.equal(state(s).approvals[0].decidedByUserId, "alice");
+  assert(state(s).activities.some((a) => a.actorType === "USER" && a.actorId === "alice"));
+  assert(
+    !state(s).activities.some(
+      (a) => a.actorId.startsWith("demo-b") || a.actorId === "demo-approver",
+    ),
+  );
+});
+
+test("buyer-only can't approve and approver-only can't request", async () => {
+  const storage = memory();
+  const buyer = simulated(storage);
+  buyer.setActor(actor("bob", ["BUYER"]));
+  const approvalId = await pending(buyer);
+  const hash = state(buyer).approvals[0].proposalHash;
+  await rejectsCode(buyer.decideApproval(approvalId, hash, "APPROVED", ""), "ROLE_REQUIRED");
+
+  const approver = simulated(memory());
+  approver.setActor(actor("carol", ["APPROVER"]));
+  await rejectsCode(approver.startConversation(request("happy-path-auto")), "ROLE_REQUIRED");
+});
+
+test("roles come from the account: the demo role switch is refused", async () => {
+  const s = simulated();
+  s.setActor(actor("bob", ["BUYER"]));
+  await rejectsCode(s.setDemoRole("APPROVER"), "ROLE_FROM_ACCOUNT");
+});
+
+test("each user gets their own simulation; switching users doesn't leak data", async () => {
+  const storage = memory();
+  const s = simulated(storage);
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).orders.length, 1);
+
+  s.setActor(actor("bob", ["BUYER"]));
+  assert.equal(state(s).conversations.length, 0);
+  assert.equal(state(s).orders.length, 0);
+  assert.notEqual(storage.getItem(`${DEMO_STORAGE_KEY}:alice`), null);
+  assert.equal(storage.getItem(DEMO_STORAGE_KEY), null);
+
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  assert.equal(state(s).orders.length, 1);
+});
+
+// ----- Connected mode with the real catalog (a fake loader stands in for the backend).
+const fakeCatalog = (priceMinor = "969") => async () => ({
+  products: ["469330", "469386", "469040", "470611"].map((productId) => ({
+    productId, name: `Real ${productId}`, language: "en", salesUnit: "KI", baseUnit: "ST", allowedLotSize: "1",
+  })),
+  offers: Object.fromEntries(
+    ["469330", "469386", "469040", "470611"].map((productId) => [
+      productId,
+      {
+        productId, requestedDate: "2026-11-20", priceGross: { currency: "EUR", amountMinor: priceMinor },
+        availableSalesUnits: null, availableDate: "2026-11-16", salesUnit: "KI",
+        stockCertainty: "SUPPLIER_UNKNOWN", blocked: false, errorCodes: [],
+        checkedAt: "2026-11-14T10:00:00.000Z", source: "VALIO_API",
+      },
+    ]),
+  ),
+  litresPerSalesUnit: { 469330: 5, 469386: 5, 469040: 10, 470611: 5 },
+});
+// Fake policy: approval needed above 25 cases, so the tests don't depend on backend settings.
+const fakePolicy = (outcome) => async (line) => {
+  const o = outcome ?? (line.quantity > 25 ? "REQUIRE_APPROVAL" : "ALLOW");
+  return { outcome: o, reasons: [{ code: `TEST_${o}`, message: `Test rule: ${o}.` }] };
+};
+const withCatalog = (catalog, policy = fakePolicy()) =>
+  service(memory(), { mode: "simulated", catalog, policy });
+
+test("real catalog: totals come from real prices and cases, not scripted amounts", async () => {
+  const s = withCatalog(fakeCatalog());
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.lines[0].productId, "469330");
+  assert.equal(proposal.lines[0].selectedSalesQuantity.value, "20"); // 100 L / 5 L per case
+  assert.equal(proposal.lines[0].selectedSalesQuantity.unit, "KI");
+  assert.equal(proposal.totalGross.amountMinor, "19380"); // 20 x 9.69
+  assert.equal(proposal.policyDecision.outcome, "ALLOW");
+  assert.deepEqual(proposal.policyDecision.reasons, [{ code: "TEST_ALLOW", message: "Test rule: ALLOW." }]);
+  assert.equal(state(s).orders.length, 1);
+  assert(s.getSnapshot().products.some((p) => p.productId === "469330"));
+});
+
+test("real policy: the backend decision is used, sent with the scenario's line", async () => {
+  const lines = [];
+  const s = withCatalog(fakeCatalog(), async (line) => {
+    lines.push(line);
+    return fakePolicy()(line);
+  });
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("human-approval-budget"));
+  assert.deepEqual(lines, [{ productId: "469330", quantity: 80 }]);
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.totalGross.amountMinor, "77520"); // 80 x 9.69
+  assert.equal(proposal.policyDecision.outcome, "REQUIRE_APPROVAL");
+  assert.equal(state(s).orders.length, 0);
+});
+
+test("real policy: a DENY blocks the purchase", async () => {
+  const s = withCatalog(fakeCatalog(), fakePolicy("DENY"));
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  const proposal = state(s).proposals[0];
+  assert.equal(proposal.status, "BLOCKED");
+  assert.equal(state(s).orders.length, 0);
+});
+
+test("real policy: the oat scenario stays blocked on unverified allergen evidence", async () => {
+  const s = withCatalog(fakeCatalog(), fakePolicy("ALLOW"));
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("allergen-blocked"));
+  const decision = state(s).proposals[0].policyDecision;
+  assert.equal(decision.outcome, "DENY");
+  assert.deepEqual(decision.reasons.map((r) => r.code), ["MANDATORY_EVIDENCE_UNKNOWN"]);
+});
+
+test("real catalog: a failing catalog ends the run with an error and no proposal", async () => {
+  const s = withCatalog(async () => {
+    throw new Error("boom");
+  });
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).proposals.length, 0);
+  assert.equal(state(s).conversations[0].status, "FAILED");
+  assert.match(state(s).conversations[0].error, /catalog/);
+});
+
+test("real policy: a failing policy check ends the run with an error and no proposal", async () => {
+  const s = withCatalog(fakeCatalog(), async () => {
+    throw new Error("boom");
+  });
+  s.setActor(actor("alice", ["BUYER", "APPROVER"]));
+  await s.startConversation(request("happy-path-auto"));
+  assert.equal(state(s).proposals.length, 0);
+  assert.match(state(s).conversations[0].error, /rules/);
+});

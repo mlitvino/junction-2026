@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { apiClient } from "@/client/api-client";
 import { useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
+import { viewerHasRole } from "@/client/viewer";
 import { Button, buttonVariants } from "@/components/ui/button";
 import type { ProvisionalProposal } from "@/client/provisional/types";
 import { useAction } from "./use-action";
@@ -12,6 +14,9 @@ import { money } from "./format";
 
 export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalProposal }) {
   const { state } = useProcurement();
+  const real = proposal.lines.some((line) => line.evidence.offer.source !== "SYNTHETIC_FRONTEND_FIXTURE");
+  const viewer = useViewer();
+  const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
   const action = useAction();
   const approval = state.approvals.find((a) => a.id === proposal.approvalId);
   const denied = proposal.policyDecision.outcome === "DENY";
@@ -34,8 +39,12 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
             : proposal.status === "FAILED"
               ? "Run interrupted — start a new request"
               : proposal.policyDecision.outcome === "REQUIRE_APPROVAL"
-                ? "Demo approval required"
-                : "Allowed by the demo policy"}
+                ? real
+                  ? "Approval required by your rules"
+                  : "Demo approval required"
+                : real
+                  ? "Allowed by your rules"
+                  : "Allowed by the demo policy"}
         </StatusChip>
       )}
       <p className="text-sm">
@@ -46,7 +55,10 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
         <span className="font-medium tabular-nums text-foreground">
           {money(proposal.totalGross)}
         </span>
-        . Prices and policy outcomes are fictional scenario values.
+        .{" "}
+        {real
+          ? "Prices are real catalog prices; the decision comes from your organization's rules (limits are checked excl. VAT)."
+          : "Prices and policy outcomes are fictional scenario values."}
       </p>
       {proposal.unknownCharges.length > 0 && (
         <p className="text-warning">Unknown charges: {proposal.unknownCharges.join(", ")}</p>
@@ -55,7 +67,7 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
       <div className="flex flex-wrap gap-3">
         {proposal.status === "READY" &&
           proposal.policyDecision.outcome === "REQUIRE_APPROVAL" &&
-          state.role === "BUYER" && (
+          viewerHasRole(viewer, "BUYER") && (
             <Button
               disabled={action.busy}
               onClick={() =>
@@ -88,8 +100,11 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
       </div>
       {approval?.status === "PENDING" && (
         <p className="text-caption text-muted-foreground">
-          Switch to Demo Approver in the account menu to review this request. Role switching
-          simulates the UI; it is not authentication or authorization.
+          {demoIdentity
+            ? "Switch to Demo Approver in the account menu to review this request. Role switching simulates the UI; it is not authentication or authorization."
+            : viewerHasRole(viewer, "APPROVER")
+              ? "You're also an approver: open the approval to decide."
+              : "Waiting for an approver. This demo keeps approvals in this browser tab, so an approver has to sign in here to review it."}
         </p>
       )}
       <details className="text-caption text-muted-foreground">

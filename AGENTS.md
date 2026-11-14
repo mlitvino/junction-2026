@@ -65,7 +65,7 @@ src/
 3. **Shared** (`shared/`) imports nothing from other zones. Only `zod` and plain types.
 4. `src/app/api/[[...route]]/route.ts` only mounts the Hono app. Endpoints live in one folder per area, `src/server/api/routes/<name>/`, with two files: `<name>.docs.ts` (OpenAPI `createRoute` definitions using schemas from `shared/contracts`) and `<name>.ts` (router + handlers that call `server/services`). No logic in either.
 5. Every file in `src/server/` starts with `import "server-only";`.
-6. `api-client.ts` is typed by `shared/contracts` and serves data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready.
+6. `api-client.ts` is typed by `shared/contracts`. Methods the mock-mode UI uses serve data from `client/mocks/` when `NEXT_PUBLIC_USE_MOCKS=true`, so the frontend can work before the backend is ready. Methods only connected mode uses (today `getProduct`, `getOffers`, `evaluatePolicy`) have no mock and throw in mock mode; give one a mock before mock-mode UI calls it.
 
 Never disable these lint rules to make an import work. Move the code to the right zone, or put the shared type in `shared/contracts`.
 
@@ -97,7 +97,7 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 
 ## Auth
 
-- **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me/me.ts`. Plan: switch to default-deny before real data goes in.
+- **API is open for now:** `/api` routes need no session by default. A route that needs the signed-in user adds `requireSession` (`src/server/api/middleware/session.ts`) to its router and reads `c.var.user`; reference: `routes/me/me.ts`. Plan: switch to default-deny (real data is in now); the ready-made middleware is commented out in `src/server/api/app.ts` (`TODO(default-deny)`).
 - **Pages:** `src/proxy.ts` redirects to `/login` without a session cookie (cookie check only; the API checks sessions for real). `/login` and `/signup` are public. Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
 - Its tables (`user`, `session`, `account`, `verification`) are part of our Drizzle schema and migrations (Better Auth uses its Drizzle adapter). Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
@@ -121,11 +121,20 @@ Settings that steer the purchasing agent and the approval flow, per organization
 - **Locking:** the base layer can lock settings; role layers can't set them (409 on write; a stored value is ignored when resolving).
 - **Who:** approvers edit all three layers (`GET /api/preferences/layers`, `PUT /api/preferences/layers/{scope}`); any member reads their own effective settings (`GET /api/preferences/effective`). Buyers edit nothing.
 - **Rules:** `autoApproveBelow ≤ maxOrderValue` in every effective set (422 otherwise); `locked` only on `base` (422).
-- **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. Nothing consumes them yet.
+- **Consumers** (agent tools, the approval flow) call `getEffectiveFor(organizationId, role)` from `server/services/preferences.ts` for the role they act in. The first consumer is the **policy check** (`POST /api/policy/evaluate`): it applies the buyer's effective preferences to a draft order and returns `ALLOW` / `REQUIRE_APPROVAL` / `DENY` with reasons.
+
+### Purchasing flow (proposals, approvals, orders)
+
+- **Proposal** = a frozen draft order: lines, server-side prices, total (EUR excl. VAT) and the policy decision, plus a SHA-256 `hash` of that content. It never changes; to change it, create a new one and cancel the old.
+- Lifecycle: create → `BLOCKED` (policy DENY, final) or `READY`. `READY` + ALLOW → order. `READY` + REQUIRE_APPROVAL → `PENDING_APPROVAL` (creator sends it) → `APPROVED` / `REJECTED` (an approver decides, sending the hash they reviewed; rejecting needs a comment). `APPROVED` → order. The creator can cancel while `READY`, `PENDING_APPROVAL` or `APPROVED`.
+- **Fixed prices:** a proposal's `date` is the delivery date the goods are needed; prices and availability are checked for it. The prices hold for 24 h (`quoteExpiresAt`): after that, sending, approving and ordering give 409 `QUOTE_EXPIRED`. At order time the server re-checks Valio (5-minute cache): a different price → 409 `PRICE_CHANGED`, now sales-blocked/undeliverable → 409 `AVAILABILITY_CHANGED`. In all three cases the buyer creates a new proposal.
+- **Order**: one per proposal, simulated (Valio has no ordering API). The client sends an `idempotencyKey`: repeating it returns the same order (no re-check); reusing it for another proposal is a 409.
+- Who: buyers create, send and order (send/cancel: only the creator); approvers list and decide approvals (a user with both roles may approve their own). Everyone in the organization reads proposals and orders.
+- Endpoints: `/api/proposals`, `/api/proposals/{id}/{cancel,approval,order}`, `/api/approvals`, `/api/approvals/{id}/decision`, `/api/orders`. Errors carry a `code` (`INVALID_STATE`, `HASH_MISMATCH`, `APPROVAL_REQUIRED`, `QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED`, `IDEMPOTENCY_CONFLICT`, …).
 
 ## Database (Drizzle)
 
-- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
+- Schema: `src/server/db/schema/` (`auth.ts` Better Auth, `organization.ts`, `catalog.ts`, `preferences.ts`, `purchasing.ts`). Queries: `getDb()` from `src/server/db/client.ts`. No raw SQL strings in services; use Drizzle's query builder (the `sql` template only for what it can't express).
 - Changing the schema: edit `src/server/db/schema/` → `pnpm db:generate` → review the SQL in `drizzle/` → commit both. Never edit a migration that has been applied anywhere; add a new one.
 - Migrations run automatically: `ensureDatabase()` (`src/server/db/migrate.ts`) applies pending ones once per process before the first query (locally, in scripts, in production).
 - Additive only: new tables/columns/indexes, no drops or renames, so an older image still runs after a rollback.
@@ -144,6 +153,7 @@ Settings that steer the purchasing agent and the approval flow, per organization
 - `pnpm lint`: ESLint
 - `pnpm typecheck`: `tsc --noEmit`
 - `pnpm check`: lint + typecheck
+- `pnpm test:server`: backend unit tests (`src/server/**/*.test.ts`, plain Node; relative `.ts` imports, type-only imports from `@/`)
 - `pnpm format`: Prettier
 - `pnpm db:up` / `pnpm db:down` / `pnpm db:logs`: start (and wait for) / stop / follow logs of the local Postgres from `compose.dev.yml`
 - `pnpm db:psql`: psql shell in the local DB

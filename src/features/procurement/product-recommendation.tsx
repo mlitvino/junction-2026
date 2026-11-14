@@ -6,30 +6,43 @@ import type {
 import { date, money, timestamp } from "./format";
 import { StatusChip } from "./status";
 
+const isReal = (evidence: ProvisionalEvidence) => evidence.offer.source !== "SYNTHETIC_FRONTEND_FIXTURE";
+
 export function ProductEvidence({ evidence }: { evidence: ProvisionalEvidence }) {
+  const real = isReal(evidence);
   return (
     <details className="mt-4 text-sm">
       <summary className="min-h-11 py-3 text-muted-foreground">
-        Why this product? View fixture evidence
+        Why this product? View {real ? "catalog" : "fixture"} evidence
       </summary>
       <div className="space-y-3 border-t py-4">
         <p>{evidence.selectionReason}</p>
         {evidence.constraintResults.map((result) => (
           <p key={result.code}>
             {result.result === "PASS"
-              ? "Meets requirement in this fixture"
+              ? real
+                ? "Meets requirement"
+                : "Meets requirement in this fixture"
               : "Requirement not verified"}
             : {result.reason}
           </p>
         ))}
         <p className="text-caption text-muted-foreground">
-          Synthetic frontend fixture · recorded{" "}
+          {real
+            ? evidence.offer.source === "VALIO_API"
+              ? "Valio catalog · live price and availability, checked "
+              : "Backend mock data (no Valio API key on the server), checked "
+            : "Synthetic frontend fixture · recorded "}
           <time dateTime={evidence.offer.checkedAt}>{timestamp(evidence.offer.checkedAt)}</time>{" "}
-          (Helsinki). No live price, stock, allergen or supplier validation was performed.
+          (Helsinki).{" "}
+          {real
+            ? "Allergen and safety evidence is not part of this data."
+            : "No live price, stock, allergen or supplier validation was performed."}
         </p>
         <p className="text-caption text-muted-foreground">
-          Physical quantities use a curated demo assumption of one litre per sales unit. This is not
-          verified supplier packaging data.
+          {real
+            ? "Litres per case are a curated assumption from the product name, not verified supplier packaging data."
+            : "Physical quantities use a curated demo assumption of one litre per sales unit. This is not verified supplier packaging data."}
         </p>
       </div>
     </details>
@@ -48,7 +61,9 @@ export function ProductRecommendation({
       <h2 id="recommended-title" className="mb-4 text-caption font-medium text-muted-foreground">
         {proposal.policyDecision.outcome === "DENY"
           ? "Candidate for review · not eligible to purchase"
-          : "Recommended purchase · synthetic demo"}
+          : proposal.lines.some((line) => isReal(line.evidence))
+            ? "Recommended purchase · real catalog prices, simulated order"
+            : "Recommended purchase · synthetic demo"}
       </h2>
       {proposal.lines.map((line) => {
         const product = products.find((p) => p.productId === line.productId);
@@ -65,14 +80,14 @@ export function ProductRecommendation({
                   {product?.brand} · {line.selectedSalesQuantity.value}{" "}
                   {line.selectedSalesQuantity.unit}
                   {line.estimatedPhysicalQuantity
-                    ? ` · ${line.estimatedPhysicalQuantity.value} ${line.estimatedPhysicalQuantity.unit} in the fixture`
+                    ? ` · ${line.estimatedPhysicalQuantity.value} ${line.estimatedPhysicalQuantity.unit} ${isReal(line.evidence) ? "in total" : "in the fixture"}`
                     : ""}
                 </p>
               </div>
               <p className="text-xl font-semibold tabular-nums">
                 {money(line.lineTotalGross)}
                 <span className="mt-1 block text-caption font-normal text-muted-foreground">
-                  Demo total, incl. VAT
+                  {isReal(line.evidence) ? "Total, incl. VAT" : "Demo total, incl. VAT"}
                 </span>
               </p>
             </div>
@@ -80,7 +95,7 @@ export function ProductRecommendation({
               <StatusChip tone={uncertain ? "warning" : "neutral"}>
                 {uncertain
                   ? "Supplier inventory unconfirmed"
-                  : `Available in this fixture · ${date(line.evidence.offer.availableDate)}`}
+                  : `${isReal(line.evidence) ? "Available" : "Available in this fixture"} · ${date(line.evidence.offer.availableDate)}`}
               </StatusChip>
             </div>
             {uncertain && (
@@ -120,8 +135,8 @@ export function ProductComparison({
                 "Product unavailable"}
             </h3>
             <p className="mt-2 text-sm text-muted-foreground">
-              {money(candidate.offer.priceGross)} per {candidate.offer.salesUnit} · synthetic unit
-              price, not a proposal total
+              {money(candidate.offer.priceGross)} per {candidate.offer.salesUnit} ·{" "}
+              {isReal(candidate) ? "unit price" : "synthetic unit price"}, not a proposal total
             </p>
             <p className="mt-2 text-sm">{candidate.selectionReason}</p>
             <p className="mt-2 text-caption text-muted-foreground">

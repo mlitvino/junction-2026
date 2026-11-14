@@ -6,12 +6,11 @@ import {
   createOrderFromPrompt,
   decideOrderApproval,
   getOrderAuditTrail,
-  getOrderDetail,
   getOrderReceipt,
-  listOrders,
   modifyOrder,
   OrderServiceError,
 } from "@/server/services/orders";
+import { PurchasingError, getOrder, listOrders } from "@/server/services/purchasing";
 import { createOrderFromRecipe, RecipeServiceError } from "@/server/services/recipes";
 import { OrderVerificationResponseSchema } from "@/shared/contracts/intelligence";
 import {
@@ -21,20 +20,18 @@ import {
   CreateOrderFromPromptResponseSchema,
   ModifyOrderResponseSchema,
   OrderAuditResponseSchema,
-  OrderDetailResponseSchema,
-  OrderListResponseSchema,
   OrderReceiptSchema,
 } from "@/shared/contracts/orders";
 import { CreateOrderFromRecipeResponseSchema } from "@/shared/contracts/recipes";
 
-import { resolveOptionalUser } from "../../middleware/session";
+import { requireRole, resolveOptionalUser } from "../../middleware/session";
 import { createRouter } from "../../router";
 import {
   approveOrderRoute,
   checkoutOrderRoute,
   getOrderAuditRoute,
-  getOrderDetailRoute,
   getOrderReceiptRoute,
+  getOrderRoute,
   getOrderVerificationRoute,
   listOrdersRoute,
   patchOrderRoute,
@@ -42,7 +39,30 @@ import {
   postOrdersRoute,
 } from "./orders.docs";
 
-export const ordersRouter = createRouter()
+export const ordersRouter = createRouter();
+
+// Buyers and approvers for purchasing order reads (`GET /orders`, `GET /orders/:id`).
+// Method-scoped `.on("GET", ...)` keeps procurement POST/PATCH routes unaffected.
+ordersRouter.on("GET", "/orders", requireRole("buyer", "approver"));
+ordersRouter.on("GET", "/orders/:id", requireRole("buyer", "approver"));
+
+const purchasingActor = (user: { id: string; organization: { id: string } }) => ({
+  organizationId: user.organization.id,
+  userId: user.id,
+});
+
+ordersRouter
+  .openapi(listOrdersRoute, async (c) =>
+    c.json({ items: await listOrders(purchasingActor(c.var.user)) }, 200),
+  )
+  .openapi(getOrderRoute, async (c) => {
+    try {
+      return c.json(await getOrder(purchasingActor(c.var.user), c.req.valid("param").id), 200);
+    } catch (err) {
+      if (!(err instanceof PurchasingError)) throw err;
+      return c.json({ error: err.message, code: err.code }, 404);
+    }
+  })
   .openapi(postOrdersRoute, async (c) => {
     const actor = await resolveOptionalUser(c.req.raw.headers);
     const result = await createOrderFromPrompt(c.req.valid("json"), actor);
@@ -56,23 +76,6 @@ export const ordersRouter = createRouter()
     } catch (err) {
       if (err instanceof RecipeServiceError) {
         if (err.status === 400) return c.json({ error: err.message }, 400);
-        return c.json({ error: err.message }, 404);
-      }
-      throw err;
-    }
-  })
-  .openapi(listOrdersRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
-    const result = await listOrders(actor);
-    return c.json(OrderListResponseSchema.parse(result), 200);
-  })
-  .openapi(getOrderDetailRoute, async (c) => {
-    const actor = await resolveOptionalUser(c.req.raw.headers);
-    try {
-      const result = await getOrderDetail(c.req.valid("param").orderId, actor);
-      return c.json(OrderDetailResponseSchema.parse(result), 200);
-    } catch (err) {
-      if (err instanceof OrderServiceError && err.status === 404) {
         return c.json({ error: err.message }, 404);
       }
       throw err;

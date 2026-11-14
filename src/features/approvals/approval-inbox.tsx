@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
+import { viewerHasRole } from "@/client/viewer";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { ApprovalStatus } from "@/features/procurement/status";
@@ -12,13 +14,21 @@ import { DemoStorageNotice, EmptyState, IntegrationState } from "@/features/proc
 export function ApprovalInbox() {
   const snapshot = useProcurement();
   const [filter, setFilter] = useState<"PENDING" | "ALL">("PENDING");
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
-  if (snapshot.state.role !== "APPROVER")
-    return (
+  const viewer = useViewer();
+  const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
+  if (!viewerHasRole(viewer, "APPROVER"))
+    return demoIdentity ? (
       <EmptyState
         page
         title="Demo Approver view"
         description="Switch to Demo Approver in the account menu to review requests in this tab. This is a UI simulation, not authentication or authorization."
+      />
+    ) : (
+      <EmptyState
+        page
+        title="Approvers only"
+        description="Your account doesn't have the approver role in your organization."
       />
     );
   const approvals = snapshot.state.approvals
@@ -52,7 +62,11 @@ export function ApprovalInbox() {
       {approvals.length === 0 ? (
         <EmptyState
           title="No requests to review"
-          description="Send a proposal for approval from the Buyer Workspace, then return as Demo Approver."
+          description={
+            demoIdentity
+              ? "Send a proposal for approval from the Buyer Workspace, then return as Demo Approver."
+              : "Send a proposal for approval from the Buyer Workspace, then review it here."
+          }
           href="/buyer"
         />
       ) : (

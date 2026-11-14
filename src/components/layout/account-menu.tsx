@@ -2,9 +2,11 @@
 
 import { useId } from "react";
 import { apiClient } from "@/client/api-client";
+import { signOut } from "@/client/auth-client";
 import { useProcurement } from "@/client/use-procurement";
 import { useAction } from "@/features/procurement/use-action";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
+import { Button } from "@/components/ui/button";
 import { Popover } from "@/components/ui/popover";
 import type { ShellViewer } from "./navigation";
 
@@ -55,14 +57,53 @@ export function AccountMenu({ viewer }: { viewer?: ShellViewer }) {
       ) : (
         <>
           {viewer ? (
-            <>
-              <p className="break-words font-medium">{viewer.displayName}</p>
-              {viewer.organizationLabel && (
-                <p className="mt-1 break-words text-sm text-muted-foreground">
-                  {viewer.organizationLabel}
+            <div className="space-y-4">
+              <div>
+                <p className="break-words font-medium">{viewer.displayName}</p>
+                {viewer.organizationLabel && (
+                  <p className="mt-1 break-words text-sm text-muted-foreground">
+                    {viewer.organizationLabel}
+                  </p>
+                )}
+                <p className="mt-1 text-caption text-muted-foreground">
+                  {viewer.roles.map(roleLabel).join(" · ")}
                 </p>
+              </div>
+              {snapshot.ready && snapshot.mode === "simulated" && (
+                <div className="border-t pt-4">
+                  <ActionConfirmation
+                    title="Reset local demo?"
+                    description="This clears your simulated conversations, approvals and orders in this tab. Your account is not affected."
+                    trigger="Reset local demo"
+                    confirmLabel="Reset demo"
+                    destructive
+                    onConfirm={() => apiClient.procurement.resetDemo()}
+                  />
+                </div>
               )}
-            </>
+              {!viewer.demo && (
+                <div className="border-t pt-4">
+                  <Button
+                    variant="outline"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.run(async () => {
+                        await signOut();
+                        // Full navigation: the cached account and simulator start fresh.
+                        window.location.assign(new URL("/login", window.location.origin).href);
+                      })
+                    }
+                  >
+                    {action.busy ? "Signing out…" : "Sign out"}
+                  </Button>
+                  {action.error && (
+                    <p role="alert" className="mt-2 text-sm text-destructive">
+                      {action.error}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
           ) : (
             <>
               <p className="font-medium">Account not connected</p>
@@ -77,3 +118,6 @@ export function AccountMenu({ viewer }: { viewer?: ShellViewer }) {
     </Popover>
   );
 }
+
+const roleLabel = (role: string) =>
+  role === "BUYER" ? "Buyer" : role === "APPROVER" ? "Approver" : role;
