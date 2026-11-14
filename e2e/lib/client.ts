@@ -10,6 +10,9 @@ export const PASSWORD = "e2e-password";
 
 export type Reply = { status: number; body: unknown };
 
+const MAX_RATE_LIMIT_RETRIES = 12;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export class Session {
   label: string;
   username: string | null = null;
@@ -24,15 +27,23 @@ export class Session {
     if (body !== undefined) headers["content-type"] = "application/json";
     if (this.cookies.size) headers.cookie = [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; ");
     let res: Response;
-    try {
-      res = await fetch(BASE_URL + path, {
-        method,
-        headers,
-        body: body === undefined ? undefined : JSON.stringify(body),
-        redirect: "manual",
-      });
-    } catch (err) {
-      throw new Error(`${method} ${BASE_URL}${path} failed: is the server running? (${(err as Error).message})`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        res = await fetch(BASE_URL + path, {
+          method,
+          headers,
+          body: body === undefined ? undefined : JSON.stringify(body),
+          redirect: "manual",
+        });
+      } catch (err) {
+        throw new Error(`${method} ${BASE_URL}${path} failed: is the server running? (${(err as Error).message})`);
+      }
+      // In production Better Auth allows 3 sign-ins/sign-ups per 10 s per IP, and every scenario signs
+      // in from the same address: wait as long as it says (X-Retry-After) and try again.
+      if (res.status !== 429 || attempt > MAX_RATE_LIMIT_RETRIES) break;
+      const seconds = Number(res.headers.get("x-retry-after")) || 10;
+      await res.body?.cancel();
+      await sleep((seconds + 0.5) * 1000);
     }
     for (const raw of res.headers.getSetCookie()) {
       const [pair] = raw.split(";");

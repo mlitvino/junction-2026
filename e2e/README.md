@@ -27,6 +27,8 @@ The `e2e` job in `.github/workflows/ci.yml` runs on every pull request and befor
 
 Without the secrets, the job is skipped with a notice. If the job fails, its last step prints the server log.
 
+**Rate limits.** In production mode (as in CI or on a deployed server), Better Auth allows 3 sign-ins or sign-ups per 10 s per IP. When the client gets a `429`, it waits for the `X-Retry-After` time and retries. That adds about a minute to a full run. The server's limit stays as it is.
+
 ## Scenarios
 
 | File | Covers |
