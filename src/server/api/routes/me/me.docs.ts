@@ -13,7 +13,7 @@ export const getMeRoute = createRoute({
   tags: ["Auth"],
   summary: "Current user",
   description:
-    "Returns the signed-in user. Requires a session cookie from `POST /api/auth/sign-in/username` (see /api/auth/reference).",
+    "Returns the signed-in user with their organization and roles (buyer, approver; a user can hold both). Requires a session cookie from `POST /api/auth/sign-in/username` (see /api/auth/reference).",
   security: [{ sessionCookie: [] }],
   responses: {
     200: {
