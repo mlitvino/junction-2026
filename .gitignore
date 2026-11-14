@@ -49,3 +49,6 @@ next-env.d.ts
 
 # Valio challenge data (pnpm data:fetch): company data, not committed
 /data/
+design/**
+/.pnpm-store/**
+**.zip

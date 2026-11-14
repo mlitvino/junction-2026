@@ -18,6 +18,7 @@ import { inventoryRouter } from "./routes/inventory/inventory";
 import { meRouter } from "./routes/me/me";
 import { ordersRouter } from "./routes/orders/orders";
 import { organizationRouter } from "./routes/organization/organization";
+import { preferencesRouter } from "./routes/preferences/preferences";
 import { recipesRouter } from "./routes/recipes/recipes";
 
 /**
@@ -46,6 +47,7 @@ app.route("/", extractRouter);
 app.route("/", ordersRouter);
 app.route("/", agentRouter);
 app.route("/", organizationRouter);
+app.route("/", preferencesRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {

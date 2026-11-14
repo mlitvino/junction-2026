@@ -1,5 +1,5 @@
 {
-  "id": "a6116c93-6577-4326-a9f7-8995f63efd08",
+  "id": "0b4f5173-eb92-4313-b705-54a42ed0fd36",
   "prevId": "fca596c8-3f11-4e3e-85e1-48a96850dcbd",
   "version": "7",
   "dialect": "postgresql",
@@ -1058,33 +1058,35 @@
       },
       "isRLSEnabled": false
     },
-    "public.organization_procurement_settings": {
-      "name": "organization_procurement_settings",
+    "public.preference_layer": {
+      "name": "preference_layer",
       "schema": "",
       "columns": {
         "organization_id": {
           "name": "organization_id",
           "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "preferences": {
-          "name": "preferences",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
-        "guardrails": {
-          "name": "guardrails",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_by_user_id": {
-          "name": "updated_by_user_id",
+        "scope": {
+          "name": "scope",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
+        },
+        "settings": {
+          "name": "settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "locked": {
+          "name": "locked",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
         },
         "updated_at": {
           "name": "updated_at",
@@ -1092,13 +1094,19 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "updated_by": {
+          "name": "updated_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
       "foreignKeys": {
-        "organization_procurement_settings_organization_id_organization_id_fk": {
-          "name": "organization_procurement_settings_organization_id_organization_id_fk",
-          "tableFrom": "organization_procurement_settings",
+        "preference_layer_organization_id_organization_id_fk": {
+          "name": "preference_layer_organization_id_organization_id_fk",
+          "tableFrom": "preference_layer",
           "tableTo": "organization",
           "columnsFrom": [
             "organization_id"
@@ -1109,12 +1117,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "organization_procurement_settings_updated_by_user_id_user_id_fk": {
-          "name": "organization_procurement_settings_updated_by_user_id_user_id_fk",
-          "tableFrom": "organization_procurement_settings",
+        "preference_layer_updated_by_user_id_fk": {
+          "name": "preference_layer_updated_by_user_id_fk",
+          "tableFrom": "preference_layer",
           "tableTo": "user",
           "columnsFrom": [
-            "updated_by_user_id"
+            "updated_by"
           ],
           "columnsTo": [
             "id"
@@ -1123,273 +1131,23 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "preference_layer_organization_id_scope_pk": {
+          "name": "preference_layer_organization_id_scope_pk",
+          "columns": [
+            "organization_id",
+            "scope"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.procurement_audit_event": {
-      "name": "procurement_audit_event",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "order_id": {
-          "name": "order_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "actor_type": {
-          "name": "actor_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "actor_id": {
-          "name": "actor_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "actor_name": {
-          "name": "actor_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "event_type": {
-          "name": "event_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "details": {
-          "name": "details",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+      "checkConstraints": {
+        "preference_layer_scope_check": {
+          "name": "preference_layer_scope_check",
+          "value": "\"preference_layer\".\"scope\" IN ('base', 'buyer', 'approver')"
         }
       },
-      "indexes": {
-        "procurement_audit_event_order_idx": {
-          "name": "procurement_audit_event_order_idx",
-          "columns": [
-            {
-              "expression": "order_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "procurement_audit_event_order_id_procurement_order_id_fk": {
-          "name": "procurement_audit_event_order_id_procurement_order_id_fk",
-          "tableFrom": "procurement_audit_event",
-          "tableTo": "procurement_order",
-          "columnsFrom": [
-            "order_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.procurement_order": {
-      "name": "procurement_order",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "organization_id": {
-          "name": "organization_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by_user_id": {
-          "name": "created_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt": {
-          "name": "prompt",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delivery_date": {
-          "name": "delivery_date",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "currency": {
-          "name": "currency",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'EUR'"
-        },
-        "total_price_eur": {
-          "name": "total_price_eur",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "total_price_incl_vat_eur": {
-          "name": "total_price_incl_vat_eur",
-          "type": "double precision",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "payload": {
-          "name": "payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "procurement_order_org_created_idx": {
-          "name": "procurement_order_org_created_idx",
-          "columns": [
-            {
-              "expression": "organization_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "procurement_order_status_idx": {
-          "name": "procurement_order_status_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "procurement_order_organization_id_organization_id_fk": {
-          "name": "procurement_order_organization_id_organization_id_fk",
-          "tableFrom": "procurement_order",
-          "tableTo": "organization",
-          "columnsFrom": [
-            "organization_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "procurement_order_created_by_user_id_user_id_fk": {
-          "name": "procurement_order_created_by_user_id_user_id_fk",
-          "tableFrom": "procurement_order",
-          "tableTo": "user",
-          "columnsFrom": [
-            "created_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     }
   },

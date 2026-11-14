@@ -6,3 +6,4 @@ export * from "./auth.ts";
 export * from "./catalog.ts";
 export * from "./organization.ts";
 export * from "./procurement.ts";
+export * from "./preferences.ts";

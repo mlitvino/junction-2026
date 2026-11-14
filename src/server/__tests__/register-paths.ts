@@ -1,9 +1,19 @@
 import "server-only";
 
 import { existsSync, statSync } from "node:fs";
-import { registerHooks } from "node:module";
+import nodeModule from "node:module";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+type ResolveContext = { parentURL?: string; conditions?: string[] };
+type NextResolve = (specifier: string, context: ResolveContext) => unknown;
+
+// `registerHooks` exists at runtime (Node >= 22.15; we run 24) but @types/node 20 doesn't declare it.
+const { registerHooks } = nodeModule as unknown as {
+  registerHooks(hooks: {
+    resolve(specifier: string, context: ResolveContext, nextResolve: NextResolve): unknown;
+  }): void;
+};
 
 function isFile(filePath: string): boolean {
   try {
@@ -27,12 +37,7 @@ registerHooks({
     }
 
     if (target) {
-      const candidates = [
-        target,
-        `${target}.ts`,
-        `${target}.tsx`,
-        path.join(target, "index.ts"),
-      ];
+      const candidates = [target, `${target}.ts`, `${target}.tsx`, path.join(target, "index.ts")];
       for (const cand of candidates) {
         if (isFile(cand)) {
           return nextResolve(pathToFileURL(cand).href, context);
