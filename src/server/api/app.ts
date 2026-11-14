@@ -11,6 +11,7 @@ import { healthRouter } from "./routes/health/health";
 import { meRouter } from "./routes/me/me";
 import { organizationRouter } from "./routes/organization/organization";
 import { preferencesRouter } from "./routes/preferences/preferences";
+import { productsRouter } from "./routes/products/products";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
@@ -30,6 +31,7 @@ app.route("/", healthRouter);
 app.route("/", meRouter);
 app.route("/", organizationRouter);
 app.route("/", preferencesRouter);
+app.route("/", productsRouter);
 
 // Public contract: OpenAPI spec + Swagger UI.
 app.openAPIRegistry.registerComponent("securitySchemes", "sessionCookie", {
