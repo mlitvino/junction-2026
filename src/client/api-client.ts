@@ -1,8 +1,10 @@
 import type { z } from "zod";
 
 import { HealthResponseSchema, type HealthResponse } from "@/shared/contracts/health";
+import { MeResponseSchema, type MeResponse } from "@/shared/contracts/me";
 
 import { healthMock } from "./mocks/health";
+import { meMock } from "./mocks/me";
 
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 const MOCK_DELAY_MS = 300;
@@ -41,4 +43,5 @@ async function request<S extends z.ZodType>(
 export const apiClient = {
   getHealth: (): Promise<HealthResponse> =>
     request("/api/health", HealthResponseSchema, healthMock),
+  getMe: (): Promise<MeResponse> => request("/api/me", MeResponseSchema, meMock),
 };
