@@ -2,7 +2,7 @@ import "server-only";
 
 import { RequestContext } from "@mastra/core/request-context";
 
-import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
+import { callModel, isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { ACTOR_KEY } from "@/server/agents/tools/actor";
 import { getMastra } from "@/server/mastra";
@@ -69,7 +69,11 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
     const before = (await listProposals(actor, {}))[0]?.id ?? null;
     // Tools act as the signed-in user (agents/tools/actor.ts), never anonymously.
     const requestContext = new RequestContext([[ACTOR_KEY, user]]);
-    const result = await agent.generate(contextualMessage, { maxSteps: 6, requestContext });
+    // A PurchasingError raised by a tool keeps its meaning (400/403/404/409); anything else is the model.
+    const result = await callModel(
+      () => agent.generate(contextualMessage, { maxSteps: 6, requestContext }),
+      (err) => err instanceof PurchasingError,
+    );
 
     const toolCalls: AgentToolCallTrace[] = [];
     for (const call of result.toolCalls ?? []) {

@@ -2,7 +2,7 @@ import "server-only";
 
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 
-import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
+import { callModel, isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import {
   orderChangeAgent,
   type ParsedOrderChange,
@@ -953,8 +953,10 @@ export async function reviseProposalFromRequest(
         `Available candidate alternatives: ${JSON.stringify(pipeline.flatMap((t) => t.sortedCandidates.map((c) => ({ id: c.id, name: c.name }))))}`,
         `Customer change request: ${input.prompt}`,
       ].join("\n");
-      const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
-      parsed = ParsedOrderChangeSchema.parse(llm.object);
+      parsed = await callModel(async () => {
+        const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
+        return ParsedOrderChangeSchema.parse(llm.object);
+      });
     }
     for (const rep of parsed.replacements) {
       const from = resolveLineTarget(rep.fromTarget, refs);

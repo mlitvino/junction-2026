@@ -7,6 +7,7 @@ export const GEMINI_MODEL = "google/gemini-3.8-flash";
 /**
  * Agent failures the API reports as such instead of a plain 500 (mapped in server/api/app.ts):
  * - 503 `AGENT_NOT_CONFIGURED`: no Gemini key and not in TEST_MODE (server configuration).
+ * - 502 `MODEL_FAILED`: the model call failed or returned unusable output (upstream problem).
  */
 export class AgentError extends Error {
   readonly status: 502 | 503;
@@ -54,3 +55,19 @@ export function resolveAgentModel(mockModel: MastraModelConfig): MastraModelConf
   return GEMINI_MODEL;
 }
 
+/**
+ * Runs a model call (and the parsing of its output). Failures become a 502 `MODEL_FAILED`; the
+ * cause is logged by the API's error handler, not sent to the client. Errors with their own
+ * meaning pass through: an AgentError, or one the caller marks with `passThrough` (e.g. a
+ * PurchasingError a tool raised).
+ */
+export async function callModel<T>(run: () => Promise<T>, passThrough: (err: unknown) => boolean = () => false): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AgentError || passThrough(err)) throw err;
+    throw new AgentError(502, "MODEL_FAILED", "The language model call failed or returned unusable output. Try again.", {
+      cause: err,
+    });
+  }
+}

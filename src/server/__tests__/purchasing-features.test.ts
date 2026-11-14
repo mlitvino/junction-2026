@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { app } from "@/server/api/app";
-import { AgentError, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
+import { AgentError, callModel, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
 import { runPurchasingAgent } from "@/server/services/agent";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
@@ -245,6 +245,20 @@ describe("Agent mode gating", () => {
       requireGeminiApiKey();
       assert.equal(resolveAgentModel(mockModel), GEMINI_MODEL);
     });
+  });
+
+  it("turns model failures into 502 MODEL_FAILED and keeps errors with their own meaning", async () => {
+    assert.equal(await callModel(async () => 42), 42);
+    await assert.rejects(
+      () => callModel(async () => Promise.reject(new Error("upstream 500 from the model provider"))),
+      (err) =>
+        err instanceof AgentError && err.status === 502 && err.code === "MODEL_FAILED" && !err.message.includes("upstream"),
+    );
+    const own = new AgentError(503, "AGENT_NOT_CONFIGURED", "no key");
+    await assert.rejects(() => callModel(async () => Promise.reject(own)), (err) => err === own);
+    class ToolError extends Error {}
+    const tool = new ToolError("not the creator");
+    await assert.rejects(() => callModel(async () => Promise.reject(tool), (e) => e instanceof ToolError), (err) => err === tool);
   });
 
   it("gates extractProductsFromPrompt and runPurchasingAgent behind TEST_MODE=TRUE or Gemini key", async () => {
