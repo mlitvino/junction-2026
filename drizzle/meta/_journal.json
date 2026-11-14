@@ -50,6 +50,13 @@
       "when": 1794681521671,
       "tag": "0006_audit_selection",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794685896364,
+      "tag": "0007_catalog_details",
+      "breakpoints": true
     }
   ]
 }

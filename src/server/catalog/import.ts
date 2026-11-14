@@ -47,6 +47,13 @@ function productRow(p: CatalogProduct): ProductInsert {
     deliveryReliability: p.deliveryReliability,
     hasImage: p.hasImage,
     allergens: p.allergens,
+    mayContainAllergens: p.mayContainAllergens,
+    contentPerBaseUnit: p.contentPerBaseUnit,
+    contentUnit: p.contentUnit,
+    nutrition: p.nutrition,
+    labels: p.labels,
+    claims: p.claims,
+    dietaryTags: p.dietaryTags,
     synkkaUpdatedAt: p.synkkaLastUpdated ? new Date(p.synkkaLastUpdated) : null,
     searchText: searchText(p),
   };
