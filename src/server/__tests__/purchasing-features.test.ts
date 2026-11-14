@@ -9,6 +9,9 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { app } from "@/server/api/app";
+import { GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
+import { runPurchasingAgent } from "@/server/services/agent";
+import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
 import { normalizeQuantityAndUnit, reconcileRecipeIngredientsWithInventory } from "@/server/services/inventory";
 import {
@@ -176,5 +179,82 @@ describe("Verification", () => {
     assert.equal(canonicalizeJson({ b: 1, a: [2, { d: 3, c: 4 }] }), canonicalizeJson({ a: [2, { c: 4, d: 3 }], b: 1 }));
     const expected = createHash("sha256").update(canonicalizeJson({ a: 1 })).digest("hex");
     assert.equal(sha256Canonical({ a: 1 }), expected);
+  });
+});
+
+describe("Agent mode gating", () => {
+  async function withEnv(
+    patch: Record<string, string | undefined>,
+    fn: () => Promise<void> | void,
+  ): Promise<void> {
+    const prev: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(patch)) {
+      prev[k] = process.env[k];
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it("uses deterministic/mock mode only when TEST_MODE=TRUE and requires Gemini key otherwise", async () => {
+    const mockModel = { id: "mock-model" } as unknown as Parameters<typeof resolveAgentModel>[0];
+
+    await withEnv({ TEST_MODE: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined }, () => {
+      assert.equal(isAgentTestMode(), false);
+      assert.throws(() => requireGeminiApiKey(), /GOOGLE_GENERATIVE_AI_API_KEY/);
+      assert.throws(() => resolveAgentModel(mockModel), /GOOGLE_GENERATIVE_AI_API_KEY/);
+    });
+
+    await withEnv({ TEST_MODE: "false", GOOGLE_GENERATIVE_AI_API_KEY: undefined }, () => {
+      assert.equal(isAgentTestMode(), false);
+      assert.throws(() => requireGeminiApiKey(), /GOOGLE_GENERATIVE_AI_API_KEY/);
+    });
+
+    await withEnv({ TEST_MODE: "TRUE", GOOGLE_GENERATIVE_AI_API_KEY: "test-key" }, () => {
+      assert.equal(isAgentTestMode(), true);
+      requireGeminiApiKey();
+      assert.equal(resolveAgentModel(mockModel), mockModel);
+    });
+
+    await withEnv({ TEST_MODE: undefined, GOOGLE_GENERATIVE_AI_API_KEY: "test-key" }, () => {
+      assert.equal(isAgentTestMode(), false);
+      requireGeminiApiKey();
+      assert.equal(resolveAgentModel(mockModel), GEMINI_MODEL);
+    });
+  });
+
+  it("gates extractProductsFromPrompt and runPurchasingAgent behind TEST_MODE=TRUE or Gemini key", async () => {
+    await withEnv({ TEST_MODE: undefined, GOOGLE_GENERATIVE_AI_API_KEY: undefined }, async () => {
+      await assert.rejects(
+        () => extractProductsFromPrompt({ prompt: "10 kg of creamy cheese" }),
+        /GOOGLE_GENERATIVE_AI_API_KEY/,
+      );
+      await assert.rejects(
+        () =>
+          runPurchasingAgent(
+            { message: "Search milk" },
+            {
+              id: "user-1",
+              username: "buyer",
+              organization: { id: "org-1", name: "Org" },
+              roles: ["buyer"],
+            },
+          ),
+        /GOOGLE_GENERATIVE_AI_API_KEY/,
+      );
+    });
+
+    await withEnv({ TEST_MODE: "TRUE", GOOGLE_GENERATIVE_AI_API_KEY: undefined }, async () => {
+      const res = await extractProductsFromPrompt({ prompt: "10 kg of creamy cheese" });
+      assert.equal(res.items.length, 1);
+      assert.equal(res.items[0]!.productType, "Cheese");
+    });
   });
 });

@@ -2,6 +2,7 @@ import "server-only";
 
 import { RequestContext } from "@mastra/core/request-context";
 
+import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { ACTOR_KEY } from "@/server/agents/tools/actor";
 import { getMastra } from "@/server/mastra";
@@ -37,8 +38,8 @@ function proposalIdFromMessage(message: string): string | null {
  * One turn of the purchasing agent, always acting for the signed-in buyer (`actor`). Whatever it
  * does goes through the purchasing flow: it creates and revises proposals and may place an order
  * only when the organization's rules allow it (or an approver approved); it never approves.
- * - With `GOOGLE_GENERATIVE_AI_API_KEY`: Mastra `purchasingAgent` with tool calling.
- * - Without: a deterministic router over the same services.
+ * - `TEST_MODE=TRUE`: deterministic router over the same services.
+ * - Otherwise: Mastra `purchasingAgent` with tool calling (requires `GOOGLE_GENERATIVE_AI_API_KEY`).
  */
 export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUser): Promise<AgentRunResponse> {
   const actor = actorFor(user, true);
@@ -53,7 +54,8 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
     }
   };
 
-  if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  if (!isAgentTestMode()) {
+    requireGeminiApiKey();
     const agent = process.env.DATABASE_URL ? getMastra().getAgentById("purchasing-agent") : purchasingAgent;
     const contextualMessage = [
       referencedId ? `Active proposalId context: ${referencedId}` : null,
@@ -84,7 +86,7 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
     return { reply: result.text || "Done.", mode: "gemini", toolCalls, activeProposal };
   }
 
-  // ---------- Deterministic orchestration (no Gemini key) ----------
+  // ---------- Deterministic orchestration (TEST_MODE=TRUE) ----------
   const toolCalls: AgentToolCallTrace[] = [];
   const msgLower = input.message.toLowerCase();
 
