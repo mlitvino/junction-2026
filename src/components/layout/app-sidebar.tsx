@@ -65,12 +65,18 @@ export function SidebarNote({ viewer }: { viewer?: ShellViewer }) {
   return (
     <div className="mt-auto border-t p-6 text-caption text-muted-foreground">
       <p className="mb-1 font-medium text-foreground">
-        {viewer ? "Your purchasing workspace" : "Frontend preview"}
+        {viewer?.demo
+          ? viewer.displayName
+          : viewer
+            ? "Your purchasing workspace"
+            : "Frontend preview"}
       </p>
       <p>
-        {viewer
-          ? "Purchasing with human oversight."
-          : "Explore the foundation. Account and purchasing features are not connected yet."}
+        {viewer?.demo
+          ? "Local UI simulation, not authentication. All purchasing data is synthetic."
+          : viewer
+            ? "Purchasing with human oversight."
+            : "Explore the foundation. Account and purchasing features are not connected yet."}
       </p>
     </div>
   );

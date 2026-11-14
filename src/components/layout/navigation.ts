@@ -6,6 +6,7 @@ export type ShellViewer = {
   displayName: string;
   organizationLabel?: string;
   roles: readonly string[];
+  demo?: boolean;
 };
 
 type NavigationItem = {
@@ -34,7 +35,6 @@ export const navigationItems: readonly NavigationItem[] = [
     icon: "approvals",
     group: "workspace",
     roles: ["APPROVER", "ADMIN"],
-    upcoming: true,
   },
   {
     href: "/orders",
@@ -43,7 +43,6 @@ export const navigationItems: readonly NavigationItem[] = [
     icon: "orders",
     group: "workspace",
     roles: ["BUYER", "APPROVER", "ADMIN"],
-    upcoming: true,
   },
   {
     href: "/admin/agents",

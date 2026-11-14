@@ -34,7 +34,7 @@ export function BuyerWelcome() {
       <RequestComposer />
       <section aria-labelledby="capabilities-title" className="mt-12 border-t pt-8">
         <h2 id="capabilities-title" className="mb-6 text-label font-medium text-muted-foreground">
-          When connected, your assistant will help you…
+          Explore the purchasing experience with synthetic demo data
         </h2>
         <div className="grid gap-6 md:grid-cols-3">
           {capabilities.map((capability) => (

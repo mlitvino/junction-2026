@@ -9,8 +9,9 @@ import { ThemeToggle } from "./theme-toggle";
 
 export function AppHeader({ viewer }: { viewer?: ShellViewer }) {
   const pathname = usePathname();
-  const context =
-    navigationItems.find((item) => matchesRoute(pathname, item.href))?.context ?? "Workspace";
+  const context = pathname.startsWith("/proposals/")
+    ? "Purchase Proposal"
+    : (navigationItems.find((item) => matchesRoute(pathname, item.href))?.context ?? "Workspace");
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b bg-background px-2 md:px-6 lg:px-8">
       <div className="flex min-w-0 items-center gap-2">

@@ -1,13 +1,7 @@
 import type { Metadata } from "next";
-import { ComingSoon } from "@/components/layout/coming-soon";
+import { ApprovalInbox } from "@/features/approvals/approval-inbox";
 
 export const metadata: Metadata = { title: "Approvals" };
 export default function ApprovalsPage() {
-  return (
-    <ComingSoon
-      title="Approvals"
-      icon="approvals"
-      description="Review purchase requests that need a human decision, with the details and reasons in one place."
-    />
-  );
+  return <ApprovalInbox />;
 }

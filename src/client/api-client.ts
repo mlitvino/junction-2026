@@ -3,6 +3,9 @@ import type { z } from "zod";
 import { HealthResponseSchema, type HealthResponse } from "@/shared/contracts/health";
 
 import { healthMock } from "./mocks/health";
+import { createMockProcurementService } from "./mocks/mock-service";
+import { createUnavailableProcurementService } from "./provisional/unavailable-service";
+import type { ProvisionalProcurementService } from "./provisional/types";
 
 const USE_MOCKS = process.env.NEXT_PUBLIC_USE_MOCKS === "true";
 const MOCK_DELAY_MS = 300;
@@ -39,6 +42,11 @@ async function request<S extends z.ZodType>(
 }
 
 export const apiClient = {
+  procurement: (USE_MOCKS
+    ? createMockProcurementService({
+        storage: () => (typeof window === "undefined" ? null : window.sessionStorage),
+      })
+    : createUnavailableProcurementService()) as ProvisionalProcurementService,
   getHealth: (): Promise<HealthResponse> =>
     request("/api/health", HealthResponseSchema, healthMock),
 };
