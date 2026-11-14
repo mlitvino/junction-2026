@@ -197,3 +197,21 @@ test("category and product lists need approval; blocked wins over allowed", () =
   const notListed = evaluatePolicy(autonomous({ allowedProductIds: ["1"] }), [line({ product })]);
   assert.deepEqual(codes(notListed), ["PRODUCT_NOT_ALLOWED"]);
 });
+
+// ----- Substitutes and "may contain" -----
+test("substitutes need approval unless allowSubstitutes", () => {
+  const sub = { requested: "lactose-free milk", reason: "split" as const };
+  const blocked = evaluatePolicy(autonomous(), [line({ substituteFor: sub })]);
+  assert.equal(blocked.outcome, "REQUIRE_APPROVAL");
+  assert.deepEqual(codes(blocked), ["SUBSTITUTE_NOT_ALLOWED"]);
+  assert.match(blocked.reasons[0]!.message, /short-stock split/);
+  const allowed = evaluatePolicy(autonomous({ allowSubstitutes: true }), [line({ substituteFor: sub })]);
+  assert.equal(allowed.outcome, "ALLOW");
+});
+
+test("a 'may contain' excluded allergen needs approval, 'contains' denies", () => {
+  const product = { vendorName: "X", allergens: [], mayContainAllergens: ["SA"], co2PerKg: null, deliveryReliability: null };
+  const r = evaluatePolicy(autonomous({ excludedAllergens: ["tree-nuts"] }), [line({ product })]);
+  assert.equal(r.outcome, "REQUIRE_APPROVAL");
+  assert.deepEqual(codes(r), ["MAY_CONTAIN_EXCLUDED_ALLERGEN"]);
+});

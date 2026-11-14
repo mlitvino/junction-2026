@@ -1,6 +1,8 @@
 import "server-only";
 
-import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
@@ -19,6 +21,7 @@ import {
   type StoredProposalLine,
 } from "@/server/db/schema";
 import {
+  approvalExpiry,
   canCancel,
   canDecide,
   canOrder,
@@ -41,6 +44,7 @@ import type {
   ListApprovalsQuery,
   ListProposalsQuery,
   Order,
+  PendingApprovalCount,
   OrderReceipt,
   Proposal,
   ProposalSelection,
@@ -53,6 +57,7 @@ import type {
 import { recordAudit, type AuditActor, type AuditEntry } from "./audit";
 import { getAvailability, getPrices } from "./catalog";
 import { evaluateDraft } from "./policy";
+import { checkProposalSignature, signProposalContent } from "./trust";
 
 // The one purchasing flow: proposals, approvals, orders. Every function takes the caller (their
 // organization and user) and only touches that organization's rows. Rules: server/purchasing/rules.ts.
@@ -104,7 +109,7 @@ async function usernames(d: Db, ids: (string | null)[]): Promise<Map<string, str
   return new Map(rows.map((r) => [r.id, r.username ?? r.id]));
 }
 
-function toApproval(row: ApprovalRow, names: Map<string, string>): Approval {
+function toApproval(row: ApprovalRow, names: Map<string, string>, quoteExpiresAt: Date | null): Approval {
   return {
     id: row.id,
     proposalId: row.proposalId,
@@ -117,6 +122,7 @@ function toApproval(row: ApprovalRow, names: Map<string, string>): Approval {
     decidedByName: row.decidedBy ? (names.get(row.decidedBy) ?? null) : null,
     decidedAt: row.decidedAt?.toISOString() ?? null,
     comment: row.comment,
+    expiresAt: approvalExpiry(row.expiresAt, quoteExpiresAt)?.toISOString() ?? null,
   };
 }
 
@@ -127,6 +133,7 @@ function withAvailability(line: StoredProposalLine) {
     orderable: line.orderable ?? null,
     availableDate: line.availableDate ?? null,
     availableQuantity: line.availableQuantity ?? null,
+    substituteFor: line.substituteFor ?? null,
   };
 }
 
@@ -153,8 +160,10 @@ function toProposal(
     quoteExpiresAt: row.quoteExpiresAt?.toISOString() ?? null,
     decision: row.decision as Proposal["decision"],
     hash: row.hash,
+    signature: row.signature,
+    signatureKeyId: row.signatureKeyId,
     note: row.note,
-    approval: approvalRow ? toApproval(approvalRow, names) : null,
+    approval: approvalRow ? toApproval(approvalRow, names, row.quoteExpiresAt) : null,
     orderId,
   };
 }
@@ -256,6 +265,9 @@ export async function createProposal(
     orderable: l.orderable,
     availableDate: l.availableDate,
     availableQuantity: l.availableQuantity,
+    substituteFor: request.lines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
+    priceSnapshotId: l.priceSnapshotId,
+    availabilitySnapshotId: l.availabilitySnapshotId,
   }));
   const stored: StoredDecision = {
     outcome: decision.outcome,
@@ -274,17 +286,21 @@ export async function createProposal(
   const createdAt = new Date();
   const expiresAt = quoteExpiresAt(createdAt);
   const source = options.source ?? "buyer";
+  // The expiry is part of the deal, so the hash covers it too. The id is made here so it can be signed.
+  const id = randomUUID();
+  const hash = contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() });
 
   return d.transaction(async (tx) => {
     const [row] = await tx
       .insert(proposal)
       .values({
+        id,
         organizationId: actor.organizationId,
         createdBy: actor.userId,
         status: initialStatus(decision.outcome),
         outcome: decision.outcome,
-        // The expiry is part of the deal, so the hash covers it too.
-        hash: contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() }),
+        hash,
+        ...signProposalContent({ proposalId: id, hash }),
         note: request.note || null,
         createdAt,
         updatedAt: createdAt,
@@ -310,6 +326,7 @@ export async function createProposal(
 }
 
 export async function listProposals(actor: Actor, query: ListProposalsQuery): Promise<Proposal[]> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const where: SQL[] = [eq(proposal.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(proposal.status, query.status));
@@ -319,6 +336,7 @@ export async function listProposals(actor: Actor, query: ListProposalsQuery): Pr
 }
 
 export async function getProposal(actor: Actor, id: string): Promise<Proposal> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const [row] = await d
     .select()
@@ -360,7 +378,11 @@ export async function cancelProposal(actor: Actor, id: string): Promise<Proposal
 export async function reviseProposal(
   actor: Actor,
   id: string,
-  next: { lines: { productId: string; quantity: number }[]; date?: string; appliedChanges: string[] },
+  next: {
+    lines: { productId: string; quantity: number; substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null }[];
+    date?: string;
+    appliedChanges: string[];
+  },
 ): Promise<ReviseProposalResponse> {
   const old = await getProposal(actor, id);
   if (old.createdBy !== actor.userId)
@@ -370,7 +392,11 @@ export async function reviseProposal(
 
   const revised = await createProposal(
     actor,
-    { lines: next.lines, date: next.date ?? old.pricingDate, note: old.note ?? undefined },
+    {
+      lines: next.lines.map((l) => ({ productId: l.productId, quantity: l.quantity, ...(l.substituteFor ? { substituteFor: l.substituteFor } : {}) })),
+      date: next.date ?? old.pricingDate,
+      note: old.note ?? undefined,
+    },
     {
       source: old.source ?? "buyer",
       selection: old.selection,
@@ -407,6 +433,8 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
         proposalHash: row.hash,
         status: "PENDING",
         requestedBy: actor.userId,
+        // Approval only makes sense while the frozen prices hold.
+        expiresAt: row.quoteExpiresAt,
       })
       .returning({ id: approval.id });
     await setProposalStatus(tx, row.id, "PENDING_APPROVAL");
@@ -423,6 +451,7 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
 }
 
 export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Promise<ApprovalWithProposal[]> {
+  await expireStaleApprovals(actor);
   const d = await db();
   const where: SQL[] = [eq(approval.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(approval.status, query.status));
@@ -430,11 +459,79 @@ export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Pr
   if (!approvals.length) return [];
   const rows = await d.select().from(proposal).where(inArray(proposal.id, approvals.map((a) => a.proposalId)));
   const proposals = new Map((await withRelations(d, rows)).map((p) => [p.id, p]));
+  const quoteExpiry = new Map(rows.map((r) => [r.id, r.quoteExpiresAt]));
   const names = await usernames(d, approvals.flatMap((a) => [a.requestedBy, a.decidedBy]));
-  return approvals.map((a) => ({ ...toApproval(a, names), proposal: proposals.get(a.proposalId)! }));
+  return approvals.map((a) => ({
+    ...toApproval(a, names, quoteExpiry.get(a.proposalId) ?? null),
+    proposal: proposals.get(a.proposalId)!,
+  }));
+}
+
+/** For a badge: approvals waiting for a decision (expired ones are expired first) and the next expiry. */
+export async function pendingApprovalCount(actor: Actor): Promise<PendingApprovalCount> {
+  await expireStaleApprovals(actor);
+  const expiry = sql<Date | null>`min(coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}))`.mapWith((v) =>
+    v === null ? null : new Date(v as string),
+  );
+  const [row] = await (await db())
+    .select({ count: sql<number>`count(*)`.mapWith(Number), nextExpiresAt: expiry })
+    .from(approval)
+    .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+    .where(and(eq(approval.organizationId, actor.organizationId), eq(approval.status, "PENDING")));
+  return { count: row?.count ?? 0, nextExpiresAt: row?.nextExpiresAt?.toISOString() ?? null };
+}
+
+/**
+ * Lazy expiry (no background job): the organization's pending approvals whose time is up become
+ * EXPIRED, with their PENDING_APPROVAL proposals, and the audit log says so. Rows another request
+ * holds are skipped and expire on the next call.
+ */
+async function expireStaleApprovals(actor: Actor): Promise<void> {
+  const d = await db();
+  const due = and(
+    eq(approval.organizationId, actor.organizationId),
+    eq(approval.status, "PENDING"),
+    sql`coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}) <= now()`,
+  );
+  const [any] = await d
+    .select({ id: approval.id })
+    .from(approval)
+    .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+    .where(due)
+    .limit(1);
+  if (!any) return;
+  await d.transaction(async (tx) => {
+    const stale = await tx
+      .select({ id: approval.id, proposalId: approval.proposalId, totalExclVat: proposal.totalExclVat })
+      .from(approval)
+      .innerJoin(proposal, eq(proposal.id, approval.proposalId))
+      .where(due)
+      .orderBy(asc(approval.requestedAt))
+      .for("update", { skipLocked: true });
+    if (!stale.length) return;
+    const now = new Date();
+    await tx.update(approval).set({ status: "EXPIRED" }).where(inArray(approval.id, stale.map((s) => s.id)));
+    await tx
+      .update(proposal)
+      .set({ status: "EXPIRED", updatedAt: now })
+      .where(and(inArray(proposal.id, stale.map((s) => s.proposalId)), eq(proposal.status, "PENDING_APPROVAL")));
+    await recordAudit(
+      tx,
+      actor,
+      stale.map((s) => ({
+        action: "approval.expired",
+        resourceType: "proposal" as const,
+        resourceId: s.proposalId,
+        actorType: "system" as const,
+        summary: `The approval request (${eur(s.totalExclVat)}) expired undecided with the proposal's prices; create a new proposal.`,
+        details: { approvalId: s.id },
+      })),
+    );
+  });
 }
 
 export async function decideApproval(actor: Actor, id: string, request: DecideApprovalRequest): Promise<Proposal> {
+  await expireStaleApprovals(actor);
   return (await db()).transaction(async (tx) => {
     const [found] = await tx
       .select({ proposalId: approval.proposalId })
@@ -443,7 +540,12 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
     if (!found) throw notFound("Approval");
     const row = await lockProposal(tx, actor.organizationId, found.proposalId);
     const [current] = await tx.select().from(approval).where(eq(approval.id, id));
-    enforce(canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash));
+    enforce(
+      canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash, {
+        expiresAt: approvalExpiry(current!.expiresAt, row.quoteExpiresAt),
+        now: new Date(),
+      }),
+    );
     enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx
       .update(approval)
@@ -598,7 +700,13 @@ export async function getOrder(actor: Actor, id: string): Promise<Order> {
 export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderReceipt> {
   const d = await db();
   const [row] = await d
-    .select({ order: purchaseOrder, pricingDate: proposal.pricingDate, orgName: organization.name })
+    .select({
+      order: purchaseOrder,
+      pricingDate: proposal.pricingDate,
+      signature: proposal.signature,
+      signatureKeyId: proposal.signatureKeyId,
+      orgName: organization.name,
+    })
     .from(purchaseOrder)
     .innerJoin(proposal, eq(proposal.id, purchaseOrder.proposalId))
     .innerJoin(organization, eq(organization.id, purchaseOrder.organizationId))
@@ -620,12 +728,16 @@ export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderRe
     status: "SIMULATED_CONFIRMED",
     source: "LOCAL_SIMULATOR",
     proposalHash: row.order.proposalHash,
+    proposalSignature: row.signature,
+    signatureKeyId: row.signatureKeyId,
   };
 }
 
 /**
  * Trust check an agent or a person can run without a manual lookup: the stored content still
- * hashes to the stored hash, and every frozen price matches a Valio price snapshot we recorded.
+ * hashes to the stored hash, the server's signature over id + hash holds, and every frozen price is
+ * the price in the recorded Valio answer it names (snapshot id; older proposals: any snapshot with
+ * that price for the date).
  */
 export async function verifyProposal(actor: Actor, id: string): Promise<ProposalVerification> {
   const d = await db();
@@ -656,13 +768,20 @@ export async function verifyProposal(actor: Actor, id: string): Promise<Proposal
     storedHash: row.hash,
     recomputedHash: recomputed,
     hashValid: recomputed === row.hash,
+    // The signature covers the stored hash; a changed hash already shows in hashValid.
+    signatureValid: checkProposalSignature({ proposalId: row.id, hash: row.hash }, row.signature, row.signatureKeyId),
+    signatureKeyId: row.signatureKeyId,
     lines: row.lines.map((line) => {
-      const match = snapshots.find(
-        (s) => s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat,
-      );
+      const samePrice = (s: (typeof snapshots)[number]) =>
+        s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat;
+      const match = line.priceSnapshotId
+        ? snapshots.find((s) => String(s.id) === line.priceSnapshotId && samePrice(s))
+        : snapshots.find(samePrice);
       return {
         productId: line.productId,
         unitPriceExclVat: line.unitPriceExclVat,
+        priceSnapshotId: match ? String(match.id) : (line.priceSnapshotId ?? null),
+        availabilitySnapshotId: line.availabilitySnapshotId ?? null,
         snapshotFound: !!match,
         snapshotFetchedAt: match?.fetchedAt.toISOString() ?? null,
         source: (match?.source as ProposalVerification["lines"][number]["source"]) ?? null,

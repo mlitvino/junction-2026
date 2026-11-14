@@ -7,9 +7,11 @@ State: one purchasing system after the merges of `dev-agent` (#6, #8) and `feat/
 
 ## Before pushing to `main` (deploys)
 
+- [ ] Re-import the catalog after migration 0007 (`pnpm data:import`, locally and on the server), otherwise the new columns are empty: no content per unit (no unit conversion), no labels, no nutrition, no dietary tags.
+
 - [ ] Production `.env` on the server has `GOOGLE_GENERATIVE_AI_API_KEY` (or `TEST_MODE=TRUE` for a demo without Gemini). Since #8, `/api/agent/run`, `/api/extract` and `/api/proposals/from-prompt` fail without one of them.
 - [ ] Local `.env`: same choice. The live check script's agent step expects the deterministic flow, so run it with `TEST_MODE=TRUE`.
-- [ ] Tell the frontend dev about the contract changes: `agent` (`proposalId`, `activeProposal`), recipe response (`proposal`, `selection`, `message`), `intelligence` recurring check (`proposalId`), `catalog` nutrition nullable, removed `orders.ts`/`guardrails.ts` contracts, new `selection.ts`/`allergens.ts`. Nothing in the UI uses them yet, but the next integration will.
+- [ ] Tell the frontend dev about the contract changes: `agent` (`proposalId`, `activeProposal`), recipe response (`proposal`, `selection`, `message`), `intelligence` recurring check (`proposalId`), `catalog` nutrition nullable, removed `orders.ts`/`guardrails.ts` contracts, new `selection.ts`/`allergens.ts`/`labels.ts`; products: new summary/detail fields, search filters, `/products/rank`, `/products/{id}/substitutes`; `/api/catalog/*` removed; proposal lines `substituteFor`. Nothing in the UI uses them yet, but the next integration will.
 
 ## Static API (backend, no AI)
 
@@ -32,6 +34,18 @@ Done
 - [x] Unit tests in CI (`pnpm test`). Rules can't silently break.
 
 Left
+- [x] Quantities in real units: `server/valio/units.ts` converts L/dl/ml/kg/g/cases/pieces through the imported content per base unit (1000 L → 200 cases of 5 L); unconvertible amounts keep a proposal warning.
+- [x] One product search: `GET /api/products` with allergen (contains/may contain), dietary, origin, CO2, reliability, vendor, brand and label filters and sorting; `/api/catalog/products*` removed, substitutes at `POST /api/products/{id}/substitutes`.
+- [x] Ranking endpoint `POST /api/products/rank`: best/better/good by price per litre/kg, availability by the date, relevance, reliability, CO2 and preferences, with reasons; the agent's selection uses the same scorer.
+- [x] Substitute rule: split, swapped and fallback lines carry `substituteFor`; `allowSubstitutes=false` → REQUIRE_APPROVAL `SUBSTITUTE_NOT_ALLOWED`. Plus `MAY_CONTAIN_EXCLUDED_ALLERGEN` → approval.
+- [x] Imported nutrition, labels, claims, content per base unit and the allergen CONTAINS / MAY_CONTAIN qualifier (migration 0007; run `pnpm data:import`).
+- [x] Snapshot id on every price/stock answer (`snapshotId`, frozen per proposal line, checked by `/verify`) and Ed25519-signed proposal hashes, public key at `GET /api/trust/public-key`.
+- [x] Approval expiry (`EXPIRED` with the quote, audited, 409 `APPROVAL_EXPIRED`) and `GET /api/approvals/pending-count` for a badge (migration 0008).
+- [x] Migrations without restart: `pnpm dev` applies pending ones on start, and a running dev server applies new ones on the next request.
+- [x] Removed the `server/valio/types.ts` re-export shim.
+- [x] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) dropped in migration 0010; images older than `9077a91` can't be rolled back to.
+- [x] Agent errors: 503 `AGENT_NOT_CONFIGURED` without a Gemini key (and no `TEST_MODE=TRUE`), 502 `MODEL_FAILED` when a model call fails, instead of a plain 500.
+- [x] README "LLM (Gemini)", root AGENTS.md and deploy README: the agent needs a Gemini key unless `TEST_MODE=TRUE`.
 
 - [ ] Agent identity: per-agent API keys created/revoked by approvers, scopes, every call attributed. The challenge is about external agents; today only humans with cookies can call the API.
 - [ ] Audit trail: insert-only event log (actor, action, reason, time) + `GET /api/audit`. Human-readable record of what was done and why (optional direction, high value).
@@ -55,6 +69,22 @@ Left
 
 Implemented v3.2 (14 November 2026). Evidence and limitations: `docs/FRONTEND-UX-IMPLEMENTATION-STATUS.md` and `docs/INTEGRATION-STATUS.md`. Checked integration means actual local backend/browser evidence where stated, not production or supplier fulfillment.
 
+Left
+- [ ] Switch the purchasing flow to `/api/proposals` (incl. `from-prompt`), `/api/approvals`, `/api/orders` (map EUR excl. VAT, statuses, hash-bound approvals, no intent). Approvals then work across browsers and users.
+- [ ] Manual buyer flow: search, pick quantities, policy preview, create proposal/order. Replaces the scripted scenarios.
+- [ ] Show the agent's `selection` (ranking reasons per product, conversion note) and `warnings` on a proposal.
+- [ ] Use `GET /api/products` filters and `POST /api/products/rank` in a product picker; show content per case, labels, allergens (contains / may contain) and nutrition.
+- [ ] Handle `QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED` and show `quoteExpiresAt`. Users must know to create a new proposal.
+- [ ] Show the `EXPIRED` proposal/approval status and `APPROVAL_EXPIRED`, an approvals badge from `GET /api/approvals/pending-count`, and the proposal signature / `verify` result (`signatureValid`, snapshot ids). New backend fields since migration 0008.
+- [ ] Label VAT: the policy limit is excl. VAT, screens show incl. VAT. Otherwise correct numbers look like a bug.
+- [ ] Preferences screen (incl. the new caps, category/product lists, dietary restrictions) and members screen. Backend exists; nobody can change settings without curl.
+- [ ] Audit page (`/api/audit`) and per-proposal timeline (`/api/proposals/{id}/audit`) on real data. Shows what happened and why.
+- [ ] UI for agent run, recipes, inventory and intelligence. The features are invisible in the UI.
+- [ ] Remove connected-mode scenario glue (`real-catalog.ts`, `realScenarioFixture`, hand-made litres table) after the switch. Legacy once real flows are used.
+- [ ] Rename or remove the "Within the demo limit" scenario label. Default preferences now require approval.
+- [ ] Fix `docs/INTEGRATION-STATUS.md` contradictions and old `/api/v1/...` paths. Docs must match the real API.
+- [ ] Optional: rename procurement → purchasing in the UI (`useProcurement`, `features/procurement`). The API says purchasing.
+- [ ] Remove unused `src/client/provisional/unavailable-service.ts`. Dead code.
 - [x] One shared shell, tokens, Inter, Light/Dark/System, role-aware navigation, account/notifications, desktop/tablet/mobile layouts. All 29 Stitch state families mapped.
 - [x] Real sign-in and identity/organization/roles from `/api/me`; Buyer + Approver supported. No connected-mode role switch.
 - [x] Canonical purchasing uses `/api/proposals`, `/api/approvals`, `/api/proposals/{id}/order` and GET `/api/orders`, numeric EUR excl. VAT, server hashes and stable idempotency. Real two-browser approval/order/replay test passed.
@@ -86,6 +116,11 @@ Done
 - [x] Mastra set up; Gemini when `GOOGLE_GENERATIVE_AI_API_KEY` is set, mock model otherwise. Builds and CI need no key.
 
 Left
+- [ ] Streamed chat events for the UI (status, message, proposal, approval, order). `/agent/run` returns one turn; the frontend's chat expects a stream.
+- [ ] Decision-maker for missing data (unknown allergens, CO2) and good-better-best choice with explanations. Deliberately left out of the policy check.
+- [x] The agent's ranking uses preferred origin/vendor/brand and sustainability labels; `allowSubstitutes` is enforced by the policy.
+- [ ] Use `language` in the agent's answers.
+- [ ] Allergen-safe substitution under pressure: the data (contains / may contain) is now imported; build the school/hospital scenario on top (strict mode excluding may-contain).
 
 - [ ] Chat endpoint with streamed events (status, message, intent, proposal, approval, order). The frontend's chat UI already expects this event shape.
 - [ ] Intent extraction: free text → products, quantity + unit, needed-by date, constraints. "1,000 L lactose-free milk by Monday" must become structured lines.

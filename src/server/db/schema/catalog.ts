@@ -7,6 +7,7 @@ import {
   doublePrecision,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -45,7 +46,21 @@ export const valioProduct = pgTable(
     co2PerBaseUnit: doublePrecision("co2_per_base_unit"),
     deliveryReliability: doublePrecision("delivery_reliability"),
     hasImage: boolean("has_image").notNull().default(false),
+    /** GS1 allergen codes the product contains. */
     allergens: text("allergens").array().notNull().default([]),
+    /** GS1 allergen codes it may contain (cross-contamination). */
+    mayContainAllergens: text("may_contain_allergens").array().notNull().default([]),
+    /** Net content of one base unit, in content_unit (L or KG). */
+    contentPerBaseUnit: doublePrecision("content_per_base_unit"),
+    contentUnit: text("content_unit"),
+    /** Per 100 g/ml: energyKcal, fat, saturatedFat, carbohydrate, sugars, protein, salt, fibre. */
+    nutrition: jsonb("nutrition").$type<Record<string, number | null>>(),
+    /** Packaging labels and certificates (Synkka ids, see shared/contracts/labels.ts). */
+    labels: text("labels").array().notNull().default([]),
+    /** Nutritional and free-from claims (FREE_FROM_LACTOSE, VEGAN, …). */
+    claims: text("claims").array().notNull().default([]),
+    /** lactose-free, gluten-free, vegan, vegetarian (from claims at import). */
+    dietaryTags: text("dietary_tags").array().notNull().default([]),
     synkkaUpdatedAt: timestamp("synkka_updated_at", tz),
     /** Lowercased names (en/fi/sv) + brand + vendor + id + GTINs, matched with ILIKE by the search. */
     searchText: text("search_text").notNull(),
@@ -55,6 +70,9 @@ export const valioProduct = pgTable(
     index("valio_product_category_idx").on(t.category),
     // Trigram index makes ILIKE '%word%' fast (pg_trgm extension, created in the migration).
     index("valio_product_search_trgm_idx").using("gin", t.searchText.op("gin_trgm_ops")),
+    index("valio_product_allergens_idx").using("gin", t.allergens),
+    index("valio_product_dietary_tags_idx").using("gin", t.dietaryTags),
+    index("valio_product_labels_idx").using("gin", t.labels),
   ],
 );
 

@@ -1,8 +1,8 @@
 import "server-only";
 
-import { asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 
-import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
+import { callModel, isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import {
   orderChangeAgent,
   type ParsedOrderChange,
@@ -13,16 +13,22 @@ import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { purchaseOrder, valioProduct } from "@/server/db/schema";
 import { getMastra } from "@/server/mastra";
-import { getAvailability, getPrices } from "@/server/services/catalog";
+import {
+  getAvailability,
+  getPrices,
+  getProductSummaries,
+  getUnitFacts,
+  searchProducts,
+} from "@/server/services/catalog";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import {
   classifyStockStatus,
   resolveUnifiedCatalogRecord,
-  searchCatalogProducts,
   todayIsoDate,
 } from "@/server/services/inquiry";
 import {
-  inferDietaryAndAllergensFromProduct,
+  isSyntheticId,
+  realProductFacts,
   MOCK_CATALOG_PRODUCTS,
   roundCurrency,
   syntheticCatalogEnabled,
@@ -36,7 +42,15 @@ import {
   reviseProposal,
   type Actor,
 } from "@/server/services/purchasing";
+import { rankCandidates } from "@/server/purchasing/ranking";
+import { toSalesUnits, type Conversion } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+import type {
+  ProductSummary,
+  RankedProduct,
+  RankProductsRequest,
+  RankProductsResponse,
+} from "@/shared/contracts/products";
 import type { ExtractedProductItem } from "@/shared/contracts/extract";
 import type {
   CandidateProduct,
@@ -64,6 +78,15 @@ import type { AuditEntry } from "./audit";
 //   optional split over alternatives when stock is short → drift warnings → createProposal().
 // Pricing, availability, the policy decision, approval and ordering are the purchasing flow's job
 // (services/purchasing.ts), so prompt-made proposals obey exactly the same rules as any other.
+
+type Draft = {
+  selected: CandidateProduct;
+  requestedProductName: string;
+  quantity: number;
+  unit: string;
+  substituteFor: { requested: string; reason: "split" | "swap" | "fallback" } | null;
+  conversion: Conversion | null;
+};
 
 /** Selection steps recorded in the audit log before the proposal is created. */
 type PreparationStep = Omit<AuditEntry, "resourceType" | "resourceId">;
@@ -278,8 +301,14 @@ export async function loadHistoricalOrderRecords(organizationId: string): Promis
 export async function getCandidatesByProductType(
   productType: string,
   deliveryDate: string,
+  /** The requested name ("lactose-free milk"): products containing all its words come first. */
+  productName?: string,
 ): Promise<UnifiedCatalogRecord[]> {
   const typeNorm = productType.trim().toLowerCase();
+  const nameWords = (productName ?? "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w.length > 1);
   const dbCandidates: UnifiedCatalogRecord[] = [];
 
   if (process.env.DATABASE_URL) {
@@ -305,22 +334,25 @@ export async function getCandidatesByProductType(
           co2PerKg: valioProduct.co2PerKg,
           deliveryReliability: valioProduct.deliveryReliability,
           allergens: valioProduct.allergens,
+          dietaryTags: valioProduct.dietaryTags,
+          labels: valioProduct.labels,
+          nutrition: valioProduct.nutrition,
         })
         .from(valioProduct)
         .where(
-          or(
-            ilike(valioProduct.category, likePattern),
-            ilike(valioProduct.searchText, likePattern),
-          ),
+          nameWords.length
+            ? and(...nameWords.map((w) => ilike(valioProduct.searchText, `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)))
+            : or(ilike(valioProduct.category, likePattern), ilike(valioProduct.searchText, likePattern)),
         )
-        .orderBy(asc(valioProduct.name), asc(valioProduct.id))
+        // Most similar to what was asked first (pg_trgm), not alphabetical.
+        .orderBy(sql`similarity(${valioProduct.searchText}, ${productName ?? typeNorm}) desc`, asc(valioProduct.id))
         .limit(40);
 
       if (rows.length > 0) {
         const priceMap = new Map<string, { price: number; vat: number }>();
         const availMap = new Map<
           string,
-          { available: number | null; model: "stock" | "terminal"; salesBlock: boolean }
+          { available: number | null; model: "stock" | "terminal"; salesBlock: boolean; date: string | null }
         >();
         try {
           const [prices, availability] = await Promise.all([
@@ -340,6 +372,7 @@ export async function getCandidatesByProductType(
               available: a.salesBlock ? 0 : a.availableQuantity,
               model: a.logisticModel ?? "stock",
               salesBlock: a.salesBlock,
+              date: a.availableDate,
             });
           }
         } catch {
@@ -347,10 +380,7 @@ export async function getCandidatesByProductType(
         }
 
         for (const r of rows) {
-          const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(
-            r.name,
-            r.allergens,
-          );
+          const { dietaryTags, allergens, nutrition } = realProductFacts(r);
           const priceInfo = priceMap.get(r.id);
           const availInfo = availMap.get(r.id);
           // No real price, no candidate: a fixed-price order can't use an invented price.
@@ -377,11 +407,14 @@ export async function getCandidatesByProductType(
             vatRatePct: priceInfo.vat,
             availableQuantity: availInfo ? availInfo.available : null,
             logisticModel: availInfo?.model ?? "stock",
+            availableDate: availInfo?.date ?? null,
+            salesBlock: availInfo?.salesBlock ?? false,
+            labels: r.labels,
             deliveryReliability: r.deliveryReliability,
             co2PerKg: r.co2PerKg,
             dietaryTags,
             allergens,
-            nutrition: null,
+            nutrition,
             substituteIds: [],
           });
         }
@@ -486,9 +519,10 @@ export type SelectionInput = {
 /** Ranks products for every requested item and creates one proposal from the chosen lines. */
 export async function createProposalFromItems(actor: Actor, input: SelectionInput): Promise<ProposalFromPromptResponse> {
   const { extractedItems, deliveryDate, autoResolvePartialStock } = input;
-  const [preferences, previousOrders] = await Promise.all([
+  const [preferences, previousOrders, rules] = await Promise.all([
     customerPreferencesFor(actor.organizationId),
     loadHistoricalOrderRecords(actor.organizationId),
+    getEffectiveFor(actor.organizationId, "buyer").then((e) => e.values),
   ]);
   const orderId = "pending";
   const auditTrail: PreparationStep[] = [...(input.initialSteps ?? [])];
@@ -499,20 +533,23 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     previousOrders.map((o) => o.productName.trim().toLowerCase()),
   );
   const previousBrands = new Set(previousOrders.map((o) => o.brand.trim().toLowerCase()));
-  const hasPreviousOrders = previousOrders.length > 0;
 
   const pipeline: ItemProcurementTrace[] = [];
-  const draftSelections: Array<{
-    selected: CandidateProduct;
-    requestedProductName: string;
-    quantity: number;
-    unit: string;
-  }> = [];
+  const draftSelections: Draft[] = [];
 
   for (const item of extractedItems) {
     // Step 2: Get list of products by [Product type]
-    const rawByType = await getCandidatesByProductType(item.productType, deliveryDate);
-    const { quantity, unit } = parseQuantityAndUnit(item.productQuantity, "KG");
+    // Products matching every word of the requested name; the product type only if none do.
+    let rawByType = await getCandidatesByProductType(item.productType, deliveryDate, item.productName);
+    if (!rawByType.length) rawByType = await getCandidatesByProductType(item.productType, deliveryDate);
+    const { quantity, unit } = parseQuantityAndUnit(item.productQuantity, "");
+    // The requested amount in each candidate's sales unit ("1000 L" → 200 cases of 5 L).
+    const facts = await getUnitFacts(rawByType.filter((r) => !isSyntheticId(r.id)).map((r) => r.id));
+    const convert = (id: string, amount: number): Conversion | null => {
+      const f = facts.get(id);
+      return f ? toSalesUnits(amount, unit, f) : null;
+    };
+    const conversionOf = new Map(rawByType.map((r) => [r.id, convert(r.id, quantity)]));
 
     auditTrail.push(
       makeAuditEvent({
@@ -545,7 +582,7 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
           nameMatchScore,
           previouslyOrderedProduct,
           previouslyOrderedBrand,
-          requestedQuantity: quantity,
+          requestedQuantity: conversionOf.get(record.id)?.quantity ?? quantity,
           deliveryDate,
         });
       })
@@ -585,23 +622,62 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
       }),
     );
 
-    // Step 5: Sort by previous order history (product, then brand, then nameMatchScore)
-    const sortedCandidates = [...survivingCandidates].sort((a, b) => {
-      if (hasPreviousOrders) {
-        if (a.previouslyOrderedProduct !== b.previouslyOrderedProduct) {
-          return a.previouslyOrderedProduct ? -1 : 1;
-        }
-        if (a.previouslyOrderedBrand !== b.previouslyOrderedBrand) {
-          return a.previouslyOrderedBrand ? -1 : 1;
-        }
-      }
-      if (b.nameMatchScore !== a.nameMatchScore) {
-        return b.nameMatchScore - a.nameMatchScore;
-      }
-      return a.name.localeCompare(b.name);
-    });
+    // Only products that actually match the request compete (≥ 0.35 and ≥ 70% of the best match).
+    const topMatch = Math.max(0, ...survivingCandidates.map((c) => c.nameMatchScore));
+    const relevant = survivingCandidates.filter((c) => c.nameMatchScore >= Math.max(0.35, topMatch * 0.7));
+    survivingCandidates.splice(0, survivingCandidates.length, ...relevant);
 
-    const selectedProduct = sortedCandidates[0] ?? null;
+    // Step 5: Rank the compliant candidates: price per litre/kg, availability by the date,
+    // relevance and history, reliability, CO2, organization preferences (server/purchasing/ranking.ts).
+    const recordBy = new Map(rawByType.map((r) => [r.id, r]));
+    const { ranked, unavailable } = rankCandidates(
+      survivingCandidates.map((c) => {
+        const r = recordBy.get(c.id)!;
+        const conv = conversionOf.get(c.id);
+        return {
+          id: c.id,
+          name: c.name,
+          brand: c.brand,
+          vendorName: c.vendorName,
+          countryOfOrigin: r.countryOfOrigin,
+          labels: r.labels ?? [],
+          unitPriceExclVat: c.unitPriceEur,
+          salesUnit: c.salesUnit,
+          perSalesUnit: conv?.perSalesUnit ?? null,
+          quantity: conv?.quantity ?? quantity,
+          converted: unit ? (conv?.converted ?? false) : true,
+          orderable: r.availableQuantity === null ? null : r.availableQuantity > 0 || r.logisticModel === "terminal",
+          salesBlock: r.salesBlock ?? false,
+          availableDate: r.availableDate ?? null,
+          availableQuantity: r.availableQuantity,
+          deliveryReliability: c.deliveryReliability ?? null,
+          co2PerKg: c.co2PerKg ?? null,
+          nameMatch: c.nameMatchScore,
+          previouslyOrderedProduct: c.previouslyOrderedProduct,
+          previouslyOrderedBrand: c.previouslyOrderedBrand,
+        };
+      }),
+      {
+        requestedDate: deliveryDate,
+        preferredOriginCountries: rules.preferredOriginCountries,
+        preferredVendors: rules.preferredVendors,
+        preferredBrands: rules.preferredBrands,
+      },
+    );
+    const candidateBy = new Map(survivingCandidates.map((c) => [c.id, c]));
+    const sortedCandidates: CandidateProduct[] = [
+      ...ranked.map((r) => ({ ...candidateBy.get(r.id)!, rankScore: r.score, rankReasons: r.reasons })),
+      ...unavailable.map((u) => ({ ...candidateBy.get(u.id)!, rankScore: 0, rankReasons: [u.reason] })),
+    ];
+    const selectedProduct = ranked[0] ? sortedCandidates[0]! : null;
+    // The best name match couldn't be delivered, so another product stands in for it.
+    const bestMatch = [...survivingCandidates].sort((x, y) => y.nameMatchScore - x.nameMatchScore)[0];
+    // Only a real delivery problem (sales block, nothing deliverable, no price) makes it a fallback,
+    // not a product that merely can't take the requested unit.
+    const bestMatchProblem = bestMatch ? unavailable.find((u) => u.id === bestMatch.id)?.reason : undefined;
+    const fallback =
+      !!selectedProduct && !!bestMatch && bestMatch.id !== selectedProduct.id && !!bestMatchProblem && !bestMatchProblem.includes("converted");
+    const selectedConversion = selectedProduct ? conversionOf.get(selectedProduct.id) ?? null : null;
     const resolvedUnit = selectedProduct?.salesUnit || unit;
 
     auditTrail.push(
@@ -612,16 +688,15 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
         actorName,
         eventType: "candidates_ranked",
         summary: selectedProduct
-          ? `Selected '${selectedProduct.name}' (${selectedProduct.id}) for '${item.productName}' (match score ${selectedProduct.nameMatchScore}, previous SKU=${selectedProduct.previouslyOrderedProduct}, previous brand=${selectedProduct.previouslyOrderedBrand}).`
-          : `No compliant candidate remained for '${item.productName}'.`,
+          ? `Selected '${selectedProduct.name}' (${selectedProduct.id}) for '${item.productName}': ${ranked[0]!.reasons.join("; ")}.${
+              selectedConversion ? ` ${selectedConversion.note}.` : ""
+            }${fallback ? ` Stands in for '${bestMatch!.name}', which can't be delivered.` : ""}`
+          : `No compliant, deliverable candidate for '${item.productName}'.`,
         details: {
           requestedName: item.productName,
           selectedProductId: selectedProduct?.id ?? null,
-          topAlternatives: sortedCandidates.slice(1, 4).map((c) => ({
-            id: c.id,
-            name: c.name,
-            unitPriceEur: c.unitPriceEur,
-          })),
+          ranking: ranked.slice(0, 5).map((r) => ({ id: r.id, name: r.name, score: r.score, tier: r.tier, reasons: r.reasons })),
+          unavailable: unavailable.map((u) => ({ id: u.id, reason: u.reason })),
         },
       }),
     );
@@ -629,7 +704,9 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     pipeline.push({
       extractedItem: item,
       parsedQuantity: quantity,
-      parsedUnit: resolvedUnit,
+      parsedUnit: unit || resolvedUnit,
+      orderedQuantity: selectedConversion?.quantity ?? (selectedProduct ? quantity : null),
+      conversionNote: selectedConversion?.note ?? null,
       matchedByTypeCount: rawByType.length,
       removedByPreferences,
       sortedCandidates,
@@ -637,93 +714,62 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     });
 
     if (selectedProduct) {
-      // Optional Feature #4 & #8: Partial availability & allergen-safe split fulfillment
-      if (
-        autoResolvePartialStock &&
-        selectedProduct.availableQuantity !== null &&
-        selectedProduct.availableQuantity !== undefined &&
-        selectedProduct.availableQuantity < quantity &&
-        sortedCandidates.length > 1
-      ) {
+      const primaryQty = selectedConversion?.quantity ?? quantity;
+      const primary = {
+        selected: selectedProduct,
+        requestedProductName: item.productName,
+        quantity: primaryQty,
+        unit: resolvedUnit,
+        substituteFor: fallback ? { requested: item.productName, reason: "fallback" as const } : null,
+        conversion: selectedConversion,
+      };
+      // Optional: split over compliant alternatives when known stock is short. Remaining need is
+      // tracked in the requested amount and converted per product.
+      const available = selectedProduct.availableQuantity;
+      if (autoResolvePartialStock && available !== null && available !== undefined && available < primaryQty && ranked.length > 1) {
+        const perSales = (q: number) => (primaryQty > 0 ? quantity / primaryQty : 1) * q; // requested units per sales unit
         let remaining = quantity;
-        const splitAllocations: Array<{ productId: string; name: string; allocated: number }> = [];
-
-        for (const cand of sortedCandidates) {
+        const allocations: { productId: string; name: string; allocated: number }[] = [];
+        for (const r of ranked) {
           if (remaining <= 0) break;
-          const cap =
-            cand.availableQuantity === null || cand.availableQuantity === undefined
-              ? remaining
-              : Math.max(0, cand.availableQuantity);
+          const cand = candidateBy.get(r.id)!;
+          const need = r.id === selectedProduct.id ? primaryQty : (convert(r.id, remaining)?.quantity ?? Math.ceil(remaining));
+          const cap = r.availableQuantity === null ? need : Math.max(0, Math.min(need, r.availableQuantity));
           if (cap <= 0) continue;
-          const allocated = roundCurrency(Math.min(remaining, cap));
-          if (allocated <= 0) continue;
-
           draftSelections.push({
             selected: cand,
             requestedProductName: item.productName,
-            quantity: allocated,
+            quantity: cap,
             unit: cand.salesUnit || resolvedUnit,
+            substituteFor: r.id === selectedProduct.id ? primary.substituteFor : { requested: item.productName, reason: "split" },
+            conversion: conversionOf.get(r.id) ?? null,
           });
-          splitAllocations.push({
-            productId: cand.id,
-            name: cand.name,
-            allocated,
-          });
-          remaining = roundCurrency(remaining - allocated);
+          allocations.push({ productId: cand.id, name: cand.name, allocated: cap });
+          const covered = r.id === selectedProduct.id ? perSales(cap) : (convert(r.id, remaining)?.converted ? Math.min(remaining, (remaining / need) * cap) : cap);
+          remaining = roundCurrency(remaining - covered);
         }
-
-        if (splitAllocations.length === 0) {
-          draftSelections.push({
-            selected: selectedProduct,
-            requestedProductName: item.productName,
-            quantity,
-            unit: resolvedUnit,
-          });
-        } else {
-          if (remaining > 0) {
-            // Attach any unfulfilled remainder onto the primary line so stock_shortfall guardrail triggers transparently
-            const firstDraft = draftSelections[draftSelections.length - splitAllocations.length];
-            if (firstDraft) {
-              firstDraft.quantity = roundCurrency(firstDraft.quantity + remaining);
-            }
-          }
-          auditTrail.push(
-            makeAuditEvent({
-              orderId,
-              actorType: "agent",
-              actorId,
-              actorName,
-              eventType: "partial_stock_split",
-              summary: `Resolved insufficient stock on '${selectedProduct.name}' (requested ${quantity} ${resolvedUnit}, available ${selectedProduct.availableQuantity}) across ${splitAllocations.length} allergen-safe SKU(s): ${splitAllocations.map((a) => `${a.allocated} of ${a.productId}`).join(" + ")}.`,
-              details: {
-                requestedQuantity: quantity,
-                splitAllocations,
-                unfulfilledRemainder: remaining,
-              },
-            }),
-          );
-        }
+        auditTrail.push(
+          makeAuditEvent({
+            orderId,
+            actorType: "agent",
+            actorId,
+            actorName,
+            eventType: "partial_stock_split",
+            summary: `Known stock of '${selectedProduct.name}' (${available} ${selectedProduct.salesUnit}) is below ${primaryQty}; split over ${allocations.length} compliant product(s): ${allocations
+              .map((x) => `${x.allocated} of ${x.productId}`)
+              .join(" + ")}${remaining > 0 ? `; ${remaining} ${unit || selectedProduct.salesUnit} still uncovered` : ""}.`,
+            details: { requested: { quantity, unit }, allocations, uncovered: Math.max(0, remaining) },
+          }),
+        );
+        if (!allocations.length) draftSelections.push(primary);
       } else {
-        draftSelections.push({
-          selected: selectedProduct,
-          requestedProductName: item.productName,
-          quantity,
-          unit: resolvedUnit,
-        });
+        draftSelections.push(primary);
       }
     }
   }
 
   // Merge duplicate productIds in draftSelections before running inquiry
-  const mergedDraftMap = new Map<
-    string,
-    {
-      selected: CandidateProduct;
-      requestedProductName: string;
-      quantity: number;
-      unit: string;
-    }
-  >();
+  const mergedDraftMap = new Map<string, Draft>();
   for (const d of draftSelections) {
     const prev = mergedDraftMap.get(d.selected.id);
     if (prev) {
@@ -756,13 +802,10 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
       );
     }
   }
-  // Quantities are ordered in the product's sales unit; flag where the request used another unit.
-  for (const trace of pipeline) {
-    const unit = trace.selectedProduct?.salesUnit;
-    if (unit && trace.parsedUnit && unit.toUpperCase() !== trace.parsedUnit.toUpperCase())
-      warnings.push(
-        `'${trace.extractedItem.productName}': requested in ${trace.parsedUnit}, ordered as ${trace.parsedQuantity} ${unit} (sales unit). Check the quantity.`,
-      );
+  // Amounts that couldn't be converted into the product's sales unit need a human look.
+  for (const d of finalDrafts) {
+    if (!d.conversion) warnings.push(`'${d.requestedProductName}': no packaging data for ${d.selected.name}; ordered ${d.quantity} ${d.unit}. Check the quantity.`);
+    else if (!d.conversion.converted) warnings.push(`'${d.requestedProductName}': ${d.conversion.note}`);
   }
 
   const suggestedAlternatives: SuggestedAlternative[] = finalDrafts.map((d) => ({
@@ -792,7 +835,11 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
   const proposal = await createProposal(
     actor,
     {
-      lines: finalDrafts.map((d) => ({ productId: d.selected.id, quantity: d.quantity })),
+      lines: finalDrafts.map((d) => ({
+        productId: d.selected.id,
+        quantity: d.quantity,
+        ...(d.substituteFor ? { substituteFor: d.substituteFor } : {}),
+      })),
       date: deliveryDate,
       note: (input.note ?? input.prompt ?? undefined)?.slice(0, 1000),
     },
@@ -866,7 +913,7 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
       if (score > (best?.score ?? 0.25)) best = { id: cand.id, score };
     }
   if (best) return best.id;
-  const search = await searchCatalogProducts({ q: toTarget, limit: 5, offset: 0 });
+  const search = await searchProducts({ q: toTarget, limit: 5, offset: 0, sort: "name" });
   return search.items[0]?.id ?? null;
 }
 
@@ -906,8 +953,10 @@ export async function reviseProposalFromRequest(
         `Available candidate alternatives: ${JSON.stringify(pipeline.flatMap((t) => t.sortedCandidates.map((c) => ({ id: c.id, name: c.name }))))}`,
         `Customer change request: ${input.prompt}`,
       ].join("\n");
-      const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
-      parsed = ParsedOrderChangeSchema.parse(llm.object);
+      parsed = await callModel(async () => {
+        const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
+        return ParsedOrderChangeSchema.parse(llm.object);
+      });
     }
     for (const rep of parsed.replacements) {
       const from = resolveLineTarget(rep.fromTarget, refs);
@@ -930,7 +979,14 @@ export async function reviseProposalFromRequest(
   if (!replacements.length && !quantityUpdates.length && !removeProductIds.length && !addItems.length && !input.date)
     throw badRequest("No change was given or recognized in the request.");
 
-  const lines = current.lines.map((l) => ({ productId: l.productId, name: l.name, quantity: l.quantity, unit: l.salesUnit ?? "" }));
+  type Line = { productId: string; name: string; quantity: number; unit: string; substituteFor: Draft["substituteFor"] };
+  const lines: Line[] = current.lines.map((l) => ({
+    productId: l.productId,
+    name: l.name,
+    quantity: l.quantity,
+    unit: l.salesUnit ?? "",
+    substituteFor: l.substituteFor ?? null,
+  }));
   const applied: string[] = [];
   const preferences = await customerPreferencesFor(actor.organizationId);
   for (const rep of replacements) {
@@ -942,7 +998,14 @@ export async function reviseProposalFromRequest(
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const old = lines[idx]!;
     const quantity = rep.quantity ?? old.quantity;
-    lines[idx] = { productId: record.id, name: record.name, quantity, unit: record.salesUnit };
+    // A swap stands in for what the line was for originally.
+    lines[idx] = {
+      productId: record.id,
+      name: record.name,
+      quantity,
+      unit: record.salesUnit,
+      substituteFor: { requested: old.substituteFor?.requested ?? old.name, reason: "swap" },
+    };
     applied.push(`Replaced ${old.name} (${old.productId}) with ${record.name} (${record.id}), ${quantity} ${record.salesUnit}.`);
   }
   for (const qu of quantityUpdates) {
@@ -964,14 +1027,140 @@ export async function reviseProposalFromRequest(
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const existing = lines.find((l) => l.productId === record.id);
     if (existing) existing.quantity = roundCurrency(existing.quantity + add.quantity);
-    else lines.push({ productId: record.id, name: record.name, quantity: add.quantity, unit: record.salesUnit });
+    else lines.push({ productId: record.id, name: record.name, quantity: add.quantity, unit: record.salesUnit, substituteFor: null });
     applied.push(`Added ${add.quantity} ${record.salesUnit} of ${record.name} (${record.id}).`);
   }
   if (input.date && input.date !== current.pricingDate) applied.push(`Moved the delivery date from ${current.pricingDate} to ${input.date}.`);
 
   return reviseProposal(actor, proposalId, {
-    lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+    lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity, substituteFor: l.substituteFor })),
     date,
     appliedChanges: applied,
   });
+}
+
+// ---------- Ranking (POST /api/products/rank) ----------
+
+/**
+ * Good / better / best for a need ("1000 L of lactose-free milk"): candidates from the catalog,
+ * the organization's rules (excluded allergens, dietary tags, blocked vendors) applied, the amount
+ * converted per product, live prices and availability for the date, then `rankCandidates`.
+ */
+export async function rankProducts(actor: Actor, req: RankProductsRequest): Promise<RankProductsResponse> {
+  const date = req.date ?? todayIsoDate();
+  const rules = (await getEffectiveFor(actor.organizationId, "buyer")).values;
+  const found = req.productIds?.length
+    ? await getProductSummaries(req.productIds)
+    : (await searchProducts({ q: req.q, limit: 60, offset: 0, sort: "name" })).items;
+  if (req.q && !req.productIds?.length) {
+    // Most relevant first, and only real matches (the same gate as the agent's selection).
+    const score = new Map(found.map((p) => [p.id, computeNameMatchScore(req.q!, p.name)]));
+    const top = Math.max(0, ...score.values());
+    found.sort((a, b) => score.get(b.id)! - score.get(a.id)!);
+    found.splice(0, found.length, ...found.filter((p) => score.get(p.id)! >= Math.max(0.35, top * 0.7)));
+  }
+
+  const excluded: RankProductsResponse["excluded"] = [];
+  const allowed: ProductSummary[] = [];
+  const banned = allergenCodes(rules.excludedAllergens);
+  const blocked = new Set(rules.blockedVendors);
+  for (const p of found) {
+    const reasons: string[] = [];
+    const hits = p.allergens.filter((a) => banned.has(a.toUpperCase()));
+    if (hits.length) reasons.push(`contains excluded allergens: ${allergenNames(hits).join(", ")}`);
+    const missing = rules.dietaryRestrictions.filter((t) => !p.dietaryTags.includes(t.toLowerCase()));
+    if (missing.length) reasons.push(`not declared ${missing.join(", ")}`);
+    if (blocked.has(p.vendorName)) reasons.push(`vendor ${p.vendorName} is blocked`);
+    if (reasons.length) excluded.push({ product: p, reasons });
+    else allowed.push(p);
+  }
+  const candidates = allowed.slice(0, req.limit);
+  const ids = candidates.map((p) => p.id);
+  const [facts, prices, availability, history] = await Promise.all([
+    getUnitFacts(ids),
+    ids.length ? getPrices({ productIds: ids, date }) : null,
+    ids.length ? getAvailability({ productIds: ids, date }) : null,
+    loadHistoricalOrderRecords(actor.organizationId),
+  ]);
+  const priceBy = new Map((prices?.quotes ?? []).map((q) => [q.productId, q]));
+  const availBy = new Map((availability?.items ?? []).map((a) => [a.productId, a]));
+  const orderedIds = new Set(history.map((h) => h.productId));
+  const orderedBrands = new Set(history.map((h) => h.brand.toLowerCase()).filter(Boolean));
+  const conversions = new Map(
+    candidates.map((p) => {
+      const f = facts.get(p.id);
+      const conv = f ? toSalesUnits(req.quantity, req.unit, f) : null;
+      return [p.id, conv];
+    }),
+  );
+
+  const { ranked, unavailable } = rankCandidates(
+    candidates.map((p) => {
+      const quote = priceBy.get(p.id);
+      const avail = availBy.get(p.id);
+      const conv = conversions.get(p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        brand: p.brand,
+        vendorName: p.vendorName,
+        countryOfOrigin: p.countryOfOrigin,
+        labels: p.labels.map((l) => l.id),
+        unitPriceExclVat: quote?.found ? quote.priceExclVat : null,
+        salesUnit: p.salesUnit,
+        perSalesUnit: p.contentPerSalesUnit,
+        quantity: conv?.quantity ?? Math.ceil(req.quantity),
+        converted: req.unit ? (conv?.converted ?? false) : true,
+        orderable: avail ? avail.orderable : null,
+        salesBlock: avail?.salesBlock ?? false,
+        availableDate: avail?.availableDate ?? null,
+        availableQuantity: avail?.availableQuantity ?? null,
+        deliveryReliability: p.deliveryReliability,
+        co2PerKg: p.co2PerKg,
+        nameMatch: req.q ? computeNameMatchScore(req.q, p.name) : 1,
+        previouslyOrderedProduct: orderedIds.has(p.id),
+        previouslyOrderedBrand: !!p.brand && orderedBrands.has(p.brand.toLowerCase()),
+      };
+    }),
+    {
+      requestedDate: date,
+      preferredOriginCountries: rules.preferredOriginCountries,
+      preferredVendors: rules.preferredVendors,
+      preferredBrands: rules.preferredBrands,
+    },
+  );
+
+  const productBy = new Map(candidates.map((p) => [p.id, p]));
+  const toRanked = (r: (typeof ranked)[number]): RankedProduct => {
+    const conv = conversions.get(r.id);
+    return {
+      product: productBy.get(r.id)!,
+      tier: r.tier,
+      score: r.score,
+      quantity: r.quantity,
+      salesUnit: r.salesUnit,
+      conversion: conv
+        ? { converted: conv.converted, note: conv.note }
+        : { converted: false, note: "No packaging data for this product; quantity taken as sales units." },
+      unitPriceExclVat: r.unitPriceExclVat!,
+      lineTotalExclVat: r.lineTotalExclVat!,
+      pricePerContent: r.pricePerContent,
+      availableDate: r.availableDate,
+      availableQuantity: r.availableQuantity,
+      priceSnapshotId: priceBy.get(r.id)?.snapshotId ?? null,
+      availabilitySnapshotId: availBy.get(r.id)?.snapshotId ?? null,
+      reasons: r.reasons,
+    };
+  };
+  const list = ranked.map(toRanked);
+  return {
+    date,
+    source: prices?.source ?? availability?.source ?? "mock",
+    best: list[0] ?? null,
+    better: list[1] ?? null,
+    good: list[2] ?? null,
+    ranked: list,
+    unavailable: unavailable.map((u) => ({ product: productBy.get(u.id)!, reason: u.reason })),
+    excluded,
+  };
 }

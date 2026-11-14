@@ -3,6 +3,7 @@ import "server-only";
 import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
+import { AgentError } from "@/server/agents/mode";
 import { getAuth } from "@/server/auth/auth";
 import { ensureDatabase } from "@/server/db/migrate";
 
@@ -11,7 +12,6 @@ import { createRouter } from "./router";
 import { agentRouter } from "./routes/agent/agent";
 import { approvalsRouter } from "./routes/approvals/approvals";
 import { auditRouter } from "./routes/audit/audit";
-import { catalogRouter } from "./routes/catalog/catalog";
 import { extractRouter } from "./routes/extract/extract";
 import { healthRouter } from "./routes/health/health";
 import { inquiriesRouter } from "./routes/inquiries/inquiries";
@@ -25,18 +25,19 @@ import { preferencesRouter } from "./routes/preferences/preferences";
 import { productsRouter } from "./routes/products/products";
 import { proposalsRouter } from "./routes/proposals/proposals";
 import { recipesRouter } from "./routes/recipes/recipes";
+import { trustRouter } from "./routes/trust/trust";
 
 /**
  * The whole /api surface. Mounted by src/app/api/[[...route]]/route.ts.
  * Add an endpoint: create ./routes/<name>/<name>.ts (+ <name>.docs.ts) and register it below.
- * Default-deny: everything except /health, /docs, /openapi.json and /auth/* needs a session
+ * Default-deny: everything except /health, /trust/public-key, /docs, /openapi.json and /auth/* needs a session
  * (middleware below); routers add `requireRole(...)` from ./middleware/session.ts for their role.
  */
 export const app = createRouter().basePath("/api");
 
 // Default-deny: every /api route needs a signed-in user, except the public ones below. Routers
 // still add `requireRole(...)` for the role they need; it reuses the user resolved here.
-const PUBLIC_PATHS = new Set(["/api/health", "/api/docs", "/api/openapi.json"]);
+const PUBLIC_PATHS = new Set(["/api/health", "/api/trust/public-key", "/api/docs", "/api/openapi.json"]);
 app.use("*", async (c, next) => {
   if (PUBLIC_PATHS.has(c.req.path) || c.req.path.startsWith("/api/auth/")) return next();
   return requireSession(c, next);
@@ -49,6 +50,7 @@ app.on(["GET", "POST"], "/auth/*", async (c) => {
 });
 
 app.route("/", healthRouter);
+app.route("/", trustRouter);
 app.route("/", meRouter);
 app.route("/", organizationRouter);
 app.route("/", preferencesRouter);
@@ -58,7 +60,6 @@ app.route("/", proposalsRouter);
 app.route("/", approvalsRouter);
 app.route("/", ordersRouter);
 app.route("/", auditRouter);
-app.route("/", catalogRouter);
 app.route("/", inquiriesRouter);
 app.route("/", inventoryRouter);
 app.route("/", recipesRouter);
@@ -92,6 +93,11 @@ app.notFound((c) => c.json({ error: "Not found" }, 404));
 
 app.onError((err, c) => {
   if (err instanceof HTTPException) return err.getResponse();
+  // Agent not configured (503) or the model call failed (502): say so, log the cause, hide details.
+  if (err instanceof AgentError) {
+    if (err.status === 502) console.error(err.message, err.cause);
+    return c.json({ error: err.message, code: err.code }, err.status);
+  }
   console.error(err);
   return c.json({ error: "Internal error" }, 500);
 });

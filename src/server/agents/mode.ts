@@ -5,6 +5,22 @@ import type { MastraModelConfig } from "@mastra/core/llm";
 export const GEMINI_MODEL = "google/gemini-3.8-flash";
 
 /**
+ * Agent failures the API reports as such instead of a plain 500 (mapped in server/api/app.ts):
+ * - 503 `AGENT_NOT_CONFIGURED`: no Gemini key and not in TEST_MODE (server configuration).
+ * - 502 `MODEL_FAILED`: the model call failed or returned unusable output (upstream problem).
+ */
+export class AgentError extends Error {
+  readonly status: 502 | 503;
+  readonly code: "AGENT_NOT_CONFIGURED" | "MODEL_FAILED";
+  constructor(status: 502 | 503, code: AgentError["code"], message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "AgentError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
  * Deterministic fallback flows and mock models are enabled only when `TEST_MODE=TRUE`
  * (case-insensitive). Outside test mode, live Gemini via `GOOGLE_GENERATIVE_AI_API_KEY` is required.
  */
@@ -18,13 +34,16 @@ export function hasGeminiApiKey(): boolean {
 }
 
 /**
- * Ensures `GOOGLE_GENERATIVE_AI_API_KEY` is configured whenever `TEST_MODE` is not `TRUE`.
- * Checked at execution time so module imports during builds and tests remain safe.
+ * Ensures `GOOGLE_GENERATIVE_AI_API_KEY` is configured whenever `TEST_MODE` is not `TRUE`
+ * (else a 503 `AGENT_NOT_CONFIGURED`). Checked at execution time so module imports during builds
+ * and tests remain safe.
  */
 export function requireGeminiApiKey(): void {
   if (!isAgentTestMode() && !hasGeminiApiKey()) {
-    throw new Error(
-      "GOOGLE_GENERATIVE_AI_API_KEY is not set. Configure it in .env, or set TEST_MODE=TRUE to use the deterministic flow.",
+    throw new AgentError(
+      503,
+      "AGENT_NOT_CONFIGURED",
+      "The agent is not configured: GOOGLE_GENERATIVE_AI_API_KEY is not set on the server (or set TEST_MODE=TRUE for the deterministic flow).",
     );
   }
 }
@@ -34,4 +53,21 @@ export function resolveAgentModel(mockModel: MastraModelConfig): MastraModelConf
   if (isAgentTestMode()) return mockModel;
   requireGeminiApiKey();
   return GEMINI_MODEL;
+}
+
+/**
+ * Runs a model call (and the parsing of its output). Failures become a 502 `MODEL_FAILED`; the
+ * cause is logged by the API's error handler, not sent to the client. Errors with their own
+ * meaning pass through: an AgentError, or one the caller marks with `passThrough` (e.g. a
+ * PurchasingError a tool raised).
+ */
+export async function callModel<T>(run: () => Promise<T>, passThrough: (err: unknown) => boolean = () => false): Promise<T> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof AgentError || passThrough(err)) throw err;
+    throw new AgentError(502, "MODEL_FAILED", "The language model call failed or returned unusable output. Try again.", {
+      cause: err,
+    });
+  }
 }

@@ -11,6 +11,8 @@ import type { Preferences } from "@/shared/contracts/preferences";
 
 export type PolicyProductFacts = {
   vendorName: string;
+  /** GS1 codes it may contain (cross-contamination). */
+  mayContainAllergens?: string[];
   /** Valio category code. */
   category?: string;
   allergens: string[];
@@ -27,6 +29,8 @@ export type PolicyLineFacts = {
   unitPriceExclVat: number | null;
   /** The unit the price and quantity are in (e.g. KI). */
   salesUnit?: string | null;
+  /** Set when this line stands in for what was requested (split, swap, fallback). */
+  substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null;
   /** Valio's availability for the requested date. Null: Valio gave no answer. Absent: not checked. */
   availability?: PolicyAvailabilityFacts | null;
 };
@@ -114,6 +118,23 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], opt
   for (const line of lines) {
     const { product, productId } = line;
     if (!product) continue;
+    if (line.substituteFor && !prefs.allowSubstitutes) {
+      const why = { split: "covers part of a short-stock split", swap: "was swapped in", fallback: "stands in for a product that can't be delivered" }[line.substituteFor.reason];
+      approve({
+        code: "SUBSTITUTE_NOT_ALLOWED",
+        setting: "allowSubstitutes",
+        productId,
+        message: `Product ${productId} ${why} for '${line.substituteFor.requested}'; substitutes need approval.`,
+      });
+    }
+    const traces = (product.mayContainAllergens ?? []).filter((a) => excludedCodes.has(a.trim().toUpperCase()));
+    if (traces.length)
+      approve({
+        code: "MAY_CONTAIN_EXCLUDED_ALLERGEN",
+        setting: "excludedAllergens",
+        productId,
+        message: `Product ${productId} may contain excluded allergens: ${traces.join(", ")}.`,
+      });
     if (prefs.maxUnitPrice !== null && line.unitPriceExclVat !== null && line.unitPriceExclVat > prefs.maxUnitPrice)
       approve({
         code: "UNIT_PRICE_TOO_HIGH",

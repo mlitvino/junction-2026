@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "pnpm db:up && next dev",
+    "dev": "pnpm db:up && pnpm db:migrate && next dev",
     "dev:app": "next dev",
     "build": "next build",
     "start": "next start",

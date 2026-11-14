@@ -47,6 +47,8 @@ const RawProduct = z.object({
           synkkaPackagingType: z.string(),
           netWeight: Measure.optional(),
           grossWeight: Measure.optional(),
+          /** Net content of this packaging level (LTR, MLT, CLT, KGM, GRM; piece units are ignored). */
+          volume: Measure.optional(),
         }),
       )
       .optional(),
@@ -76,7 +78,21 @@ export type CatalogProduct = {
   countryOfOrigin: string | null;
   /** Raw Synkka VAT code (MEDIUM, STANDARD, …); kept as is, see anomalies.ts for malformed values. */
   vatCode: string | null;
+  /** GS1 allergen codes the product contains (Synkka `allergen` with unit CONTAINS). */
   allergens: string[];
+  /** GS1 allergen codes it may contain (cross-contamination, unit MAY_CONTAIN). */
+  mayContainAllergens: string[];
+  /** Net content of one base unit, in `contentUnit` (L or KG); null when not declared. */
+  contentPerBaseUnit: number | null;
+  contentUnit: "L" | "KG" | null;
+  /** Per 100 g or ml, from Synkka `nutritionFact`; null when not declared. */
+  nutrition: CatalogNutrition | null;
+  /** Packaging labels and certificates (Synkka `packagingMarkedLabel`, storage temperatures removed). */
+  labels: string[];
+  /** Nutritional and free-from claims (e.g. FREE_FROM_LACTOSE, VEGAN, HIGH_PROTEIN). */
+  claims: string[];
+  /** Dietary tags derived from the claims (and a few name hints): lactose-free, gluten-free, vegan, vegetarian. */
+  dietaryTags: string[];
   /** Storage temperature range from Synkka, °C. More specific than temperatureCondition. */
   storageTempC: { min: number | null; max: number | null } | null;
   /** True when the product is priced by weight (Synkka variableUnit). */
@@ -97,6 +113,17 @@ export type CatalogProduct = {
   co2PerBaseUnit: number | null;
   /** From delivery-reliability.csv: share of deliveries delivered as ordered, 0–1. */
   deliveryReliability: number | null;
+};
+
+export type CatalogNutrition = {
+  energyKcal: number | null;
+  fat: number | null;
+  saturatedFat: number | null;
+  carbohydrate: number | null;
+  sugars: number | null;
+  protein: number | null;
+  salt: number | null;
+  fibre: number | null;
 };
 
 export type DataIssue = { file: string; ref: string; problem: string };
@@ -157,6 +184,83 @@ function netWeightKg(raw: RawProduct, issues: DataIssue[]): number | null {
   return net;
 }
 
+const CONTENT_UNITS: Record<string, { unit: "L" | "KG"; factor: number }> = {
+  LTR: { unit: "L", factor: 1 },
+  DLT: { unit: "L", factor: 0.1 },
+  CLT: { unit: "L", factor: 0.01 },
+  MLT: { unit: "L", factor: 0.001 },
+  KGM: { unit: "KG", factor: 1 },
+  GRM: { unit: "KG", factor: 0.001 },
+};
+
+/**
+ * Net content of one base unit (e.g. 1 L per carton). From the base unit's declared content, or the
+ * case content divided by the case size. Piece units (H87) and unknown units give null.
+ */
+function contentPerBaseUnit(raw: RawProduct, issues: DataIssue[]): { value: number; unit: "L" | "KG" } | null {
+  const conversions = raw.synkkaData.unitConversions ?? [];
+  const base = conversions.find((u) => u.synkkaPackagingType === "BASE_UNIT_OR_EACH" && u.volume);
+  const of = (m: { unit: string; value: number } | undefined) => {
+    const known = m && CONTENT_UNITS[m.unit.trim()];
+    return known && m.value > 0 ? { value: m.value * known.factor, unit: known.unit } : null;
+  };
+  let content = of(base?.volume);
+  if (!content) {
+    const kase = conversions.find((u) => u.synkkaPackagingType === "CASE" && u.volume);
+    const caseSize = raw.units.find((u) => u.unitId === "KI")?.sizeInBaseUnits;
+    const caseContent = of(kase?.volume);
+    if (caseContent && caseSize && caseSize > 0) content = { value: caseContent.value / caseSize, unit: caseContent.unit };
+  }
+  if (content && content.value >= 1000) {
+    issues.push({ file: "products.json", ref: raw.id, problem: `content ${content.value} ${content.unit} per base unit is implausible` });
+    return null;
+  }
+  return content;
+}
+
+const NUTRIENTS: Record<string, keyof CatalogNutrition> = {
+  "ENER-E14": "energyKcal",
+  FAT: "fat",
+  FASAT: "saturatedFat",
+  CHOAVL: "carbohydrate",
+  "SUGAR-": "sugars",
+  "PRO-": "protein",
+  SALTEQ: "salt",
+  FIBTG: "fibre",
+};
+
+function nutrition(raw: RawProduct): CatalogNutrition | null {
+  const facts = raw.synkkaData.classifications.find((c) => c.name === "nutritionFact")?.values ?? [];
+  const out: CatalogNutrition = {
+    energyKcal: null, fat: null, saturatedFat: null, carbohydrate: null, sugars: null, protein: null, salt: null, fibre: null,
+  };
+  let any = false;
+  for (const v of facts) {
+    const key = NUTRIENTS[v.id];
+    const value = typeof v.value === "number" ? v.value : null;
+    const unit = typeof v.unit === "string" ? v.unit : null;
+    if (!key || value === null) continue;
+    if (key === "energyKcal" ? unit !== "E14" : unit !== "GRM") continue; // skip odd units (e.g. FAT in KJO)
+    out[key] = value;
+    any = true;
+  }
+  return any ? out : null;
+}
+
+const classification = (raw: RawProduct, name: string) =>
+  raw.synkkaData.classifications.find((c) => c.name === name)?.values ?? [];
+
+/** Dietary tags from declared claims; name hints only add, never contradict a claim. */
+function dietaryTags(claims: string[], names: string): string[] {
+  const tags = new Set<string>();
+  const has = (c: string) => claims.includes(c);
+  if (has("FREE_FROM_LACTOSE") || /\b(lactose[- ]free|laktoositon)\b/i.test(names)) tags.add("lactose-free");
+  if (has("FREE_FROM_GLUTEN") || /\b(gluten[- ]?free|gluteeniton)\b/i.test(names)) tags.add("gluten-free");
+  if (has("VEGAN") || /\b(vegan|vegaan)/i.test(names)) tags.add("vegan");
+  if (has("VEGAN") || has("VEGETARIAN") || tags.has("vegan")) tags.add("vegetarian");
+  return [...tags];
+}
+
 function normalize(raw: RawProduct, issues: DataIssue[]): CatalogProduct {
   const names: CatalogProduct["names"] = {};
   for (const n of raw.synkkaData.names) {
@@ -165,10 +269,20 @@ function normalize(raw: RawProduct, issues: DataIssue[]): CatalogProduct {
   if (raw.substitutions?.some((s) => s.substituteProduct === raw.id)) {
     issues.push({ file: "products.json", ref: raw.id, problem: "lists itself as its own substitute" });
   }
-  const allergens =
-    raw.synkkaData.classifications
-      .find((c) => c.name === "allergen")
-      ?.values.map((v) => v.id) ?? [];
+  // Allergens carry a qualifier: CONTAINS, MAY_CONTAIN (cross-contamination) or UNDECLARED.
+  const allergenValues = classification(raw, "allergen");
+  const allergens = allergenValues.filter((v) => v.unit === "CONTAINS" || v.unit === undefined).map((v) => v.id);
+  const mayContainAllergens = allergenValues.filter((v) => v.unit === "MAY_CONTAIN").map((v) => v.id);
+  const claims = [
+    ...classification(raw, "nutritionalClaim").map((v) => v.id),
+    ...classification(raw, "nonAllergen")
+      .filter((v) => v.unit === "FREE_FROM")
+      .map((v) => `FREE_FROM_${v.id}`),
+  ];
+  const labels = classification(raw, "packagingMarkedLabel")
+    .map((v) => v.id)
+    .filter((id) => !/Temperature$/.test(id));
+  const content = contentPerBaseUnit(raw, issues);
 
   return {
     id: raw.id,
@@ -186,6 +300,13 @@ function normalize(raw: RawProduct, issues: DataIssue[]): CatalogProduct {
     countryOfOrigin: raw.countryOfOrigin ?? null,
     vatCode: raw.synkkaData.vatCode ?? null,
     allergens,
+    mayContainAllergens,
+    contentPerBaseUnit: content?.value ?? null,
+    contentUnit: content?.unit ?? null,
+    nutrition: nutrition(raw),
+    labels: [...new Set(labels)],
+    claims: [...new Set(claims)],
+    dietaryTags: dietaryTags(claims, Object.values(names).join(" ")),
     storageTempC:
       raw.synkkaData.minTemperature == null && raw.synkkaData.maxTemperature == null
         ? null

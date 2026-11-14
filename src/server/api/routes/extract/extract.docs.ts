@@ -2,7 +2,7 @@ import "server-only";
 
 import { createRoute } from "@hono/zod-openapi";
 
-import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import { AgentErrorResponseSchema } from "@/shared/contracts/errors";
 import { ExtractRequestSchema, ExtractResponseSchema } from "@/shared/contracts/extract";
 
 // OpenAPI definitions for prompt extraction routes. Handlers live in ./extract.ts.
@@ -28,9 +28,13 @@ export const postExtractRoute = createRoute({
       description: "Extracted product items.",
       content: { "application/json": { schema: ExtractResponseSchema } },
     },
-    500: {
-      description: "Extraction failed.",
-      content: { "application/json": { schema: ErrorResponseSchema } },
+    502: {
+      description: "The language model call failed or returned unusable output (`MODEL_FAILED`); retry.",
+      content: { "application/json": { schema: AgentErrorResponseSchema } },
+    },
+    503: {
+      description: "The agent isn't configured: no Gemini key on the server and not in TEST_MODE (`AGENT_NOT_CONFIGURED`).",
+      content: { "application/json": { schema: AgentErrorResponseSchema } },
     },
   },
 });

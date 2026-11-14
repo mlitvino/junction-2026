@@ -3,7 +3,7 @@ import "server-only";
 import { createRoute } from "@hono/zod-openapi";
 
 import { AgentRunRequestSchema, AgentRunResponseSchema } from "@/shared/contracts/agent";
-import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import { AgentErrorResponseSchema, ErrorResponseSchema } from "@/shared/contracts/errors";
 
 export const postAgentRunRoute = createRoute({
   method: "post",
@@ -43,6 +43,14 @@ export const postAgentRunRoute = createRoute({
     409: {
       description: "Not possible in the proposal's current state (e.g. expired quote, changed price).",
       content: { "application/json": { schema: ErrorResponseSchema } },
+    },
+    502: {
+      description: "The language model call failed (`MODEL_FAILED`); retry.",
+      content: { "application/json": { schema: AgentErrorResponseSchema } },
+    },
+    503: {
+      description: "The agent isn't configured: no Gemini key on the server and not in TEST_MODE (`AGENT_NOT_CONFIGURED`).",
+      content: { "application/json": { schema: AgentErrorResponseSchema } },
     },
   },
 });

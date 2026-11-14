@@ -40,7 +40,7 @@ The value a role gets is the first one found: **role layer → base → system d
 | `autoApproveBelow` | number or null | null | Orders below this total (EUR excl. VAT) are approved automatically. Null: every order needs an approver. Can't exceed `maxOrderValue`. |
 | **AI behavior** | | | |
 | `autonomy` | `suggest_only` or `order_within_limits` | `suggest_only` | Whether the agent only proposes or may order within the limits. |
-| `allowSubstitutes` | boolean | false | May the agent offer or order a substitute for an unavailable product. |
+| `allowSubstitutes` | boolean | false | May lines stand in for what was requested (short-stock split, swap, fallback when the best match can't be delivered) without approval. False → those proposals need an approver. |
 | `language` | `en`, `fi`, `sv` | `en` | Language of the agent's answers. |
 
 ## API
@@ -60,7 +60,7 @@ Backend only. The **policy check** (`POST /api/policy/evaluate`) applies the buy
 | Outcome | When |
 | --- | --- |
 | `DENY` | unknown product, no price, blocked vendor, excluded allergen, CO2 above `maxCo2PerKg`, reliability below `minDeliveryReliability`, total above `maxOrderValue`, sales-blocked or not deliverable on any date |
-| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it; unit price or line quantity above the caps; category or product outside the allow/block lists; earliest delivery later than the requested `date`; known stock below the quantity; no availability answer from Valio |
+| `REQUIRE_APPROVAL` | `autonomy` is `suggest_only`, `autoApproveBelow` is null, or the total is not below it; unit price or line quantity above the caps; category or product outside the allow/block lists; a substitute line while `allowSubstitutes` is false; a product that may contain an excluded allergen; earliest delivery later than the requested `date`; known stock below the quantity; no availability answer from Valio |
 | `ALLOW` | none of the above |
 
 Missing product data (no CO2, allergens or reliability) never triggers a rule. Preferred origins, vendors and brands aren't checked: they are for ranking, which the agent will do.
