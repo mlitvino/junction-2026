@@ -7,9 +7,11 @@ State: one purchasing system after the merges of `dev-agent` (#6, #8) and `feat/
 
 ## Before pushing to `main` (deploys)
 
+- [ ] Re-import the catalog after migration 0007 (`pnpm data:import`, locally and on the server), otherwise the new columns are empty: no content per unit (no unit conversion), no labels, no nutrition, no dietary tags.
+
 - [ ] Production `.env` on the server has `GOOGLE_GENERATIVE_AI_API_KEY` (or `TEST_MODE=TRUE` for a demo without Gemini). Since #8, `/api/agent/run`, `/api/extract` and `/api/proposals/from-prompt` fail without one of them.
 - [ ] Local `.env`: same choice. The live check script's agent step expects the deterministic flow, so run it with `TEST_MODE=TRUE`.
-- [ ] Tell the frontend dev about the contract changes: `agent` (`proposalId`, `activeProposal`), recipe response (`proposal`, `selection`, `message`), `intelligence` recurring check (`proposalId`), `catalog` nutrition nullable, removed `orders.ts`/`guardrails.ts` contracts, new `selection.ts`/`allergens.ts`. Nothing in the UI uses them yet, but the next integration will.
+- [ ] Tell the frontend dev about the contract changes: `agent` (`proposalId`, `activeProposal`), recipe response (`proposal`, `selection`, `message`), `intelligence` recurring check (`proposalId`), `catalog` nutrition nullable, removed `orders.ts`/`guardrails.ts` contracts, new `selection.ts`/`allergens.ts`/`labels.ts`; products: new summary/detail fields, search filters, `/products/rank`, `/products/{id}/substitutes`; `/api/catalog/*` removed; proposal lines `substituteFor`. Nothing in the UI uses them yet, but the next integration will.
 
 ## Static API (backend, no AI)
 
@@ -32,15 +34,14 @@ Done
 - [x] Unit tests in CI (`pnpm test`). Rules can't silently break.
 
 Left
-- [ ] Agent identity: per-agent API keys created/revoked by approvers, scopes, every call attributed. The challenge is about external agents; today only signed-in people (and the agent acting for them) can call the API.
-- [ ] Quantities in real units: content volume/weight per product + conversion ("1,000 L" → cases). Today the agent orders the requested number in sales units and flags the mismatch as a proposal warning.
-- [ ] One product search: `GET /api/products` (A) and `GET /api/catalog/products` (B) overlap; keep one, with filters (origin, max CO2, min reliability, vendor, brand) and sorting. Agents must narrow down before asking Valio for prices.
-- [ ] Comparison/ranking endpoint: good-better-best on price, reliability, CO2, preferred origin/vendor/brand, with reasons. Delivery and sustainability comparison.
-- [ ] Policy rule "substitute outside preferences needs approval". `allowSubstitutes` exists but nothing enforces it.
-- [ ] Import nutrition (`nutritionFact`), labels (`packagingMarkedLabel`) and the allergen `CONTAINS`/`MAY_CONTAIN` qualifier from products.json. Today real products show no nutrition or labels, and "may contain" counts as "contains".
+- [x] Quantities in real units: `server/valio/units.ts` converts L/dl/ml/kg/g/cases/pieces through the imported content per base unit (1000 L → 200 cases of 5 L); unconvertible amounts keep a proposal warning.
+- [x] One product search: `GET /api/products` with allergen (contains/may contain), dietary, origin, CO2, reliability, vendor, brand and label filters and sorting; `/api/catalog/products*` removed, substitutes at `POST /api/products/{id}/substitutes`.
+- [x] Ranking endpoint `POST /api/products/rank`: best/better/good by price per litre/kg, availability by the date, relevance, reliability, CO2 and preferences, with reasons; the agent's selection uses the same scorer.
+- [x] Substitute rule: split, swapped and fallback lines carry `substituteFor`; `allowSubstitutes=false` → REQUIRE_APPROVAL `SUBSTITUTE_NOT_ALLOWED`. Plus `MAY_CONTAIN_EXCLUDED_ALLERGEN` → approval.
+- [x] Imported nutrition, labels, claims, content per base unit and the allergen CONTAINS / MAY_CONTAIN qualifier (migration 0007; run `pnpm data:import`).
 - [ ] Snapshot id on every price/stock answer and signed proposal hashes. Stronger trust protocol.
 - [ ] Approval expiry and a pending-count endpoint for a badge. Approvals shouldn't wait forever or go unnoticed.
-- [ ] Apply migrations without restarting the dev server (`ensureDatabase` runs once per process). Teammates get 500s after pulling a migration.
+- [x] `pnpm dev` applies pending migrations on start; with a running dev server after `git pull`, run `pnpm db:migrate`.
 - [ ] Remove the `server/valio/types.ts` re-export shim. Legacy indirection.
 - [ ] Retired tables (`procurement_order`, `procurement_audit_event`, `organization_procurement_settings`) stay unused; drop them only in a later cleanup once rollbacks to old images are no longer needed. Migrations are additive.
 - [ ] Map agent configuration and model errors to a clear response: a missing `GOOGLE_GENERATIVE_AI_API_KEY` throws a plain `Error`, and since #8 a failed model call in extraction or proposal revision is no longer caught, so both become `500 Internal error`. Return e.g. 503 "agent not configured" / 502 "model failed" with a message.
@@ -57,13 +58,13 @@ Done
 Left
 - [ ] Switch the purchasing flow to `/api/proposals` (incl. `from-prompt`), `/api/approvals`, `/api/orders` (map EUR excl. VAT, statuses, hash-bound approvals, no intent). Approvals then work across browsers and users.
 - [ ] Manual buyer flow: search, pick quantities, policy preview, create proposal/order. Replaces the scripted scenarios.
-- [ ] Show the agent's `selection` (why each product) and its `warnings` on a proposal. The unit warning matters until quantities are converted.
+- [ ] Show the agent's `selection` (ranking reasons per product, conversion note) and `warnings` on a proposal.
+- [ ] Use `GET /api/products` filters and `POST /api/products/rank` in a product picker; show content per case, labels, allergens (contains / may contain) and nutrition.
 - [ ] Handle `QUOTE_EXPIRED`, `PRICE_CHANGED`, `AVAILABILITY_CHANGED` and show `quoteExpiresAt`. Users must know to create a new proposal.
 - [ ] Label VAT: the policy limit is excl. VAT, screens show incl. VAT. Otherwise correct numbers look like a bug.
 - [ ] Preferences screen (incl. the new caps, category/product lists, dietary restrictions) and members screen. Backend exists; nobody can change settings without curl.
 - [ ] Audit page (`/api/audit`) and per-proposal timeline (`/api/proposals/{id}/audit`) on real data. Shows what happened and why.
 - [ ] UI for agent run, recipes, inventory and intelligence. The features are invisible in the UI.
-- [ ] Agent keys screen (after the backend). Approvers create and revoke agent access.
 - [ ] Remove connected-mode scenario glue (`real-catalog.ts`, `realScenarioFixture`, hand-made litres table) after the switch. Legacy once real flows are used.
 - [ ] Rename or remove the "Within the demo limit" scenario label. Default preferences now require approval.
 - [ ] Fix `docs/INTEGRATION-STATUS.md` contradictions and old `/api/v1/...` paths. Docs must match the real API.
@@ -84,7 +85,7 @@ Done
 
 Left
 - [ ] Streamed chat events for the UI (status, message, proposal, approval, order). `/agent/run` returns one turn; the frontend's chat expects a stream.
-- [ ] Agent identity and scopes (API keys) for external agents, then attribute calls to the agent key, not only "agent for user".
 - [ ] Decision-maker for missing data (unknown allergens, CO2) and good-better-best choice with explanations. Deliberately left out of the policy check.
-- [ ] Use `language`, `allowSubstitutes` and preferred origin/vendor/brand in the agent's ranking and answers.
-- [ ] Allergen-safe substitution under pressure: needs the `MAY_CONTAIN` qualifier imported. School/hospital scenario.
+- [x] The agent's ranking uses preferred origin/vendor/brand and sustainability labels; `allowSubstitutes` is enforced by the policy.
+- [ ] Use `language` in the agent's answers.
+- [ ] Allergen-safe substitution under pressure: the data (contains / may contain) is now imported; build the school/hospital scenario on top (strict mode excluding may-contain).
