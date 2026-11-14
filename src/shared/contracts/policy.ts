@@ -87,6 +87,8 @@ export const PolicyLineSchema = z.object({
   orderable: z.boolean().nullable().meta({ description: "Null when Valio gave no availability answer." }),
   availableDate: z.string().nullable().meta({ description: "Earliest delivery date; may be later than requested." }),
   availableQuantity: z.number().nullable().meta({ description: "In salesUnit. Null when unknown (terminal products)." }),
+  priceSnapshotId: z.string().nullable().meta({ description: "Id of the recorded Valio price answer used; null without a price." }),
+  availabilitySnapshotId: z.string().nullable().meta({ description: "Id of the recorded Valio availability answer used." }),
 });
 
 export const PolicyDecisionSchema = z.object({

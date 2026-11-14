@@ -72,6 +72,8 @@ export async function evaluateDraft(
       orderable: f.availability?.orderable ?? null,
       availableDate: f.availability?.availableDate ?? null,
       availableQuantity: f.availability?.availableQuantity ?? null,
+      priceSnapshotId: f.unitPriceExclVat === null ? null : (quoteById.get(f.productId)?.snapshotId ?? null),
+      availabilitySnapshotId: availabilityById.get(f.productId)?.snapshotId ?? null,
     })),
     currency: prices.currency,
     pricingDate: date,
