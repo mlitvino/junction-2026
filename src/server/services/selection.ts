@@ -2,8 +2,10 @@ import "server-only";
 
 import { asc, desc, eq, ilike, inArray, or } from "drizzle-orm";
 
+import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import {
   orderChangeAgent,
+  type ParsedOrderChange,
   ParsedOrderChangeSchema,
   parseOrderChangeDeterministically,
 } from "@/server/agents/order-change-agent";
@@ -893,22 +895,19 @@ export async function reviseProposalFromRequest(
   const addItems = [...(input.addItems ?? [])];
 
   if (input.prompt) {
-    let parsed = parseOrderChangeDeterministically(input.prompt);
-    if (process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
-      try {
-        const agent = process.env.DATABASE_URL ? getMastra().getAgentById("order-change-agent") : orderChangeAgent;
-        const context = [
-          `Current proposal lines: ${JSON.stringify(current.lines.map((l) => ({ productId: l.productId, name: l.name, quantity: l.quantity, unit: l.salesUnit })))}`,
-          `Available candidate alternatives: ${JSON.stringify(pipeline.flatMap((t) => t.sortedCandidates.map((c) => ({ id: c.id, name: c.name }))))}`,
-          `Customer change request: ${input.prompt}`,
-        ].join("\n");
-        const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
-        const result = ParsedOrderChangeSchema.safeParse(llm.object);
-        if (result.success && (result.data.replacements.length || result.data.quantityUpdates.length || result.data.removeTargets.length))
-          parsed = result.data;
-      } catch {
-        // Keep the deterministic parse if the model call fails.
-      }
+    let parsed: ParsedOrderChange;
+    if (isAgentTestMode()) {
+      parsed = parseOrderChangeDeterministically(input.prompt);
+    } else {
+      requireGeminiApiKey();
+      const agent = process.env.DATABASE_URL ? getMastra().getAgentById("order-change-agent") : orderChangeAgent;
+      const context = [
+        `Current proposal lines: ${JSON.stringify(current.lines.map((l) => ({ productId: l.productId, name: l.name, quantity: l.quantity, unit: l.salesUnit })))}`,
+        `Available candidate alternatives: ${JSON.stringify(pipeline.flatMap((t) => t.sortedCandidates.map((c) => ({ id: c.id, name: c.name }))))}`,
+        `Customer change request: ${input.prompt}`,
+      ].join("\n");
+      const llm = await agent.generate(context, { structuredOutput: { schema: ParsedOrderChangeSchema } });
+      parsed = ParsedOrderChangeSchema.parse(llm.object);
     }
     for (const rep of parsed.replacements) {
       const from = resolveLineTarget(rep.fromTarget, refs);

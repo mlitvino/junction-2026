@@ -3,6 +3,7 @@ import "server-only";
 import { Agent } from "@mastra/core/agent";
 import { createMockModel } from "@mastra/core/test-utils/llm-mock";
 
+import { isAgentTestMode, resolveAgentModel } from "./mode";
 import { getProductDetailsTool } from "./tools/get-product-details";
 import { inquirePriceAvailabilityTool } from "./tools/inquire-price-availability";
 import {
@@ -25,12 +26,6 @@ import {
 } from "./tools/recipes-and-inventory";
 import { searchProductsTool } from "./tools/search-products";
 
-const GEMINI_MODEL = "google/gemini-3.8-flash";
-
-// Gemini when GOOGLE_GENERATIVE_AI_API_KEY is set (Mastra reads it itself). Without a key
-// (CI, builds, frontend dev) the agent falls back to a mock model.
-const useGemini = Boolean(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
-
 const mockModel = createMockModel({
   mockText: "[mock] I prepared a proposal; the organization's rules decide what happens next.",
   version: "v2",
@@ -38,7 +33,7 @@ const mockModel = createMockModel({
 
 export const purchasingAgent = new Agent({
   id: "purchasing-agent",
-  name: useGemini ? "Purchasing agent" : "Purchasing agent (mock)",
+  name: isAgentTestMode() ? "Purchasing agent (test)" : "Purchasing agent",
   instructions:
     "You are a trusted B2B purchasing agent for a professional kitchen ordering from Valio Aimo. " +
     "You act for the signed-in buyer and follow the organization's rules; you never approve anything yourself.\n" +
@@ -48,7 +43,7 @@ export const purchasingAgent = new Agent({
     "4. Change a proposal with reviseProposal (swap, quantities, date); that creates a new proposal.\n" +
     "5. Call placeOrder only when the buyer wants to order AND the decision is ALLOW or the proposal is APPROVED. If it fails (expired quote, changed price), say so and offer a new proposal.\n" +
     "6. Use evaluateSubstitutions, getStockoutAlerts, checkRecurringAnomalies, getProactiveRecommendations and verifyProposal for alternatives, shortages, unusual orders, suggestions and price verification.",
-  model: useGemini ? GEMINI_MODEL : mockModel,
+  model: () => resolveAgentModel(mockModel),
   tools: {
     searchProducts: searchProductsTool,
     getProductDetails: getProductDetailsTool,

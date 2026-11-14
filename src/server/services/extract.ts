@@ -1,6 +1,7 @@
 import "server-only";
 
 import { extractorAgent } from "@/server/agents/extractor-agent";
+import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import { getMastra } from "@/server/mastra";
 import {
   type ExtractedProductItem,
@@ -67,7 +68,7 @@ function capitalizeFirst(text: string): string {
 }
 
 /**
- * Deterministic multi-item prompt parser used when GOOGLE_GENERATIVE_AI_API_KEY is not configured,
+ * Deterministic multi-item prompt parser used when TEST_MODE=TRUE,
  * allowing realistic multi-product and variable-quantity procurement tests in offline/CI environments.
  */
 function extractDeterministically(prompt: string): ExtractedProductItem[] {
@@ -107,11 +108,13 @@ function extractDeterministically(prompt: string): ExtractedProductItem[] {
 }
 
 export async function extractProductsFromPrompt(input: ExtractRequest): Promise<ExtractResponse> {
-  if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
+  if (isAgentTestMode()) {
     const parsed = extractDeterministically(input.prompt);
     if (parsed.length > 0) {
       return { items: parsed };
     }
+  } else {
+    requireGeminiApiKey();
   }
 
   const agent = process.env.DATABASE_URL
