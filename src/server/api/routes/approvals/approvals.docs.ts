@@ -7,6 +7,7 @@ import {
   ApprovalListSchema,
   DecideApprovalRequestSchema,
   ListApprovalsQuerySchema,
+  PendingApprovalCountSchema,
   PurchasingErrorSchema,
   ProposalSchema,
 } from "@/shared/contracts/purchasing";
@@ -34,6 +35,22 @@ export const listApprovalsRoute = createRoute({
   },
 });
 
+export const pendingApprovalCountRoute = createRoute({
+  method: "get",
+  path: "/approvals/pending-count",
+  tags: ["Purchasing"],
+  summary: "Count pending approvals",
+  description:
+    "For a badge: how many approvals wait for a decision and when the first of them expires. Expired approvals " +
+    "(not decided before the proposal's quote expiry) are marked `EXPIRED` first and not counted. Approvers only.",
+  security,
+  responses: {
+    200: json(PendingApprovalCountSchema, "Pending approvals."),
+    401: json(ErrorResponseSchema, "No valid session."),
+    403: json(ErrorResponseSchema, "Not an approver."),
+  },
+});
+
 export const decideApprovalRoute = createRoute({
   method: "post",
   path: "/approvals/{id}/decision",
@@ -54,8 +71,9 @@ export const decideApprovalRoute = createRoute({
     404: json(PurchasingErrorSchema, "No such approval in your organization."),
     409: json(
       PurchasingErrorSchema,
-      "`INVALID_STATE` (already decided or cancelled), `HASH_MISMATCH` (not the proposal you reviewed) or " +
-        "`QUOTE_EXPIRED` (the proposal's prices are older than 24 h; the buyer creates a new one).",
+      "`INVALID_STATE` (already decided or cancelled), `HASH_MISMATCH` (not the proposal you reviewed), " +
+        "`APPROVAL_EXPIRED` (not decided before the proposal's quote expiry) or `QUOTE_EXPIRED` " +
+        "(the proposal's prices are older than 24 h); in the last two cases the buyer creates a new proposal.",
     ),
   },
 });

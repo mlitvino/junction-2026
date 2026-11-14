@@ -32,6 +32,17 @@ export type UnifiedCatalogRecord = {
   /** Null for real products: the catalog import doesn't carry nutrition yet. */
   nutrition: NutritionProfile | null;
   substituteIds: string[];
+  /** Earliest delivery date from Valio for the requested date; absent for synthetic products. */
+  availableDate?: string | null;
+  salesBlock?: boolean;
+  /**
+   * Valio's own verdict for the date (not sales-blocked and something deliverable). False also when
+   * the stock is unknown-but-zero, which `availableQuantity: null` can't tell apart from "unknown".
+   * Absent for synthetic products.
+   */
+  orderable?: boolean | null;
+  /** Packaging label ids (shared/contracts/labels.ts). */
+  labels?: string[];
   sustainabilityCertificates?: string[];
   leadTimeDays?: number;
   isSeasonal?: boolean;
@@ -52,6 +63,35 @@ export function hashSeed(id: string): number {
 /** Maps GS1 allergen codes (or names) to readable lowercase allergen names (shared/contracts/allergens.ts). */
 export function normalizeAllergenList(rawAllergens: string[]): string[] {
   return allergenNames([...allergenCodes(rawAllergens)]);
+}
+
+/**
+ * Dietary tags, allergen names and nutrition of a real catalog product, from the imported data
+ * (claims, GS1 allergens, nutritionFact). Name hints only ADD allergens (safer), never dietary tags.
+ */
+export function realProductFacts(p: {
+  name: string;
+  allergens: string[];
+  dietaryTags: string[];
+  nutrition?: Record<string, number | null> | null;
+}): { dietaryTags: string[]; allergens: string[]; nutrition: NutritionProfile | null } {
+  const hinted = inferDietaryAndAllergensFromProduct(p.name, p.allergens).allergens;
+  const n = p.nutrition;
+  const num = (v: number | null | undefined) => (typeof v === "number" ? v : null);
+  return {
+    dietaryTags: p.dietaryTags,
+    allergens: [...new Set([...allergenNames(p.allergens), ...hinted])],
+    nutrition:
+      n && [n.energyKcal, n.fat, n.sugars, n.salt, n.protein].some((v) => typeof v === "number")
+        ? {
+            caloriesPer100g: num(n.energyKcal) ?? 0,
+            fatPer100g: num(n.fat) ?? 0,
+            sugarPer100g: num(n.sugars) ?? 0,
+            saltPer100g: num(n.salt) ?? 0,
+            proteinPer100g: num(n.protein) ?? 0,
+          }
+        : null,
+  };
 }
 
 export function inferDietaryAndAllergensFromProduct(name: string, rawAllergens: string[]) {

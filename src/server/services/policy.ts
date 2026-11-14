@@ -33,6 +33,7 @@ export async function evaluateDraft(
         vendorName: valioProduct.vendorName,
         category: valioProduct.category,
         allergens: valioProduct.allergens,
+        mayContainAllergens: valioProduct.mayContainAllergens,
         co2PerKg: valioProduct.co2PerKg,
         deliveryReliability: valioProduct.deliveryReliability,
       })
@@ -53,6 +54,7 @@ export async function evaluateDraft(
       product: productById.get(line.productId) ?? null,
       unitPriceExclVat: quote?.found ? quote.priceExclVat : null,
       salesUnit: quote?.salesUnit ?? null,
+      substituteFor: line.substituteFor ?? null,
       availability: availabilityById.get(line.productId) ?? null,
     };
   });
@@ -70,6 +72,8 @@ export async function evaluateDraft(
       orderable: f.availability?.orderable ?? null,
       availableDate: f.availability?.availableDate ?? null,
       availableQuantity: f.availability?.availableQuantity ?? null,
+      priceSnapshotId: f.unitPriceExclVat === null ? null : (quoteById.get(f.productId)?.snapshotId ?? null),
+      availabilitySnapshotId: availabilityById.get(f.productId)?.snapshotId ?? null,
     })),
     currency: prices.currency,
     pricingDate: date,

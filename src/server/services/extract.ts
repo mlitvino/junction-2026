@@ -1,7 +1,7 @@
 import "server-only";
 
 import { extractorAgent } from "@/server/agents/extractor-agent";
-import { isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
+import { callModel, isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
 import { getMastra } from "@/server/mastra";
 import {
   type ExtractedProductItem,
@@ -121,9 +121,10 @@ export async function extractProductsFromPrompt(input: ExtractRequest): Promise<
     ? getMastra().getAgentById("extractor-agent")
     : extractorAgent;
 
-  const result = await agent.generate(input.prompt, {
-    structuredOutput: { schema: ExtractResponseSchema },
+  return callModel(async () => {
+    const result = await agent.generate(input.prompt, {
+      structuredOutput: { schema: ExtractResponseSchema },
+    });
+    return ExtractResponseSchema.parse(result.object);
   });
-
-  return ExtractResponseSchema.parse(result.object);
 }

@@ -14,6 +14,8 @@ export const DataSourceSchema = z
 
 // ---------- Products ----------
 
+// Fields added after the first release have defaults, so producers written against the older
+// contract (e.g. frontend mocks that parse their fixtures) keep working; parsed values always have them.
 export const ProductSummarySchema = z.object({
   id: productId,
   name: z.string().meta({ description: "English name (Finnish if no translation)." }),
@@ -33,8 +35,35 @@ export const ProductSummarySchema = z.object({
     description: "Share of deliveries delivered as ordered, 0–1. Null = unknown.",
   }),
   hasImage: z.boolean(),
-  allergens: z.array(z.string()).meta({ description: "GS1 allergen codes (see shared/contracts/allergens.ts).", example: ["AM"] }),
+  allergens: z.array(z.string()).meta({ description: "GS1 allergen codes it contains (see shared/contracts/allergens.ts).", example: ["AM"] }),
+  allergenNames: z.array(z.string()).default([]).meta({ description: "The contained allergens as names.", example: ["milk"] }),
+  mayContainAllergens: z.array(z.string()).default([]).meta({ description: "GS1 codes it may contain (cross-contamination)." }),
+  dietaryTags: z.array(z.string()).default([]).meta({
+    description: "From the product's declared claims: lactose-free, gluten-free, vegan, vegetarian.",
+    example: ["lactose-free"],
+  }),
+  labels: z.array(z.object({ id: z.string(), name: z.string() })).default([]).meta({
+    description: "Packaging labels and certificates (e.g. Hyvää Suomesta, EU organic, MSC).",
+  }),
+  contentPerSalesUnit: z
+    .object({ value: z.number(), unit: z.enum(["L", "KG"]) })
+    .nullable()
+    .default(null)
+    .meta({ description: "Net content of one sales unit (e.g. 5 L per case). Null when not declared." }),
 });
+
+export const ProductNutritionSchema = z
+  .object({
+    energyKcal: z.number().nullable(),
+    fat: z.number().nullable(),
+    saturatedFat: z.number().nullable(),
+    carbohydrate: z.number().nullable(),
+    sugars: z.number().nullable(),
+    protein: z.number().nullable(),
+    salt: z.number().nullable(),
+    fibre: z.number().nullable(),
+  })
+  .meta({ description: "Per 100 g or ml (grams; energy in kcal), as declared by the supplier." });
 
 export const ProductUnitSchema = z.object({
   unitId: z.string().meta({ example: "KI" }),
@@ -55,6 +84,8 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
   netWeightKg: z.number().nullable().meta({ description: "Net weight of one base unit." }),
   co2PerBaseUnit: z.number().nullable().meta({ description: "co2PerKg × netWeightKg." }),
   vatCode: z.string().nullable(),
+  nutrition: ProductNutritionSchema.nullable().default(null),
+  claims: z.array(z.string()).default([]).meta({ description: "Declared claims, e.g. FREE_FROM_LACTOSE, VEGAN, HIGH_PROTEIN." }),
   substitutes: z.array(ProductSummarySchema).meta({ description: "Products Valio suggests instead of this one." }),
 });
 
@@ -64,6 +95,31 @@ export const ProductSearchQuerySchema = z.object({
     example: "potato salad",
   }),
   category: z.string().optional().meta({ description: "Exact category code." }),
+  excludeAllergens: z.string().trim().optional().meta({
+    description: "Comma-separated allergens to exclude, names or GS1 codes (e.g. 'milk,AY').",
+    example: "soy,tree-nuts",
+  }),
+  excludeMayContain: z
+    .enum(["true", "false"])
+    .optional()
+    .meta({ description: "`true`: also exclude products that may contain them (cross-contamination)." }),
+  dietary: z.string().trim().optional().meta({
+    description: "Comma-separated required tags: lactose-free, gluten-free, vegan, vegetarian.",
+    example: "lactose-free",
+  }),
+  origin: z.string().trim().optional().meta({ description: "Comma-separated ISO alpha-2 countries.", example: "fi,se" }),
+  maxCo2PerKg: z.coerce.number().positive().optional().meta({
+    description: "Max kg CO2-eq per kg. Products without CO2 data are kept.",
+  }),
+  minReliability: z.coerce.number().min(0).max(1).optional().meta({
+    description: "Min delivery reliability (0–1). Products without data are kept.",
+  }),
+  vendor: z.string().trim().max(200).optional().meta({ description: "Vendor name contains this." }),
+  brand: z.string().trim().max(200).optional().meta({ description: "Brand contains this." }),
+  label: z.string().trim().optional().meta({ description: "Has this label id (see shared/contracts/labels.ts).", example: "EU_ORGANIC_FARMING" }),
+  sort: z.enum(["name", "co2", "reliability"]).default("name").meta({
+    description: "`co2`: lowest first; `reliability`: highest first (unknowns last). Price ranking: POST /api/products/rank.",
+  }),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -97,6 +153,7 @@ export const PriceQuoteSchema = z.object({
   validFrom: z.string().nullable(),
   validTo: z.string().nullable(),
   fetchedAt: z.iso.datetime().meta({ description: "When this price was fetched from Valio (cached up to 5 minutes)." }),
+  snapshotId: z.string().optional().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure. Always set by the server.", example: "18342" }),
 });
 
 export const PricesResponseSchema = z.object({
@@ -125,6 +182,7 @@ export const AvailabilitySchema = z.object({
   orderCutoff: z.string().nullable().meta({ description: "Order by this time to receive goods on availableDate." }),
   salesUnit: z.string().nullable(),
   fetchedAt: z.iso.datetime(),
+  snapshotId: z.string().optional().meta({ description: "Id of the recorded Valio answer (snapshot) this comes from; quote it to trace a price or stock figure. Always set by the server.", example: "18342" }),
 });
 
 export const AvailabilityResponseSchema = z.object({
@@ -135,6 +193,7 @@ export const AvailabilityResponseSchema = z.object({
 });
 
 export type DataSource = z.infer<typeof DataSourceSchema>;
+export type ProductNutrition = z.infer<typeof ProductNutritionSchema>;
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 export type ProductUnit = z.infer<typeof ProductUnitSchema>;
 export type ProductDetail = z.infer<typeof ProductDetailSchema>;
@@ -181,3 +240,53 @@ export const OffersResponseSchema = z.object({
 export type Offer = z.infer<typeof OfferSchema>;
 export type OffersRequest = z.infer<typeof OffersRequestSchema>;
 export type OffersResponse = z.infer<typeof OffersResponseSchema>;
+
+// ---------- Ranking (good / better / best) ----------
+
+export const RankProductsRequestSchema = z
+  .object({
+    q: z.string().trim().max(200).optional().meta({ description: "What is needed, e.g. 'lactose-free milk'." }),
+    productIds: z.array(productId).min(1).max(20).optional().meta({ description: "Rank these instead of searching." }),
+    quantity: z.number().positive().meta({ description: "How much is needed.", example: 1000 }),
+    unit: z.string().trim().max(20).optional().meta({
+      description: "Unit of `quantity`: L, dl, ml, kg, g, cases, pcs or a product unit code. Empty = sales units.",
+      example: "L",
+    }),
+    date: z.iso.date().optional().meta({ description: "Delivery date the goods are needed. Defaults to today (Helsinki)." }),
+    limit: z.number().int().min(1).max(20).default(10),
+  })
+  .refine((v) => !!v.q || !!v.productIds?.length, { message: "Give `q` or `productIds`", path: ["q"] });
+
+export const RankedProductSchema = z.object({
+  product: ProductSummarySchema,
+  tier: z.enum(["best", "better", "good"]).nullable(),
+  score: z.number().meta({ description: "0–1, weighted: price 35%, availability 25%, relevance, reliability, CO2, preferences 10% each." }),
+  quantity: z.number().meta({ description: "The requested amount in this product's sales units (rounded up)." }),
+  salesUnit: z.string(),
+  conversion: z.object({ converted: z.boolean(), note: z.string() }),
+  unitPriceExclVat: z.number(),
+  lineTotalExclVat: z.number(),
+  pricePerContent: z.object({ value: z.number(), unit: z.enum(["L", "KG"]) }).nullable(),
+  availableDate: z.string().nullable(),
+  availableQuantity: z.number().nullable(),
+  priceSnapshotId: z.string().nullable().meta({ description: "Snapshot id of the price used." }),
+  availabilitySnapshotId: z.string().nullable().meta({ description: "Snapshot id of the availability used." }),
+  reasons: z.array(z.string()).meta({ description: "Why it ranks where it does, per factor." }),
+});
+
+export const RankProductsResponseSchema = z.object({
+  date: z.iso.date(),
+  source: DataSourceSchema,
+  best: RankedProductSchema.nullable(),
+  better: RankedProductSchema.nullable(),
+  good: RankedProductSchema.nullable(),
+  ranked: z.array(RankedProductSchema).meta({ description: "All orderable candidates, best first." }),
+  unavailable: z.array(z.object({ product: ProductSummarySchema, reason: z.string() })),
+  excluded: z
+    .array(z.object({ product: ProductSummarySchema, reasons: z.array(z.string()) }))
+    .meta({ description: "Matches the organization's rules exclude (allergens, dietary, blocked vendor)." }),
+});
+
+export type RankProductsRequest = z.infer<typeof RankProductsRequestSchema>;
+export type RankedProduct = z.infer<typeof RankedProductSchema>;
+export type RankProductsResponse = z.infer<typeof RankProductsResponseSchema>;

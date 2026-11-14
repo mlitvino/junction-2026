@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "pnpm db:up && next dev",
+    "dev": "pnpm db:up && pnpm db:migrate && next dev",
     "dev:app": "next dev",
     "build": "next build",
     "start": "next start",
@@ -24,6 +24,7 @@
     "data:import": "node --env-file-if-exists=.env --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/import-valio-data.ts",
     "test": "pnpm test:server && pnpm test:client",
     "test:client": "node --test \"src/client/**/*.test.mjs\"",
+    "test:e2e": "node --env-file-if-exists=.env --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./src/server/__tests__/register-paths.ts --test --test-concurrency=1 \"e2e/**/*.test.ts\"",
     "test:server": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./src/server/__tests__/register-paths.ts --test \"src/server/**/*.test.ts\"",
     "data:analyze": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/analyze-valio-data.ts",
     "docker:build": "docker build -t junction-2026 .",

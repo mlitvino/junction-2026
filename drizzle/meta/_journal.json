@@ -50,6 +50,34 @@
       "when": 1794681521671,
       "tag": "0006_audit_selection",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794685896364,
+      "tag": "0007_catalog_details",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794688443476,
+      "tag": "0008_proposal_signatures",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794688444253,
+      "tag": "0009_approval_expiry",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794688918141,
+      "tag": "0010_drop_retired_procurement",
+      "breakpoints": true
     }
   ]
 }

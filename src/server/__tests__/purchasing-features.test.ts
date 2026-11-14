@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { describe, it } from "node:test";
 
 import { app } from "@/server/api/app";
-import { GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
+import { AgentError, callModel, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
 import { runPurchasingAgent } from "@/server/services/agent";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
@@ -32,7 +32,16 @@ describe("API surface", () => {
   it("documents the unified purchasing routes and none of the retired ones", async () => {
     const res = await get("/api/openapi.json");
     assert.equal(res.status, 200);
-    const paths = Object.keys(((await res.json()) as { paths: Record<string, unknown> }).paths);
+    const spec = (await res.json()) as {
+      paths: Record<string, Record<string, { tags?: string[] }>>;
+      tags?: { name: string }[];
+    };
+    const paths = Object.keys(spec.paths);
+    // Tag order drives Swagger UI: Agents first, and every used tag is listed.
+    const listed = (spec.tags ?? []).map((t) => t.name);
+    assert.equal(listed[0], "Agents");
+    const used = new Set(Object.values(spec.paths).flatMap((ops) => Object.values(ops).flatMap((op) => op.tags ?? [])));
+    for (const tag of used) assert.ok(listed.includes(tag), `tag not listed in app.ts: ${tag}`);
     for (const p of [
       "/api/proposals",
       "/api/proposals/from-prompt",
@@ -43,16 +52,22 @@ describe("API surface", () => {
       "/api/proposals/{id}/audit",
       "/api/proposals/{id}/verify",
       "/api/approvals/{id}/decision",
+      "/api/approvals/pending-count",
+      "/api/trust/public-key",
       "/api/orders/{id}/receipt",
       "/api/audit",
       "/api/policy/evaluate",
-      "/api/catalog/substitutions",
+      "/api/products/rank",
+      "/api/products/{id}/substitutes",
       "/api/intelligence/recurring-check",
       "/api/agent/run",
     ])
       assert.ok(paths.includes(p), `missing ${p}`);
     for (const p of [
       "/api/guardrails",
+      "/api/catalog/products",
+      "/api/catalog/products/{productId}",
+      "/api/catalog/substitutions",
       "/api/orders/from-recipe",
       "/api/orders/{orderId}/approval",
       "/api/orders/{orderId}/checkout",
@@ -67,8 +82,9 @@ describe("API surface", () => {
       "/api/proposals",
       "/api/orders",
       "/api/approvals",
+      "/api/approvals/pending-count",
       "/api/audit",
-      "/api/catalog/products?q=milk",
+      "/api/products?q=milk",
       "/api/inventory",
       "/api/recipes",
       "/api/intelligence/recommendations",
@@ -87,9 +103,15 @@ describe("API surface", () => {
     }
   });
 
-  it("keeps health and the docs public", async () => {
+  it("keeps health, the docs and the signing public key public", async () => {
     assert.equal((await get("/api/openapi.json")).status, 200);
     assert.notEqual((await get("/api/health")).status, 401);
+    const key = await get("/api/trust/public-key");
+    assert.equal(key.status, 200);
+    const body = (await key.json()) as { algorithm: string; keyId: string; publicKeyPem: string };
+    assert.equal(body.algorithm, "Ed25519");
+    assert.match(body.keyId, /^[0-9a-f]{16}$/);
+    assert.match(body.publicKeyPem, /BEGIN PUBLIC KEY/);
   });
 });
 
@@ -210,6 +232,10 @@ describe("Agent mode gating", () => {
       assert.equal(isAgentTestMode(), false);
       assert.throws(() => requireGeminiApiKey(), /GOOGLE_GENERATIVE_AI_API_KEY/);
       assert.throws(() => resolveAgentModel(mockModel), /GOOGLE_GENERATIVE_AI_API_KEY/);
+      assert.throws(
+        () => requireGeminiApiKey(),
+        (err) => err instanceof AgentError && err.status === 503 && err.code === "AGENT_NOT_CONFIGURED",
+      );
     });
 
     await withEnv({ TEST_MODE: "false", GOOGLE_GENERATIVE_AI_API_KEY: undefined }, () => {
@@ -228,6 +254,20 @@ describe("Agent mode gating", () => {
       requireGeminiApiKey();
       assert.equal(resolveAgentModel(mockModel), GEMINI_MODEL);
     });
+  });
+
+  it("turns model failures into 502 MODEL_FAILED and keeps errors with their own meaning", async () => {
+    assert.equal(await callModel(async () => 42), 42);
+    await assert.rejects(
+      () => callModel(async () => Promise.reject(new Error("upstream 500 from the model provider"))),
+      (err) =>
+        err instanceof AgentError && err.status === 502 && err.code === "MODEL_FAILED" && !err.message.includes("upstream"),
+    );
+    const own = new AgentError(503, "AGENT_NOT_CONFIGURED", "no key");
+    await assert.rejects(() => callModel(async () => Promise.reject(own)), (err) => err === own);
+    class ToolError extends Error {}
+    const tool = new ToolError("not the creator");
+    await assert.rejects(() => callModel(async () => Promise.reject(tool), (e) => e instanceof ToolError), (err) => err === tool);
   });
 
   it("gates extractProductsFromPrompt and runPurchasingAgent behind TEST_MODE=TRUE or Gemini key", async () => {

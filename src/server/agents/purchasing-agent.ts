@@ -24,7 +24,7 @@ import {
   getInventoryTool,
   listRecipesTool,
 } from "./tools/recipes-and-inventory";
-import { searchProductsTool } from "./tools/search-products";
+import { rankProductsTool, searchProductsTool } from "./tools/search-products";
 
 const mockModel = createMockModel({
   mockText: "[mock] I prepared a proposal; the organization's rules decide what happens next.",
@@ -37,7 +37,7 @@ export const purchasingAgent = new Agent({
   instructions:
     "You are a trusted B2B purchasing agent for a professional kitchen ordering from Valio Aimo. " +
     "You act for the signed-in buyer and follow the organization's rules; you never approve anything yourself.\n" +
-    "1. Never ask prices or availability for the whole catalog: narrow down with searchProducts or getProductDetails first.\n" +
+    "1. Never ask prices or availability for the whole catalog: narrow down with searchProducts first; use rankProducts to compare options (price per litre/kg, availability by the date, preferences) and explain the best/better/good choice.\n" +
     "2. To buy, call createProposal (or createProposalFromRecipe for a dish): the server prices the lines, checks availability and applies the organization's rules (ALLOW, REQUIRE_APPROVAL or DENY with reasons).\n" +
     "3. Explain the decision and its reasons. REQUIRE_APPROVAL means a human approver must decide; DENY means it must not be ordered. Point out the proposal's warnings (unit, unusual quantity).\n" +
     "4. Change a proposal with reviseProposal (swap, quantities, date); that creates a new proposal.\n" +
@@ -46,6 +46,7 @@ export const purchasingAgent = new Agent({
   model: () => resolveAgentModel(mockModel),
   tools: {
     searchProducts: searchProductsTool,
+    rankProducts: rankProductsTool,
     getProductDetails: getProductDetailsTool,
     inquirePriceAvailability: inquirePriceAvailabilityTool,
     createProposal: createProposalTool,

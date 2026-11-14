@@ -129,7 +129,7 @@ export const PartialAvailabilityPlanSchema = z.object({
 
 export type PartialAvailabilityPlan = z.infer<typeof PartialAvailabilityPlanSchema>;
 
-/** POST /api/catalog/substitutions — request body */
+/** POST /api/products/{id}/substitutes — request body (productId comes from the path) */
 export const ProductSubstitutionRequestSchema = z.object({
   productId: z.string().trim().min(1).meta({
     description: "Target Valio product ID that needs comparison, substitution, or shortfall coverage.",
@@ -144,7 +144,7 @@ export const ProductSubstitutionRequestSchema = z.object({
 
 export type ProductSubstitutionRequest = z.infer<typeof ProductSubstitutionRequestSchema>;
 
-/** POST /api/catalog/substitutions — response body */
+/** POST /api/products/{id}/substitutes — response body */
 export const ProductSubstitutionResponseSchema = z.object({
   targetProduct: CandidateProductSchema,
   targetDeliveryComparison: DeliveryComparisonSchema,

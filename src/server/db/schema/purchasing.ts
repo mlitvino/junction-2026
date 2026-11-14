@@ -30,6 +30,11 @@ export type StoredProposalLine = {
   orderable?: boolean | null;
   availableDate?: string | null;
   availableQuantity?: number | null;
+  /** Set when the line stands in for what was requested (split, swap, fallback). */
+  substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null;
+  /** Ids of the recorded Valio answers (valio_price_snapshot / valio_availability_snapshot) used. */
+  priceSnapshotId?: string | null;
+  availabilitySnapshotId?: string | null;
 };
 
 /** Frozen decision: see ProposalDecisionSchema. */
@@ -64,6 +69,9 @@ export const proposal = pgTable(
     source: text("source"),
     /** How the agent chose the lines (candidates, filters, ranking, warnings); null for direct lines. */
     selection: jsonb("selection").$type<Record<string, unknown>>(),
+    /** Ed25519 signature (base64url) over id + hash; null on rows from before signing. */
+    signature: text("signature"),
+    signatureKeyId: text("signature_key_id"),
     createdAt: timestamp("created_at", tz).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", tz).notNull().defaultNow(),
   },
@@ -71,7 +79,7 @@ export const proposal = pgTable(
     index("proposal_org_status_idx").on(t.organizationId, t.status, t.createdAt.desc()),
     check(
       "proposal_status_check",
-      sql`${t.status} IN ('READY', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'BLOCKED', 'ORDERED', 'CANCELLED')`,
+      sql`${t.status} IN ('READY', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'BLOCKED', 'ORDERED', 'CANCELLED', 'EXPIRED')`,
     ),
     check("proposal_outcome_check", sql`${t.outcome} IN ('ALLOW', 'REQUIRE_APPROVAL', 'DENY')`),
   ],
@@ -95,10 +103,12 @@ export const approval = pgTable(
     decidedBy: text("decided_by").references(() => user.id, { onDelete: "set null" }),
     decidedAt: timestamp("decided_at", tz),
     comment: text("comment"),
+    /** A pending approval expires then (the proposal's quote expiry). Null on older rows: the quote's. */
+    expiresAt: timestamp("expires_at", tz),
   },
   (t) => [
     index("approval_org_status_idx").on(t.organizationId, t.status, t.requestedAt.desc()),
-    check("approval_status_check", sql`${t.status} IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')`),
+    check("approval_status_check", sql`${t.status} IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'EXPIRED')`),
   ],
 );
 

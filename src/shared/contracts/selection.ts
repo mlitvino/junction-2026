@@ -101,6 +101,8 @@ export const CandidateProductSchema = z.object({
   previouslyOrderedBrand: z.boolean().meta({
     description: "True if this product's brand appears in the customer's previous orders.",
   }),
+  rankScore: z.number().optional().meta({ description: "0–1 ranking score (see POST /api/products/rank)." }),
+  rankReasons: z.array(z.string()).optional(),
 });
 
 export type CandidateProduct = z.infer<typeof CandidateProductSchema>;
@@ -123,7 +125,11 @@ export type RemovedCandidate = z.infer<typeof RemovedCandidateSchema>;
 export const ItemProcurementTraceSchema = z.object({
   extractedItem: ExtractedProductItemSchema,
   parsedQuantity: z.number().meta({ example: 420 }),
-  parsedUnit: z.string().meta({ example: "kg" }),
+  parsedUnit: z.string().meta({ example: "L" }),
+  orderedQuantity: z.number().nullable().optional().meta({
+    description: "The requested amount in the chosen product's sales units (e.g. 1000 L → 200 cases).",
+  }),
+  conversionNote: z.string().nullable().optional().meta({ example: "1000 L → 200 KI (5 L each)" }),
   matchedByTypeCount: z.number().int().meta({
     description:
       "Total products found matching the extracted productType before preference filtering.",
@@ -135,7 +141,7 @@ export const ItemProcurementTraceSchema = z.object({
   }),
   sortedCandidates: z.array(CandidateProductSchema).meta({
     description:
-      "Remaining candidates sorted by previous order history (product, then brand) and best match by productName.",
+      "Compliant candidates, best first: price per litre/kg, availability by the date, relevance and history, reliability, CO2, preferences (`rankScore`, `rankReasons`). Undeliverable ones last.",
   }),
   selectedProduct: CandidateProductSchema.nullable().meta({
     description: "Top-ranked candidate chosen for the order line, or null if no candidate matched.",

@@ -1,6 +1,25 @@
 import "server-only";
 
-import { and, asc, count, desc, eq, gt, inArray, like, type SQL } from "drizzle-orm";
+import {
+  and,
+  arrayContains,
+  arrayOverlaps,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  like,
+  lte,
+  not,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
@@ -14,12 +33,16 @@ import {
   type ValioPriceSnapshotRow,
 } from "@/server/db/schema";
 import { VALIO_UNKNOWN_AMOUNT } from "@/server/valio/api-schemas";
+import type { UnitFacts } from "@/server/valio/units";
+import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+import { labelName } from "@/shared/contracts/labels";
 import { fetchAvailability, fetchPrices, valioSource } from "@/server/valio/client";
-import type { Offer, OffersResponse } from "@/shared/contracts/products";
 import type {
   Availability,
   AvailabilityRequest,
   AvailabilityResponse,
+  Offer,
+  OffersResponse,
   PriceQuote,
   PricesRequest,
   PricesResponse,
@@ -27,7 +50,7 @@ import type {
   ProductSearchQuery,
   ProductSearchResponse,
   ProductSummary,
-} from "@/server/valio/types";
+} from "@/shared/contracts/products";
 
 // Catalog: static product data from Postgres (pnpm data:import), live prices and availability
 // from the Valio API. Used by the HTTP routes (routes/products) and the purchasing agent's tools.
@@ -43,6 +66,7 @@ const summaryColumns = {
   vendorName: valioProduct.vendorName,
   category: valioProduct.category,
   salesUnit: valioProduct.salesUnit,
+  baseUnit: valioProduct.baseUnit,
   gtin: valioProduct.gtin,
   temperatureCondition: valioProduct.temperatureCondition,
   countryOfOrigin: valioProduct.countryOfOrigin,
@@ -50,7 +74,18 @@ const summaryColumns = {
   deliveryReliability: valioProduct.deliveryReliability,
   hasImage: valioProduct.hasImage,
   allergens: valioProduct.allergens,
+  mayContainAllergens: valioProduct.mayContainAllergens,
+  dietaryTags: valioProduct.dietaryTags,
+  labels: valioProduct.labels,
+  contentPerBaseUnit: valioProduct.contentPerBaseUnit,
+  contentUnit: valioProduct.contentUnit,
 } as const;
+
+type SummaryRow = {
+  [K in keyof typeof summaryColumns]: (typeof summaryColumns)[K]["_"]["notNull"] extends true
+    ? (typeof summaryColumns)[K]["_"]["data"]
+    : (typeof summaryColumns)[K]["_"]["data"] | null;
+};
 
 async function db() {
   await ensureDatabase();
@@ -58,30 +93,107 @@ async function db() {
 }
 
 const cacheCutoff = () => new Date(Date.now() - CACHE_MINUTES * 60_000);
+const list = (value: string | undefined) => (value ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+const escapeLike = (v: string) => v.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+/** Sales-unit sizes (base units per sales unit) for products, from valio_product_unit. */
+async function salesUnitSizes(d: Awaited<ReturnType<typeof db>>, rows: { id: string; salesUnit: string; baseUnit: string }[]) {
+  const sizes = new Map<string, number>();
+  if (!rows.length) return sizes;
+  const units = await d
+    .select({ productId: valioProductUnit.productId, unitId: valioProductUnit.unitId, size: valioProductUnit.sizeInBaseUnits })
+    .from(valioProductUnit)
+    .where(inArray(valioProductUnit.productId, rows.map((r) => r.id)));
+  for (const r of rows) {
+    const own = units.find((u) => u.productId === r.id && u.unitId === r.salesUnit)?.size;
+    sizes.set(r.id, own ?? (r.salesUnit === r.baseUnit ? 1 : NaN));
+  }
+  return sizes;
+}
+
+function toSummary(r: SummaryRow, salesUnitSize: number | undefined): ProductSummary {
+  const size = salesUnitSize && Number.isFinite(salesUnitSize) ? salesUnitSize : null;
+  const contentUnit = r.contentUnit === "L" || r.contentUnit === "KG" ? r.contentUnit : null;
+  return {
+    id: r.id,
+    name: r.name,
+    brand: r.brand,
+    vendorName: r.vendorName,
+    category: r.category,
+    salesUnit: r.salesUnit,
+    gtin: r.gtin,
+    temperatureCondition: r.temperatureCondition,
+    countryOfOrigin: r.countryOfOrigin,
+    co2PerKg: r.co2PerKg,
+    deliveryReliability: r.deliveryReliability,
+    hasImage: r.hasImage,
+    allergens: r.allergens,
+    allergenNames: allergenNames(r.allergens),
+    mayContainAllergens: r.mayContainAllergens,
+    dietaryTags: r.dietaryTags,
+    labels: r.labels.map((id) => ({ id, name: labelName(id) })),
+    contentPerSalesUnit:
+      r.contentPerBaseUnit && contentUnit && size
+        ? { value: Math.round(r.contentPerBaseUnit * size * 1000) / 1000, unit: contentUnit }
+        : null,
+  };
+}
+
+async function summaries(d: Awaited<ReturnType<typeof db>>, rows: SummaryRow[]): Promise<ProductSummary[]> {
+  const sizes = await salesUnitSizes(d, rows);
+  return rows.map((r) => toSummary(r, sizes.get(r.id)));
+}
 
 // ---------- Products ----------
 
+/**
+ * Searches the static catalog (Postgres only, no Valio calls). All filters run in SQL so paging is
+ * exact. Missing CO2 or reliability data never excludes a product.
+ */
 export async function searchProducts(query: ProductSearchQuery): Promise<ProductSearchResponse> {
   const d = await db();
   const conditions: SQL[] = [];
-  for (const word of (query.q ?? "").toLowerCase().split(/\s+/).filter(Boolean)) {
-    // Escape LIKE wildcards so "50%" matches literally.
-    conditions.push(like(valioProduct.searchText, `%${word.replace(/[\\%_]/g, (c) => `\\${c}`)}%`));
+  // Words split on spaces and punctuation, so "lactose-free" also finds "lactose free".
+  for (const word of (query.q ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean)) {
+    conditions.push(like(valioProduct.searchText, `%${escapeLike(word)}%`));
   }
   if (query.category) conditions.push(eq(valioProduct.category, query.category));
+  const banned = [...allergenCodes(list(query.excludeAllergens))];
+  if (banned.length) {
+    conditions.push(not(arrayOverlaps(valioProduct.allergens, banned)));
+    if (query.excludeMayContain === "true") conditions.push(not(arrayOverlaps(valioProduct.mayContainAllergens, banned)));
+  }
+  const dietary = list(query.dietary).map((t) => t.toLowerCase());
+  if (dietary.length) conditions.push(arrayContains(valioProduct.dietaryTags, dietary));
+  const origin = list(query.origin).map((c) => c.toLowerCase());
+  if (origin.length) conditions.push(inArray(valioProduct.countryOfOrigin, origin));
+  if (query.maxCo2PerKg !== undefined)
+    conditions.push(or(isNull(valioProduct.co2PerKg), lte(valioProduct.co2PerKg, query.maxCo2PerKg))!);
+  if (query.minReliability !== undefined)
+    conditions.push(or(isNull(valioProduct.deliveryReliability), gte(valioProduct.deliveryReliability, query.minReliability))!);
+  if (query.vendor) conditions.push(ilike(valioProduct.vendorName, `%${escapeLike(query.vendor)}%`));
+  if (query.brand) conditions.push(ilike(valioProduct.brand, `%${escapeLike(query.brand)}%`));
+  if (query.label) conditions.push(arrayContains(valioProduct.labels, [query.label]));
   const where = conditions.length ? and(...conditions) : undefined;
 
-  const [[totalRow], items] = await Promise.all([
+  const order =
+    query.sort === "co2"
+      ? [sql`${valioProduct.co2PerKg} asc nulls last`, asc(valioProduct.name)]
+      : query.sort === "reliability"
+        ? [sql`${valioProduct.deliveryReliability} desc nulls last`, asc(valioProduct.name)]
+        : [asc(valioProduct.name), asc(valioProduct.id)];
+
+  const [[totalRow], rows] = await Promise.all([
     d.select({ total: count() }).from(valioProduct).where(where),
     d
       .select(summaryColumns)
       .from(valioProduct)
       .where(where)
-      .orderBy(asc(valioProduct.name), asc(valioProduct.id))
+      .orderBy(...order)
       .limit(query.limit)
       .offset(query.offset),
   ]);
-  return { total: totalRow?.total ?? 0, items: items satisfies ProductSummary[] };
+  return { total: totalRow?.total ?? 0, items: await summaries(d, rows) };
 }
 
 export async function getProduct(id: string): Promise<ProductDetail | null> {
@@ -89,7 +201,7 @@ export async function getProduct(id: string): Promise<ProductDetail | null> {
   const [r] = await d.select().from(valioProduct).where(eq(valioProduct.id, id));
   if (!r) return null;
 
-  const [units, substitutes] = await Promise.all([
+  const [units, substituteRows] = await Promise.all([
     d
       .select({
         unitId: valioProductUnit.unitId,
@@ -113,25 +225,15 @@ export async function getProduct(id: string): Promise<ProductDetail | null> {
       )
       .orderBy(asc(valioProduct.name)),
   ]);
+  const salesSize = units.find((u) => u.unitId === r.salesUnit)?.sizeInBaseUnits ?? (r.salesUnit === r.baseUnit ? 1 : undefined);
+  const nutrition = r.nutrition as ProductDetail["nutrition"] | null;
 
   return {
-    id: r.id,
-    name: r.name,
-    brand: r.brand,
-    vendorName: r.vendorName,
-    category: r.category,
-    salesUnit: r.salesUnit,
-    gtin: r.gtin,
-    temperatureCondition: r.temperatureCondition,
-    countryOfOrigin: r.countryOfOrigin,
-    co2PerKg: r.co2PerKg,
-    deliveryReliability: r.deliveryReliability,
-    hasImage: r.hasImage,
+    ...toSummary(r, salesSize),
     names: { en: r.name, fi: r.nameFi, sv: r.nameSv },
     baseUnit: r.baseUnit,
     allowedLotSize: r.allowedLotSize,
     units,
-    allergens: r.allergens,
     storageTempC:
       r.storageTempMin === null && r.storageTempMax === null
         ? null
@@ -139,8 +241,36 @@ export async function getProduct(id: string): Promise<ProductDetail | null> {
     netWeightKg: r.netWeightKg,
     co2PerBaseUnit: r.co2PerBaseUnit,
     vatCode: r.vatCode,
-    substitutes,
+    nutrition: nutrition ?? null,
+    claims: r.claims,
+    substitutes: await summaries(d, substituteRows),
   };
+}
+
+/** Packaging facts for unit conversion (server/valio/units.ts), for several products at once. */
+export async function getUnitFacts(ids: string[]): Promise<Map<string, UnitFacts>> {
+  const d = await db();
+  const out = new Map<string, UnitFacts>();
+  if (!ids.length) return out;
+  const [rows, units] = await Promise.all([
+    d
+      .select({
+        id: valioProduct.id,
+        salesUnit: valioProduct.salesUnit,
+        baseUnit: valioProduct.baseUnit,
+        contentPerBaseUnit: valioProduct.contentPerBaseUnit,
+        contentUnit: valioProduct.contentUnit,
+      })
+      .from(valioProduct)
+      .where(inArray(valioProduct.id, ids)),
+    d
+      .select({ productId: valioProductUnit.productId, unitId: valioProductUnit.unitId, sizeInBaseUnits: valioProductUnit.sizeInBaseUnits })
+      .from(valioProductUnit)
+      .where(inArray(valioProductUnit.productId, ids)),
+  ]);
+  for (const r of rows)
+    out.set(r.id, { ...r, units: units.filter((u) => u.productId === r.id) });
+  return out;
 }
 
 /** Splits requested ids into known products (with their sales unit) and unknown codes. */
@@ -228,6 +358,7 @@ export async function getPrices({ productIds, date }: PricesRequest): Promise<Pr
         validFrom: r.validFrom,
         validTo: r.validTo,
         fetchedAt: r.fetchedAt.toISOString(),
+        snapshotId: String(r.id),
       },
     ];
   });
@@ -292,7 +423,8 @@ export async function getAvailability({ productIds, date }: AvailabilityRequest)
     const r = byId.get(id);
     if (!r) return [];
     const amount = r.availableAmount;
-    const unknownAmount = amount === VALIO_UNKNOWN_AMOUNT;
+    // Valio marks unknown stock with 999999 (terminal products) and sometimes 9999999999: treat as unknown.
+    const unknownAmount = amount !== null && amount >= VALIO_UNKNOWN_AMOUNT;
     return [
       {
         productId: id,
@@ -304,6 +436,7 @@ export async function getAvailability({ productIds, date }: AvailabilityRequest)
         orderCutoff: r.closingTime,
         salesUnit: r.salesUnit,
         fetchedAt: r.fetchedAt.toISOString(),
+        snapshotId: String(r.id),
       },
     ];
   });
@@ -342,4 +475,13 @@ export async function getOffers(productIds: string[], date: string = today()): P
     offers,
     unknownProductIds: prices.unknownProductIds,
   };
+}
+
+/** Summaries for given product ids, in the given order (unknown ids are skipped). */
+export async function getProductSummaries(ids: string[]): Promise<ProductSummary[]> {
+  if (!ids.length) return [];
+  const d = await db();
+  const rows = await d.select(summaryColumns).from(valioProduct).where(inArray(valioProduct.id, ids));
+  const byId = new Map((await summaries(d, rows)).map((s) => [s.id, s]));
+  return ids.map((id) => byId.get(id)).filter((s): s is ProductSummary => !!s);
 }

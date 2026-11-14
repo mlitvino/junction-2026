@@ -18,6 +18,15 @@ export const PolicyEvaluateRequestSchema = z.object({
           description: "How many of the product's sales unit (e.g. cases).",
           example: 20,
         }),
+        substituteFor: z
+          .object({
+            requested: z.string().meta({ description: "What was asked for (requested name or product)." }),
+            reason: z.enum(["split", "swap", "fallback"]).meta({
+              description: "`split`: part of a short-stock split; `swap`: replaced on request; `fallback`: the best match can't be delivered.",
+            }),
+          })
+          .optional()
+          .meta({ description: "Set when this line stands in for what was requested. Needs approval unless `allowSubstitutes`." }),
       }),
     )
     .min(1)
@@ -47,6 +56,8 @@ export const PolicyReasonCodeSchema = z.enum([
   "LATE_DELIVERY",
   "INSUFFICIENT_STOCK",
   "AVAILABILITY_UNKNOWN",
+  "SUBSTITUTE_NOT_ALLOWED",
+  "MAY_CONTAIN_EXCLUDED_ALLERGEN",
   "UNIT_PRICE_TOO_HIGH",
   "LINE_QUANTITY_TOO_HIGH",
   "CATEGORY_BLOCKED",
@@ -76,6 +87,8 @@ export const PolicyLineSchema = z.object({
   orderable: z.boolean().nullable().meta({ description: "Null when Valio gave no availability answer." }),
   availableDate: z.string().nullable().meta({ description: "Earliest delivery date; may be later than requested." }),
   availableQuantity: z.number().nullable().meta({ description: "In salesUnit. Null when unknown (terminal products)." }),
+  priceSnapshotId: z.string().nullable().optional().meta({ description: "Id of the recorded Valio price answer used; null without a price." }),
+  availabilitySnapshotId: z.string().nullable().optional().meta({ description: "Id of the recorded Valio availability answer used." }),
 });
 
 export const PolicyDecisionSchema = z.object({

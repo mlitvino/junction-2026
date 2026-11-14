@@ -42,18 +42,22 @@ pnpm data:import   # load them into Postgres
 Products land in the `valio_product*` tables. Live prices and availability are fetched server-side (for the purchasing agent) from Valio when `VALIO_API_KEY` is set, and from a deterministic mock otherwise; every answer is logged in `valio_price_snapshot` / `valio_availability_snapshot`.
 
 ## LLM (Gemini)
-Put your Gemini API key in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.example`); the purchasing agent then uses `google/gemini-3.8-flash`. Without the key it falls back to a mock model, so nobody needs a key to run the app.
+The agent features (`POST /api/agent/run`, `/api/extract`, `/api/proposals/from-prompt`, and `/api/proposals/{id}/revise` with a `prompt`) run on `google/gemini-3.8-flash` and **need a Gemini API key** in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.example`; use a key with a spending limit). The rest of the app works without one.
+
+- **No key?** Set `TEST_MODE=TRUE`: the agent uses a deterministic flow and a mock model instead (what CI and the unit tests use).
+- Without a key and without `TEST_MODE=TRUE`, those endpoints answer **503** `AGENT_NOT_CONFIGURED`. A failed model call (outage, quota, unusable output) answers **502** `MODEL_FAILED`; retry. Details go to the server log, not the response.
 
 ## Commands
 | Command | What it does |
 | --- | --- |
-| `pnpm dev` | Starts the local Postgres, waits for it, then the dev server (needs Docker) |
+| `pnpm dev` | Starts the local Postgres, applies pending migrations, then the dev server (needs Docker); later migrations (e.g. after `git pull`) are applied while it runs |
 | `pnpm dev:app` | Dev server only, no Docker (frontend on mocks) |
 | `pnpm build` | Production build |
 | `pnpm lint` | ESLint, including the zone boundary checks |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm check` | lint + typecheck. Run it before every commit |
 | `pnpm test:server` | Backend unit tests (`src/server/**/*.test.ts`, plain Node) |
+| `pnpm test:e2e` | End-to-end scenarios against the running app (`pnpm dev` first; see `e2e/README.md`) |
 | `pnpm format` | Prettier |
 | `pnpm db:up` / `db:down` | Start (waits until ready) / stop the local Postgres (`compose.dev.yml`) |
 | `pnpm db:psql` | psql shell in the local DB |

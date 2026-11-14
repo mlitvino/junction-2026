@@ -42,15 +42,19 @@ export function canRequestApproval(status: ProposalStatus, outcome: PolicyOutcom
   return ok;
 }
 
-/** Can an approver decide this approval? */
+/** Can an approver decide this approval? `expiry` = the approval's expiry and the current time. */
 export function canDecide(
   approvalStatus: ApprovalStatus,
   proposalStatus: ProposalStatus,
   reviewedHash: string,
   proposalHash: string,
+  expiry?: { expiresAt: Date | null; now: Date },
 ): RuleResult {
+  const expired = no(409, "APPROVAL_EXPIRED", "This approval expired with the proposal's prices. The buyer must create a new proposal.");
+  if (approvalStatus === "EXPIRED") return expired;
   if (approvalStatus !== "PENDING" || proposalStatus !== "PENDING_APPROVAL")
     return no(409, "INVALID_STATE", `This approval is already ${approvalStatus}.`);
+  if (expiry && approvalExpired(approvalStatus, expiry.expiresAt, expiry.now)) return expired;
   if (reviewedHash !== proposalHash)
     return no(409, "HASH_MISMATCH", "The proposal you reviewed is not the current one. Review it again.");
   return ok;
@@ -79,6 +83,18 @@ const CANCELLABLE: readonly ProposalStatus[] = ["READY", "PENDING_APPROVAL", "AP
 
 export function canCancel(status: ProposalStatus): RuleResult {
   return CANCELLABLE.includes(status) ? ok : no(409, "INVALID_STATE", `A ${status} proposal can't be cancelled.`);
+}
+
+// ---------- Approval expiry ----------
+
+/** When a pending approval expires: its own expiry, else (rows from before it existed) the quote's. */
+export function approvalExpiry(approvalExpiresAt: Date | null, quoteExpiresAt: Date | null): Date | null {
+  return approvalExpiresAt ?? quoteExpiresAt;
+}
+
+/** A pending approval past its expiry can't be decided any more and becomes EXPIRED. */
+export function approvalExpired(status: ApprovalStatus, expiresAt: Date | null, now: Date): boolean {
+  return status === "PENDING" && expiresAt !== null && now.getTime() >= expiresAt.getTime();
 }
 
 // ---------- Fixed prices ----------

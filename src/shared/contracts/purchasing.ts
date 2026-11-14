@@ -22,14 +22,17 @@ export const ProposalStatusSchema = z.enum([
   "BLOCKED",
   "ORDERED",
   "CANCELLED",
+  "EXPIRED",
 ]).meta({
   description:
     "`READY`: allowed, or waiting to be sent for approval. `PENDING_APPROVAL`: an approver must decide. " +
     "`APPROVED` / `REJECTED`: decided. `BLOCKED`: the policy denied it (final). `ORDERED`: an order exists. " +
-    "`CANCELLED`: withdrawn by its creator.",
+    "`CANCELLED`: withdrawn by its creator. `EXPIRED`: nobody decided before the quote expired (final; create a new proposal).",
 });
 
-export const ApprovalStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED"]);
+export const ApprovalStatusSchema = z.enum(["PENDING", "APPROVED", "REJECTED", "CANCELLED", "EXPIRED"]).meta({
+  description: "`EXPIRED`: not decided before `expiresAt` (the proposal's quote expiry).",
+});
 
 export const ProposalLineSchema = z.object({
   productId,
@@ -42,6 +45,17 @@ export const ProposalLineSchema = z.object({
   orderable: z.boolean().nullable().meta({ description: "Availability when the proposal was made; null = Valio gave no answer." }),
   availableDate: z.string().nullable().meta({ description: "Earliest delivery date when the proposal was made." }),
   availableQuantity: z.number().nullable().meta({ description: "In salesUnit; null when unknown." }),
+  substituteFor: z
+    .object({ requested: z.string(), reason: z.enum(["split", "swap", "fallback"]) })
+    .nullable()
+    .optional()
+    .meta({ description: "What this line stands in for; null (or absent) when it is what was asked for." }),
+  priceSnapshotId: z.string().nullable().optional().meta({
+    description: "Id of the recorded Valio price answer the price comes from (absent on older proposals).",
+  }),
+  availabilitySnapshotId: z.string().nullable().optional().meta({
+    description: "Id of the recorded Valio availability answer (absent on older proposals).",
+  }),
 });
 
 export const ProposalDecisionSchema = z.object({
@@ -67,6 +81,7 @@ export const ApprovalSchema = z.object({
   decidedByName: z.string().nullable().meta({ description: "Username of the approver who decided.", example: "bob" }),
   decidedAt: isoDateTime.nullable(),
   comment: z.string().nullable(),
+  expiresAt: isoDateTime.nullable().optional().meta({ description: "A pending approval expires then (the proposal's quote expiry)." }),
 });
 
 export const ProposalSourceSchema = z.enum(["buyer", "agent", "recipe"]).meta({
@@ -105,6 +120,11 @@ export const ProposalSchema = z.object({
   }),
   decision: ProposalDecisionSchema,
   hash: z.string().meta({ description: "SHA-256 of the frozen content (lines, prices, total, decision)." }),
+  signature: z.string().nullable().optional().meta({
+    description:
+      "Ed25519 signature (base64url) over id and hash; verify it with `GET /api/trust/public-key`. Null on older proposals.",
+  }),
+  signatureKeyId: z.string().nullable().optional().meta({ description: "Which server key signed it." }),
   note: z.string().nullable(),
   approval: ApprovalSchema.nullable(),
   orderId: id.nullable(),
@@ -129,7 +149,21 @@ export const OrderSchema = z.object({
 
 export const CreateProposalRequestSchema = z.object({
   lines: z
-    .array(z.object({ productId, quantity: z.number().positive().meta({ example: 20 }) }))
+    .array(
+      z.object({
+        productId,
+        quantity: z.number().positive().meta({ example: 20 }),
+        substituteFor: z
+        .object({
+          requested: z.string().meta({ description: "What was asked for (requested name or product)." }),
+          reason: z.enum(["split", "swap", "fallback"]).meta({
+            description: "`split`: part of a short-stock split; `swap`: replaced on request; `fallback`: the best match can't be delivered.",
+          }),
+        })
+        .optional()
+        .meta({ description: "Set when this line stands in for what was requested. Needs approval unless `allowSubstitutes`." }),
+      }),
+    )
     .min(1)
     .max(50),
   date: z.iso.date().optional().meta({
@@ -154,6 +188,11 @@ export const PlaceOrderRequestSchema = z.object({
 });
 
 export const ListApprovalsQuerySchema = z.object({ status: ApprovalStatusSchema.optional() });
+
+export const PendingApprovalCountSchema = z.object({
+  count: z.number().int().meta({ description: "Approvals waiting for a decision (expired ones not counted).", example: 2 }),
+  nextExpiresAt: isoDateTime.nullable().meta({ description: "When the first of them expires; null when none." }),
+});
 
 export const DecideApprovalRequestSchema = z
   .object({
@@ -188,6 +227,7 @@ export type CreateProposalRequest = z.infer<typeof CreateProposalRequestSchema>;
 export type ListProposalsQuery = z.infer<typeof ListProposalsQuerySchema>;
 export type PlaceOrderRequest = z.infer<typeof PlaceOrderRequestSchema>;
 export type ListApprovalsQuery = z.infer<typeof ListApprovalsQuerySchema>;
+export type PendingApprovalCount = z.infer<typeof PendingApprovalCountSchema>;
 export type DecideApprovalRequest = z.infer<typeof DecideApprovalRequestSchema>;
 export type ApprovalWithProposal = z.infer<typeof ApprovalWithProposalSchema>;
 
@@ -249,6 +289,8 @@ export const OrderReceiptSchema = z.object({
   status: z.literal("SIMULATED_CONFIRMED"),
   source: z.literal("LOCAL_SIMULATOR"),
   proposalHash: z.string(),
+  proposalSignature: z.string().nullable().optional().meta({ description: "The proposal's Ed25519 signature (see `GET /api/trust/public-key`)." }),
+  signatureKeyId: z.string().nullable().optional(),
 });
 
 export const ProposalVerificationSchema = z.object({
@@ -256,11 +298,19 @@ export const ProposalVerificationSchema = z.object({
   storedHash: z.string(),
   recomputedHash: z.string(),
   hashValid: z.boolean().meta({ description: "True when the stored content still produces the stored hash." }),
+  signatureValid: z.boolean().nullable().optional().meta({
+    description: "True when the signature matches id and hash under the server's key; null when unsigned.",
+  }),
+  signatureKeyId: z.string().nullable().optional(),
   lines: z.array(
     z.object({
       productId,
       unitPriceExclVat: z.number().nullable(),
-      snapshotFound: z.boolean().meta({ description: "A Valio price snapshot with this price exists for the date." }),
+      priceSnapshotId: z.string().nullable().optional().meta({ description: "The matched price snapshot." }),
+      availabilitySnapshotId: z.string().nullable().optional(),
+      snapshotFound: z.boolean().meta({
+        description: "The recorded Valio price answer exists and has this price, product and date (by snapshot id; older proposals: by price).",
+      }),
       snapshotFetchedAt: isoDateTime.nullable(),
       source: DataSourceSchema.nullable(),
     }),

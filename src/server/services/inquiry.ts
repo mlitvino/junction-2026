@@ -1,25 +1,16 @@
 import "server-only";
 
-import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
-
 import { randomUUID } from "node:crypto";
 
-import { getAvailability, getPrices, getProduct, searchProducts, today } from "@/server/services/catalog";
+import { getAvailability, getPrices, getProduct, today } from "@/server/services/catalog";
 import {
-  inferDietaryAndAllergensFromProduct,
   MOCK_CATALOG_BY_ID,
-  MOCK_CATALOG_PRODUCTS,
-  syntheticCatalogEnabled,
+  realProductFacts,
   roundCurrency,
   type UnifiedCatalogRecord,
 } from "@/server/services/mock-catalog";
 import { valioSource } from "@/server/valio/client";
-import type { ProductDetail, ProductSummary } from "@/server/valio/types";
 import type {
-  CatalogProductDetail,
-  CatalogProductSummary,
-  CatalogSearchQuery,
-  CatalogSearchResponse,
   CreateInquiryRequest,
   InquiryLineQuote,
   PriceAvailabilityInquiry,
@@ -32,209 +23,6 @@ const DEFAULT_FOOD_VAT_PCT = 14;
 /** Today in Helsinki (YYYY-MM-DD), the same default as the rest of the API. */
 export function todayIsoDate(): string {
   return today();
-}
-
-function toSummaryFromMock(record: UnifiedCatalogRecord): CatalogProductSummary {
-  return {
-    id: record.id,
-    name: record.name,
-    brand: record.brand,
-    vendorName: record.vendorName,
-    category: record.category,
-    salesUnit: record.salesUnit,
-    gtin: record.gtin,
-    countryOfOrigin: record.countryOfOrigin,
-    co2PerKg: record.co2PerKg,
-    deliveryReliability: record.deliveryReliability,
-    allergens: record.allergens,
-    dietaryTags: record.dietaryTags,
-    sustainabilityCertificates:
-      record.sustainabilityCertificates ??
-      [] /* no label data imported yet */,
-  };
-}
-
-function toSummaryFromDb(item: ProductSummary): CatalogProductSummary {
-  // Real GS1 allergen codes from the catalog (plus name-based hints), shown as names.
-  const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(item.name, item.allergens);
-  return {
-    id: item.id,
-    name: item.name,
-    brand: item.brand,
-    vendorName: item.vendorName,
-    category: item.category,
-    salesUnit: item.salesUnit,
-    gtin: item.gtin,
-    countryOfOrigin: item.countryOfOrigin,
-    co2PerKg: item.co2PerKg,
-    deliveryReliability: item.deliveryReliability,
-    allergens,
-    dietaryTags,
-    sustainabilityCertificates: [] /* no label data imported yet */,
-  };
-}
-
-function matchesMockSearch(record: UnifiedCatalogRecord, query: CatalogSearchQuery): boolean {
-  if (query.category) {
-    const cat = query.category.toLowerCase();
-    if (
-      record.category.toLowerCase() !== cat &&
-      !record.category.toLowerCase().includes(cat) &&
-      !record.productType.toLowerCase().includes(cat)
-    ) {
-      return false;
-    }
-  }
-  if (query.q) {
-    const haystack = [
-      record.id,
-      record.name,
-      record.brand ?? "",
-      record.vendorName,
-      record.category,
-      record.productType,
-      record.gtin ?? "",
-    ]
-      .join(" ")
-      .toLowerCase();
-    const words = query.q.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.every((w) => haystack.includes(w))) return false;
-  }
-  return true;
-}
-
-function filterByAllergenAndDietary(
-  item: CatalogProductSummary,
-  excludeAllergens: string[],
-  requiredDietary: string[],
-): boolean {
-  if (excludeAllergens.length > 0) {
-    const itemAllergens = new Set(item.allergens.map((a) => a.toLowerCase()));
-    if (excludeAllergens.some((ex) => itemAllergens.has(ex))) return false;
-  }
-  if (requiredDietary.length > 0) {
-    const itemDietary = new Set(item.dietaryTags.map((d) => d.toLowerCase()));
-    if (!requiredDietary.every((req) => itemDietary.has(req))) return false;
-  }
-  return true;
-}
-
-/**
- * Structured product search across Postgres `valio_product` (when available) and the synthetic
- * mock catalog, supporting text query, category, allergen exclusion, and dietary tags.
- */
-export async function searchCatalogProducts(
-  query: CatalogSearchQuery,
-): Promise<CatalogSearchResponse> {
-  // Names ("milk") or GS1 codes ("AM") → the allergen names products are tagged with.
-  const excludeAllergens = allergenNames([
-    ...allergenCodes((query.excludeAllergens ?? "").split(",")),
-  ]);
-  const requiredDietary = (query.dietary ?? "")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-
-  const merged = new Map<string, CatalogProductSummary>();
-
-  const useSynthetic = await syntheticCatalogEnabled();
-  for (const mock of useSynthetic ? MOCK_CATALOG_PRODUCTS : []) {
-    if (matchesMockSearch(mock, query)) {
-      const summary = toSummaryFromMock(mock);
-      if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
-        merged.set(summary.id, summary);
-      }
-    }
-  }
-
-  if (process.env.DATABASE_URL) {
-    try {
-      const dbResult = await searchProducts({
-        q: query.q,
-        category: query.category,
-        limit: Math.min(100, query.limit + query.offset + 20),
-        offset: 0,
-      });
-      for (const item of dbResult.items) {
-        if (!merged.has(item.id)) {
-          const summary = toSummaryFromDb(item);
-          if (filterByAllergenAndDietary(summary, excludeAllergens, requiredDietary)) {
-            merged.set(summary.id, summary);
-          }
-        }
-      }
-    } catch {
-      // Database unavailable; serve matching synthetic mock catalog products.
-    }
-  }
-
-  const all = [...merged.values()];
-  const paged = all.slice(query.offset, query.offset + query.limit);
-  return {
-    total: all.length,
-    items: paged,
-  };
-}
-
-/**
- * Retrieves full product detail including nutrition and suggested substitutes.
- */
-export async function getCatalogProductDetail(
-  productId: string,
-): Promise<CatalogProductDetail | null> {
-  const mock = MOCK_CATALOG_BY_ID.get(productId);
-  if (mock) {
-    const substitutes = mock.substituteIds
-      .map((id) => MOCK_CATALOG_BY_ID.get(id))
-      .filter((p): p is UnifiedCatalogRecord => Boolean(p))
-      .map(toSummaryFromMock);
-
-    return {
-      ...toSummaryFromMock(mock),
-      baseUnit: mock.baseUnit,
-      allowedLotSize: mock.allowedLotSize,
-      netWeightKg: mock.netWeightKg,
-      storageTempC: mock.storageTempC,
-      nutrition: mock.nutrition,
-      substitutes,
-    };
-  }
-
-  if (process.env.DATABASE_URL) {
-    try {
-      const detail: ProductDetail | null = await getProduct(productId);
-      if (detail) {
-        const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(
-          detail.name,
-          detail.allergens,
-        );
-        return {
-          id: detail.id,
-          name: detail.name,
-          brand: detail.brand,
-          vendorName: detail.vendorName,
-          category: detail.category,
-          salesUnit: detail.salesUnit,
-          gtin: detail.gtin,
-          countryOfOrigin: detail.countryOfOrigin,
-          co2PerKg: detail.co2PerKg,
-          deliveryReliability: detail.deliveryReliability,
-          allergens,
-          dietaryTags,
-          baseUnit: detail.baseUnit,
-          allowedLotSize: detail.allowedLotSize,
-          netWeightKg: detail.netWeightKg,
-          storageTempC: detail.storageTempC,
-          nutrition: null,
-          substitutes: detail.substitutes.map((s) => toSummaryFromDb(s)),
-        };
-      }
-    } catch {
-      // Fall through to null when DB is unreachable.
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -278,10 +66,7 @@ export async function resolveUnifiedCatalogRecord(
     }
     if (unitPriceEur === null) return null;
 
-    const { dietaryTags, allergens } = inferDietaryAndAllergensFromProduct(
-      detail.name,
-      detail.allergens,
-    );
+    const { dietaryTags, allergens, nutrition } = realProductFacts(detail);
 
     return {
       id: detail.id,
@@ -305,7 +90,7 @@ export async function resolveUnifiedCatalogRecord(
       co2PerKg: detail.co2PerKg,
       dietaryTags,
       allergens,
-      nutrition: null,
+      nutrition,
       substituteIds: detail.substitutes.map((sub) => sub.id),
     };
   } catch {
