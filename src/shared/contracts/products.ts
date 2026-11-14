@@ -33,8 +33,34 @@ export const ProductSummarySchema = z.object({
     description: "Share of deliveries delivered as ordered, 0–1. Null = unknown.",
   }),
   hasImage: z.boolean(),
-  allergens: z.array(z.string()).meta({ description: "GS1 allergen codes (see shared/contracts/allergens.ts).", example: ["AM"] }),
+  allergens: z.array(z.string()).meta({ description: "GS1 allergen codes it contains (see shared/contracts/allergens.ts).", example: ["AM"] }),
+  allergenNames: z.array(z.string()).meta({ description: "The contained allergens as names.", example: ["milk"] }),
+  mayContainAllergens: z.array(z.string()).meta({ description: "GS1 codes it may contain (cross-contamination)." }),
+  dietaryTags: z.array(z.string()).meta({
+    description: "From the product's declared claims: lactose-free, gluten-free, vegan, vegetarian.",
+    example: ["lactose-free"],
+  }),
+  labels: z.array(z.object({ id: z.string(), name: z.string() })).meta({
+    description: "Packaging labels and certificates (e.g. Hyvää Suomesta, EU organic, MSC).",
+  }),
+  contentPerSalesUnit: z
+    .object({ value: z.number(), unit: z.enum(["L", "KG"]) })
+    .nullable()
+    .meta({ description: "Net content of one sales unit (e.g. 5 L per case). Null when not declared." }),
 });
+
+export const ProductNutritionSchema = z
+  .object({
+    energyKcal: z.number().nullable(),
+    fat: z.number().nullable(),
+    saturatedFat: z.number().nullable(),
+    carbohydrate: z.number().nullable(),
+    sugars: z.number().nullable(),
+    protein: z.number().nullable(),
+    salt: z.number().nullable(),
+    fibre: z.number().nullable(),
+  })
+  .meta({ description: "Per 100 g or ml (grams; energy in kcal), as declared by the supplier." });
 
 export const ProductUnitSchema = z.object({
   unitId: z.string().meta({ example: "KI" }),
@@ -55,6 +81,8 @@ export const ProductDetailSchema = ProductSummarySchema.extend({
   netWeightKg: z.number().nullable().meta({ description: "Net weight of one base unit." }),
   co2PerBaseUnit: z.number().nullable().meta({ description: "co2PerKg × netWeightKg." }),
   vatCode: z.string().nullable(),
+  nutrition: ProductNutritionSchema.nullable(),
+  claims: z.array(z.string()).meta({ description: "Declared claims, e.g. FREE_FROM_LACTOSE, VEGAN, HIGH_PROTEIN." }),
   substitutes: z.array(ProductSummarySchema).meta({ description: "Products Valio suggests instead of this one." }),
 });
 
@@ -64,6 +92,31 @@ export const ProductSearchQuerySchema = z.object({
     example: "potato salad",
   }),
   category: z.string().optional().meta({ description: "Exact category code." }),
+  excludeAllergens: z.string().trim().optional().meta({
+    description: "Comma-separated allergens to exclude, names or GS1 codes (e.g. 'milk,AY').",
+    example: "soy,tree-nuts",
+  }),
+  excludeMayContain: z
+    .enum(["true", "false"])
+    .optional()
+    .meta({ description: "`true`: also exclude products that may contain them (cross-contamination)." }),
+  dietary: z.string().trim().optional().meta({
+    description: "Comma-separated required tags: lactose-free, gluten-free, vegan, vegetarian.",
+    example: "lactose-free",
+  }),
+  origin: z.string().trim().optional().meta({ description: "Comma-separated ISO alpha-2 countries.", example: "fi,se" }),
+  maxCo2PerKg: z.coerce.number().positive().optional().meta({
+    description: "Max kg CO2-eq per kg. Products without CO2 data are kept.",
+  }),
+  minReliability: z.coerce.number().min(0).max(1).optional().meta({
+    description: "Min delivery reliability (0–1). Products without data are kept.",
+  }),
+  vendor: z.string().trim().max(200).optional().meta({ description: "Vendor name contains this." }),
+  brand: z.string().trim().max(200).optional().meta({ description: "Brand contains this." }),
+  label: z.string().trim().optional().meta({ description: "Has this label id (see shared/contracts/labels.ts).", example: "EU_ORGANIC_FARMING" }),
+  sort: z.enum(["name", "co2", "reliability"]).default("name").meta({
+    description: "`co2`: lowest first; `reliability`: highest first (unknowns last). Price ranking: POST /api/products/rank.",
+  }),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -135,6 +188,7 @@ export const AvailabilityResponseSchema = z.object({
 });
 
 export type DataSource = z.infer<typeof DataSourceSchema>;
+export type ProductNutrition = z.infer<typeof ProductNutritionSchema>;
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 export type ProductUnit = z.infer<typeof ProductUnitSchema>;
 export type ProductDetail = z.infer<typeof ProductDetailSchema>;

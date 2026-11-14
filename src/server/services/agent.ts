@@ -7,7 +7,8 @@ import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { ACTOR_KEY } from "@/server/agents/tools/actor";
 import { getMastra } from "@/server/mastra";
 import { listAudit } from "@/server/services/audit";
-import { createPriceAvailabilityInquiry, searchCatalogProducts } from "@/server/services/inquiry";
+import { searchProducts } from "@/server/services/catalog";
+import { createPriceAvailabilityInquiry } from "@/server/services/inquiry";
 import {
   evaluateProductSubstitutions,
   getProactiveRecommendations,
@@ -285,11 +286,7 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
       .replace(/\s+/g, " ")
       .trim();
 
-    const searchRes = await searchCatalogProducts({
-      q: cleanedQuery || undefined,
-      limit: 5,
-      offset: 0,
-    });
+    const searchRes = await searchProducts({ q: cleanedQuery || undefined, limit: 5, offset: 0, sort: "name" });
     toolCalls.push({
       toolName: "searchProducts",
       args: { query: cleanedQuery },

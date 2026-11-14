@@ -13,12 +13,11 @@ import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { purchaseOrder, valioProduct } from "@/server/db/schema";
 import { getMastra } from "@/server/mastra";
-import { getAvailability, getPrices } from "@/server/services/catalog";
+import { getAvailability, getPrices, searchProducts } from "@/server/services/catalog";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import {
   classifyStockStatus,
   resolveUnifiedCatalogRecord,
-  searchCatalogProducts,
   todayIsoDate,
 } from "@/server/services/inquiry";
 import {
@@ -866,7 +865,7 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
       if (score > (best?.score ?? 0.25)) best = { id: cand.id, score };
     }
   if (best) return best.id;
-  const search = await searchCatalogProducts({ q: toTarget, limit: 5, offset: 0 });
+  const search = await searchProducts({ q: toTarget, limit: 5, offset: 0, sort: "name" });
   return search.items[0]?.id ?? null;
 }
 

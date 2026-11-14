@@ -62,63 +62,6 @@ export const CatalogProductSummarySchema = z.object({
 
 export type CatalogProductSummary = z.infer<typeof CatalogProductSummarySchema>;
 
-/** Detailed Valio Aimo product record including nutrition and suggested substitutes */
-export const CatalogProductDetailSchema = CatalogProductSummarySchema.extend({
-  baseUnit: z.string().meta({ example: "KG" }),
-  allowedLotSize: z.number().meta({ example: 1 }),
-  netWeightKg: z.number().nullable().meta({ example: 1 }),
-  storageTempC: z
-    .object({
-      min: z.number().nullable(),
-      max: z.number().nullable(),
-    })
-    .nullable(),
-  nutrition: NutritionProfileSchema.nullable().meta({ description: "Per 100 g. Null when the catalog has no nutrition data for the product." }),
-  substitutes: z.array(CatalogProductSummarySchema).meta({
-    description: "Suggested substitute products within Valio Aimo's assortment.",
-  }),
-});
-
-export type CatalogProductDetail = z.infer<typeof CatalogProductDetailSchema>;
-
-/** GET /api/catalog/products — query parameters */
-export const CatalogSearchQuerySchema = z.object({
-  q: z.string().trim().max(200).optional().meta({
-    description: "Free-text search across product names, brand, vendor, SKU, or GTIN.",
-    example: "creamy cheese",
-  }),
-  category: z.string().trim().optional().meta({
-    description: "Filter by product category or type.",
-    example: "CHEESE",
-  }),
-  excludeAllergens: z.string().trim().optional().meta({
-    description: "Comma-separated allergens to exclude (e.g. 'soy,tree-nuts').",
-    example: "soy,tree-nuts",
-  }),
-  dietary: z.string().trim().optional().meta({
-    description: "Comma-separated required dietary tags (e.g. 'vegetarian,lactose-free').",
-    example: "vegetarian",
-  }),
-  limit: z.coerce.number().int().min(1).max(100).default(20).meta({
-    description: "Maximum number of products to return (1–100).",
-    example: 20,
-  }),
-  offset: z.coerce.number().int().min(0).default(0).meta({
-    description: "Pagination offset.",
-    example: 0,
-  }),
-});
-
-export type CatalogSearchQuery = z.infer<typeof CatalogSearchQuerySchema>;
-
-/** GET /api/catalog/products — response body */
-export const CatalogSearchResponseSchema = z.object({
-  total: z.number().int().meta({ example: 12 }),
-  items: z.array(CatalogProductSummarySchema),
-});
-
-export type CatalogSearchResponse = z.infer<typeof CatalogSearchResponseSchema>;
-
 /** Stock fulfillment classification for an inquired line item */
 export const StockStatusSchema = z
   .enum(["in_stock", "partial_stock", "out_of_stock", "terminal_unconfirmed"])

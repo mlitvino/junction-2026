@@ -1,11 +1,19 @@
 import "server-only";
 
 import { getOffers, getProduct, searchProducts } from "@/server/services/catalog";
+import { evaluateProductSubstitutions, IntelligenceServiceError } from "@/server/services/intelligence";
+import { actorFor } from "@/server/services/purchasing";
 import { ValioApiError } from "@/server/valio/client";
 
 import { requireRole } from "../../middleware/session";
 import { createRouter } from "../../router";
-import { getOffersRoute, getProductOfferRoute, getProductRoute, searchProductsRoute } from "./products.docs";
+import {
+  getOffersRoute,
+  getProductOfferRoute,
+  getProductRoute,
+  productSubstitutesRoute,
+  searchProductsRoute,
+} from "./products.docs";
 
 export const productsRouter = createRouter();
 
@@ -55,5 +63,15 @@ productsRouter.openapi(getOffersRoute, async (c) => {
   } catch (err) {
     upstreamFailure(err);
     return c.json({ error: "Valio is unavailable" }, 502);
+  }
+});
+
+productsRouter.openapi(productSubstitutesRoute, async (c) => {
+  try {
+    const body = c.req.valid("json");
+    return c.json(await evaluateProductSubstitutions({ ...body, productId: c.req.valid("param").id }, c.var.user), 200);
+  } catch (err) {
+    if (err instanceof IntelligenceServiceError && err.status === 404) return c.json({ error: err.message }, 404);
+    throw err;
   }
 });
