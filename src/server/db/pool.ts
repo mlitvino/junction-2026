@@ -10,7 +10,7 @@ export function getPool(): Pool {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
       throw new Error(
-        "DATABASE_URL is not set. Copy .env.example to .env.local (see compose.dev.yml).",
+        "DATABASE_URL is not set. Copy .env.example to .env (see compose.dev.yml).",
       );
     }
     globalForPool.__pgPool = new Pool({ connectionString });

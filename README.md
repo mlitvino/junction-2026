@@ -8,14 +8,15 @@ Trusted Trade Agents (Junction 2026, Valio Aimo challenge): a prototype interfac
 
 ## Getting started
 ```bash
-pnpm install
-cp .env.example .env.local   # then set BETTER_AUTH_SECRET (openssl rand -base64 32)
-pnpm dev                     # starts Postgres (Docker) and the app
+cp .env.example .env   # set BETTER_AUTH_SECRET (openssl rand -base64 32), VALIO_API_URL, VALIO_API_KEY
+pnpm bootstrap         # install, start Postgres, download the Valio files (if missing), import them
+pnpm dev               # starts Postgres (Docker) and the app
 ```
+`pnpm bootstrap` is safe to rerun: it skips the download when `data/valio/` already has the files.
 Open http://localhost:3000. You're sent to `/login`; create an account at `/signup` (login + password, min. 8 characters). The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
 
 ## Mocks (frontend without a backend)
-Set this in `.env.local`:
+Set this in `.env`:
 ```
 NEXT_PUBLIC_USE_MOCKS=true
 ```
@@ -27,10 +28,17 @@ and run `pnpm dev:app` (no Docker needed). `src/client/api-client.ts` will then 
 pnpm db:up   # local DB on 127.0.0.1:5432; pnpm dev runs this for you
 ```
 
-`DATABASE_URL` in `.env.local` (see `.env.example`) points to it. Mastra creates its own tables on first use.
+`DATABASE_URL` in `.env` (see `.env.example`) points to it. Mastra creates its own tables on first use.
+
+## Valio catalog
+```bash
+pnpm data:fetch    # once: download the product, CO2 and reliability files
+pnpm data:import   # load them into Postgres
+```
+Products land in the `valio_product*` tables. Live prices and availability are fetched server-side (for the purchasing agent) from Valio when `VALIO_API_KEY` is set, and from a deterministic mock otherwise; every answer is logged in `valio_price_snapshot` / `valio_availability_snapshot`.
 
 ## LLM (Gemini)
-Put your Gemini API key in `.env.local` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.example`); the purchasing agent then uses `google/gemini-3.8-flash`. Without the key it falls back to a mock model, so nobody needs a key to run the app.
+Put your Gemini API key in `.env` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `.env.example`); the purchasing agent then uses `google/gemini-3.8-flash`. Without the key it falls back to a mock model, so nobody needs a key to run the app.
 
 ## Commands
 | Command | What it does |
@@ -46,6 +54,13 @@ Put your Gemini API key in `.env.local` as `GOOGLE_GENERATIVE_AI_API_KEY` (see `
 | `pnpm db:psql` | psql shell in the local DB |
 | `pnpm db:reset` | Delete all local DB data and start fresh |
 | `pnpm db:logs` | Follow the local Postgres logs |
+| `pnpm db:generate` | Create a SQL migration from schema changes (`src/server/db/schema/` → `drizzle/`) |
+| `pnpm db:migrate` | Apply pending migrations (the app also does it on first use) |
+| `pnpm db:studio` | Browse the database in Drizzle Studio |
+| `pnpm bootstrap` | First-time setup: install, start Postgres, `data:fetch` (if files missing), `data:import` |
+| `pnpm data:fetch` | Download the static Valio files into `data/valio/` |
+| `pnpm data:import` | Load `data/valio/` into Postgres (run after `data:fetch`; safe to repeat) |
+| `pnpm data:analyze` | Data-quality report and anomalies for the Valio files |
 | `pnpm docker:build` | Build the production image locally (same `Dockerfile` as CI) |
 | `pnpm docker:run` | Run that image on http://localhost:3000 |
 
