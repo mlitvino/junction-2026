@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { useId, useState } from "react";
 import { apiClient } from "@/client/api-client";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
+import { viewerHasRole } from "@/client/viewer";
 import { PageHeader } from "@/components/layout/page-header";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { buttonVariants } from "@/components/ui/button";
@@ -16,7 +18,9 @@ export function ApprovalDetail({ id }: { id: string }) {
   const snapshot = useProcurement();
   const [reason, setReason] = useState("");
   const reasonId = useId();
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
+  const viewer = useViewer();
+  const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
   const approval = snapshot.state.approvals.find((a) => a.id === id);
   const proposal = snapshot.state.proposals.find((p) => p.id === approval?.proposalId);
   if (!approval || !proposal)
@@ -45,7 +49,7 @@ export function ApprovalDetail({ id }: { id: string }) {
             Approving records a local simulated order for this snapshot. It does not authorize a
             real purchase or verify supplier prices or stock.
           </p>
-          {snapshot.state.role === "APPROVER" ? (
+          {viewerHasRole(viewer, "APPROVER") ? (
             <div className="flex flex-wrap items-center gap-4">
               <ActionConfirmation
                 title="Approve this demo purchase?"
@@ -91,8 +95,9 @@ export function ApprovalDetail({ id }: { id: string }) {
             </div>
           ) : (
             <p className="rounded-lg bg-muted p-4 text-sm">
-              Switch to Demo Approver in the account menu to make a decision. This role switch is
-              only a UI simulation.
+              {demoIdentity
+                ? "Switch to Demo Approver in the account menu to make a decision. This role switch is only a UI simulation."
+                : "Only an approver in your organization can decide this request."}
             </p>
           )}
         </section>

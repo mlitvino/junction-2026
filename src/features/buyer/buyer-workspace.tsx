@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
 import { PageHeader } from "@/components/layout/page-header";
 import { buttonVariants } from "@/components/ui/button";
 import { BuyerWelcome } from "./buyer-welcome";
@@ -17,7 +17,7 @@ import {
 
 export function BuyerWorkspace() {
   const snapshot = useProcurement();
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
   return (
     <>
       <DemoStorageNotice notice={snapshot.storageNotice} />
@@ -60,7 +60,7 @@ export function BuyerWorkspace() {
 
 export function BuyerConversation({ id }: { id: string }) {
   const snapshot = useProcurement();
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
   const conversation = snapshot.state.conversations.find((c) => c.id === id);
   if (!conversation)
     return (

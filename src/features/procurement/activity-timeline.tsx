@@ -17,7 +17,9 @@ export function ActivityTimeline({ items }: { items: readonly ProvisionalActivit
                   ? "Demo Approver"
                   : item.actorId === "demo-buyer"
                     ? "Demo Buyer"
-                    : "Local demo simulator"}
+                    : item.actorId === "demo-simulator"
+                      ? "Local demo simulator"
+                      : item.actorId}
               </span>{" "}
               ·{" "}
               <time

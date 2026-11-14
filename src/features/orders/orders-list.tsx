@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useProcurement } from "@/client/use-procurement";
+import { simulatorAvailable, useProcurement } from "@/client/use-procurement";
 import { PageHeader } from "@/components/layout/page-header";
 import { OrderStatus } from "@/features/procurement/status";
 import { date, money } from "@/features/procurement/format";
@@ -9,7 +9,7 @@ import { DemoStorageNotice, EmptyState, IntegrationState } from "@/features/proc
 
 export function OrdersList() {
   const snapshot = useProcurement();
-  if (!snapshot.ready || snapshot.mode !== "mock") return <IntegrationState snapshot={snapshot} />;
+  if (!simulatorAvailable(snapshot)) return <IntegrationState snapshot={snapshot} />;
   return (
     <div className="mx-auto w-full max-w-data space-y-8">
       <PageHeader
@@ -20,7 +20,7 @@ export function OrdersList() {
       {!snapshot.state.orders.length ? (
         <EmptyState
           title="No simulated orders yet"
-          description="Try the autonomous purchase scenario, or approve a pending request as Demo Approver."
+          description="Try the autonomous purchase scenario, or approve a pending request as an approver."
           href="/buyer"
         />
       ) : (

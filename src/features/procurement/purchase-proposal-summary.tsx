@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { apiClient } from "@/client/api-client";
 import { useProcurement } from "@/client/use-procurement";
+import { useViewer } from "@/client/use-viewer";
+import { viewerHasRole } from "@/client/viewer";
 import { Button, buttonVariants } from "@/components/ui/button";
 import type { ProvisionalProposal } from "@/client/provisional/types";
 import { useAction } from "./use-action";
@@ -12,6 +14,8 @@ import { money } from "./format";
 
 export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalProposal }) {
   const { state } = useProcurement();
+  const viewer = useViewer();
+  const demoIdentity = viewer.status === "ready" && viewer.viewer.demo;
   const action = useAction();
   const approval = state.approvals.find((a) => a.id === proposal.approvalId);
   const denied = proposal.policyDecision.outcome === "DENY";
@@ -55,7 +59,7 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
       <div className="flex flex-wrap gap-3">
         {proposal.status === "READY" &&
           proposal.policyDecision.outcome === "REQUIRE_APPROVAL" &&
-          state.role === "BUYER" && (
+          viewerHasRole(viewer, "BUYER") && (
             <Button
               disabled={action.busy}
               onClick={() =>
@@ -88,8 +92,11 @@ export function PurchaseProposalSummary({ proposal }: { proposal: ProvisionalPro
       </div>
       {approval?.status === "PENDING" && (
         <p className="text-caption text-muted-foreground">
-          Switch to Demo Approver in the account menu to review this request. Role switching
-          simulates the UI; it is not authentication or authorization.
+          {demoIdentity
+            ? "Switch to Demo Approver in the account menu to review this request. Role switching simulates the UI; it is not authentication or authorization."
+            : viewerHasRole(viewer, "APPROVER")
+              ? "You're also an approver: open the approval to decide."
+              : "Waiting for an approver. This demo keeps approvals in this browser tab, so an approver has to sign in here to review it."}
         </p>
       )}
       <details className="text-caption text-muted-foreground">
