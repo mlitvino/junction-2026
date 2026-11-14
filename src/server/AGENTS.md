@@ -27,7 +27,7 @@ Every file here starts with `import "server-only";`. See the root AGENTS.md for 
 
 - Mastra instance: `getMastra()` in `server/mastra.ts` (lazy; Postgres storage). Agents live in `server/agents/`, tools in `server/agents/tools/`. Use `createTool()` with a Zod `inputSchema`; plain objects don't work.
 - Database: `getDb()` (Drizzle, `server/db/client.ts`) for all queries; call `ensureDatabase()` (`server/db/migrate.ts`) first, it applies pending migrations once per process. Schema in `server/db/schema/` (the only files here without `import "server-only"`: drizzle-kit loads them outside Next.js). `getPool()` (`server/db/pool.ts`) is the shared pg pool under Drizzle and Mastra; don't query through it directly.
-- The purchasing agent runs on **Gemini** (`google/gemini-3.8-flash`) via `GOOGLE_GENERATIVE_AI_API_KEY`, and uses the deterministic flow / mock model only when `TEST_MODE=TRUE` (so CI and offline tests need no key). Mastra reads the key from the environment itself; never pass it in code.
+- The purchasing agent runs on **Gemini** (`google/gemini-3.8-flash`) via `GOOGLE_GENERATIVE_AI_API_KEY`, and uses the deterministic flow / mock model only when `TEST_MODE=TRUE` (so CI and offline tests need no key). Mastra reads the key from the environment itself; never pass it in code. Wrap every model call in `callModel()` (`agents/mode.ts`): failures become `AgentError` 502 `MODEL_FAILED`, a missing key 503 `AGENT_NOT_CONFIGURED` (`requireGeminiApiKey`), both mapped by `app.onError`.
 - To expose an agent to the frontend: contract in `shared/contracts` (needs approval) → service in `server/services` → route folder in `server/api/routes/<name>/`.
 
 ## Preferences

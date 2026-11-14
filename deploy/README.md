@@ -23,7 +23,8 @@ The files in this folder are templates. On the server, `~/junction-2026` holds
    ghcr needs nothing: the built-in `GITHUB_TOKEN` has `packages: write`.
 5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/junction-2026`; set
    `POSTGRES_PASSWORD` and `BETTER_AUTH_SECRET` (`openssl rand -base64 32`), keep
-   `BETTER_AUTH_URL=https://valinor.ink:9090`. The `valinor.ink` A record already points to this server.
+   `BETTER_AUTH_URL=https://valinor.ink:9090`. Set `GOOGLE_GENERATIVE_AI_API_KEY` (or `TEST_MODE=TRUE`
+   for a demo without Gemini), else the agent endpoints answer 503 `AGENT_NOT_CONFIGURED`. The `valinor.ink` A record already points to this server.
 6. Copy the existing valinor.ink certificate into `~/junction-2026/certs` (see "Certificate").
 7. Push to `main`; check the image under Packages and the site at https://valinor.ink:9090.
 
