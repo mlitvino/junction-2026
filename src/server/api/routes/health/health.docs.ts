@@ -2,12 +2,11 @@ import "server-only";
 
 import { createRoute } from "@hono/zod-openapi";
 
-import { getHealth } from "@/server/services/health";
 import { HealthResponseSchema } from "@/shared/contracts/health";
 
-import { createRouter } from "../router";
+// OpenAPI definitions for the health routes. Handlers live in ./health.ts.
 
-const getHealthRoute = createRoute({
+export const getHealthRoute = createRoute({
   method: "get",
   path: "/health",
   tags: ["System"],
@@ -20,8 +19,3 @@ const getHealthRoute = createRoute({
     },
   },
 });
-
-export const healthRouter = createRouter().openapi(getHealthRoute, (c) =>
-  // Runtime check that the service still matches the contract.
-  c.json(HealthResponseSchema.parse(getHealth()), 200),
-);

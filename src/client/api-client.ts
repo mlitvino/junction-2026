@@ -1,8 +1,10 @@
 import type { z } from "zod";
 
 import { HealthResponseSchema, type HealthResponse } from "@/shared/contracts/health";
+import { MeResponseSchema, type MeResponse } from "@/shared/contracts/me";
 
 import { healthMock } from "./mocks/health";
+import { meMock } from "./mocks/me";
 import { createMockProcurementService } from "./mocks/mock-service";
 import { createUnavailableProcurementService } from "./provisional/unavailable-service";
 import type { ProvisionalProcurementService } from "./provisional/types";
@@ -49,4 +51,5 @@ export const apiClient = {
     : createUnavailableProcurementService()) as ProvisionalProcurementService,
   getHealth: (): Promise<HealthResponse> =>
     request("/api/health", HealthResponseSchema, healthMock),
+  getMe: (): Promise<MeResponse> => request("/api/me", MeResponseSchema, meMock),
 };

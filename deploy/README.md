@@ -22,7 +22,8 @@ The files in this folder are templates. On the server, `~/junction-2026` holds
 4. GitHub → Settings → Secrets → Actions: `SSH_HOST`, `SSH_USER`, `SSH_KEY`.
    ghcr needs nothing: the built-in `GITHUB_TOKEN` has `packages: write`.
 5. Copy `docker-compose.yml`, `Caddyfile`, `.env` to `~/junction-2026`; set
-   `POSTGRES_PASSWORD`. The `valinor.ink` A record already points to this server.
+   `POSTGRES_PASSWORD` and `BETTER_AUTH_SECRET` (`openssl rand -base64 32`), keep
+   `BETTER_AUTH_URL=https://valinor.ink:9090`. The `valinor.ink` A record already points to this server.
 6. Copy the existing valinor.ink certificate into `~/junction-2026/certs` (see "Certificate").
 7. Push to `main`; check the image under Packages and the site at https://valinor.ink:9090.
 
