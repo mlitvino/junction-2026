@@ -2,7 +2,7 @@ import "server-only";
 
 import { createRoute, z } from "@hono/zod-openapi";
 
-import { ErrorResponseSchema } from "@/shared/contracts/errors";
+import { AgentErrorResponseSchema, ErrorResponseSchema } from "@/shared/contracts/errors";
 import { CreateOrderFromRecipeRequestSchema, CreateOrderFromRecipeResponseSchema } from "@/shared/contracts/recipes";
 import {
   AuditListSchema,
@@ -136,6 +136,14 @@ export const placeOrderRoute = createRoute({
 
 const badRequest = { 400: json(PurchasingErrorSchema, "The request can't be applied (e.g. unknown product, no change recognized).") };
 const valioDown = { 502: json(ErrorResponseSchema, "The Valio API failed or is unreachable.") };
+/** Steps that use the language model (outside TEST_MODE): the model can fail, or not be configured. */
+const modelErrors = {
+  502: json(
+    ErrorResponseSchema,
+    "The Valio API failed or is unreachable, or the language model call failed (`code: MODEL_FAILED`; retry).",
+  ),
+  503: json(AgentErrorResponseSchema, "The agent isn't configured: no Gemini key on the server and not in TEST_MODE (`AGENT_NOT_CONFIGURED`)."),
+};
 
 export const createProposalFromPromptRoute = createRoute({
   method: "post",
@@ -149,7 +157,7 @@ export const createProposalFromPromptRoute = createRoute({
     "differs from the sales unit. `proposal` is null when nothing matched.",
   security,
   request: { body: { content: { "application/json": { schema: CreateProposalFromPromptRequestSchema } }, required: true } },
-  responses: { 201: json(ProposalFromPromptResponseSchema, "Created (or nothing matched)."), ...auth, ...valioDown },
+  responses: { 201: json(ProposalFromPromptResponseSchema, "Created (or nothing matched)."), ...auth, ...modelErrors },
 });
 
 export const createProposalFromRecipeRoute = createRoute({
@@ -190,7 +198,7 @@ export const reviseProposalRoute = createRoute({
     ...auth,
     ...notFound,
     ...conflict,
-    ...valioDown,
+    ...modelErrors,
   },
 });
 
