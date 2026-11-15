@@ -71,6 +71,10 @@ function stripOuterQuotes(s: string): string {
   return trimmed;
 }
 
+/** Unit words a quantity may carry ("30 cases", "2,5 kg", "12 pcs"); the number is what counts. */
+const UNIT = String.raw`(?:kg|g|l|dl|cl|ml|st|ki|pcs?|kpl|cases?|packs?|packages?|box(?:es)?|bottles?|cartons?|pieces?|units?)\.?`;
+const NUMBER = String.raw`(\d+(?:[.,]\d+)?)`;
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -144,7 +148,7 @@ export function parseOrderChangeDeterministically(
       // Avoid misclassifying "change quantity of X to 300" as a product swap
       if (/^(?:the\s+)?(?:quantity|amount|volume)\b/i.test(body)) {
         const qtyBody =
-          /^(?:the\s+)?(?:quantity|amount|volume)\s+(?:of|for)\s+["']?(.+?)["']?\s+to\s+(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
+          new RegExp(String.raw`^(?:the\s+)?(?:quantity|amount|volume)\s+(?:of|for)\s+["']?(.+?)["']?\s+to\s+${NUMBER}\s*${UNIT}?$`, "i").exec(
             body,
           );
         if (qtyBody) {
@@ -165,9 +169,10 @@ export function parseOrderChangeDeterministically(
         let qty: number | undefined;
 
         const trailingQty =
-          /^(.+?)\s+(?:and\s+)?(?:with\s+|at\s+|set\s+quantity\s+to\s+|quantity\s+|qty\s+)(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
-            toTarget,
-          );
+          new RegExp(
+            String.raw`^(.+?)\s+(?:and\s+)?(?:with\s+|at\s+|set\s+(?:the\s+)?(?:quantity\s+)?(?:to\s+)?|quantity\s+|qty\s+)${NUMBER}\s*${UNIT}?$`,
+            "i",
+          ).exec(toTarget);
         if (trailingQty) {
           toTarget = trailingQty[1]!.trim();
           qty = Number.parseFloat(trailingQty[2]!.replace(",", "."));
@@ -187,9 +192,10 @@ export function parseOrderChangeDeterministically(
 
     // Pattern 2: "set/update/change quantity [of X] to N" or "reduce/increase [X] to N"
     const qtyMatch =
-      /^(?:please\s+)?(?:set|update|change|reduce|increase)\s+(?:the\s+)?(?:quantity|amount)?\s*(?:of|for)?\s*["']?(.*?)["']?\s+to\s+(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
-        clause,
-      );
+      new RegExp(
+        String.raw`^(?:please\s+)?(?:set|update|change|reduce|increase)\s+(?:the\s+)?(?:quantity|amount)?\s*(?:of|for)?\s*["']?(.*?)["']?\s+to\s+${NUMBER}\s*${UNIT}?$`,
+        "i",
+      ).exec(clause);
     if (qtyMatch) {
       const rawTarget = stripOuterQuotes(qtyMatch[1]!);
       const num = Number.parseFloat(qtyMatch[2]!.replace(",", "."));
@@ -202,11 +208,24 @@ export function parseOrderChangeDeterministically(
       continue;
     }
 
-    // Pattern 3: "remove/delete [product] X"
-    const removeMatch = /^(?:please\s+)?(?:remove|delete|drop)\s+(?:product\s+)?["']?(.+?)["']?$/i.exec(clause);
+    // Pattern 2b: "set/order 30 cases of milk"
+    const setAmountOf = new RegExp(
+      String.raw`^(?:please\s+)?(?:set|order|make\s+it)\s+${NUMBER}\s*${UNIT}?\s+(?:of\s+)?["']?(.+?)["']?$`,
+      "i",
+    ).exec(clause);
+    if (setAmountOf) {
+      const num = Number.parseFloat(setAmountOf[1]!.replace(",", "."));
+      if (Number.isFinite(num) && num > 0) quantityUpdates.push({ target: stripOuterQuotes(setAmountOf[2]!), quantity: num });
+      continue;
+    }
+
+    // Pattern 3: "remove/delete [product] X[, Y]"
+    const removeMatch = /^(?:please\s+)?(?:remove|delete|drop)\s+(?:product\s+)?(.+?)$/i.exec(clause);
     if (removeMatch) {
-      const target = stripOuterQuotes(removeMatch[1]!);
-      if (target) removeTargets.push(target);
+      for (const part of removeMatch[1]!.split(/\s*,\s*/)) {
+        const target = stripOuterQuotes(part);
+        if (target) removeTargets.push(target);
+      }
     }
   }
 

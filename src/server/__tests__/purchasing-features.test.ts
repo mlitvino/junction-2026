@@ -713,6 +713,20 @@ describe("B2: deterministic order-change parsing with commas, decimals, and prep
     );
     assert.deepEqual(withoutKnown.replacements, butter.replacements);
   });
+
+  it("understands quantities with any unit word, 'and set N cases' on swaps, and remove lists", () => {
+    assert.deepEqual(parseOrderChangeDeterministically("set milk to 30 cases").quantityUpdates, [{ target: "milk", quantity: 30 }]);
+    assert.deepEqual(parseOrderChangeDeterministically("change quantity of milk to 300 pcs").quantityUpdates, [
+      { target: "milk", quantity: 300 },
+    ]);
+    assert.deepEqual(parseOrderChangeDeterministically("set butter to 2,5 kg").quantityUpdates, [{ target: "butter", quantity: 2.5 }]);
+    assert.deepEqual(parseOrderChangeDeterministically("set 30 cases of milk").quantityUpdates, [{ target: "milk", quantity: 30 }]);
+    // The contract's own example (ReviseProposalRequestSchema.prompt).
+    assert.deepEqual(parseOrderChangeDeterministically("Change 469330 to 469386 and set 30 cases").replacements, [
+      { fromTarget: "469330", toTarget: "469386", quantity: 30 },
+    ]);
+    assert.deepEqual(parseOrderChangeDeterministically("remove milk, butter").removeTargets, ["milk", "butter"]);
+  });
 });
 
 describe("B3: merging duplicate productId lines on revision and policy evaluation", () => {
