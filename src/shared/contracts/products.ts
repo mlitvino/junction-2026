@@ -129,6 +129,13 @@ export const ProductSearchQuerySchema = z.object({
 export const ProductSearchResponseSchema = z.object({
   total: z.number().int().meta({ description: "Matches in total (for paging)." }),
   items: z.array(ProductSummarySchema),
+  matchedFuzzy: z.boolean().optional().meta({
+    description: "True when nothing matched as typed and the results are for corrected words (a typo like 'mlik').",
+  }),
+  searchedFor: z.string().optional().meta({
+    description: "With matchedFuzzy: the corrected words the results are for, e.g. 'milk' (show \"Showing results for …\").",
+    example: "milk",
+  }),
 });
 
 // ---------- Prices ----------

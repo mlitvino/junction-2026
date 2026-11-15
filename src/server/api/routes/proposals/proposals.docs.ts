@@ -43,6 +43,8 @@ const conflict = {
 const notAllowed = { 422: json(PurchasingErrorSchema, "Not allowed by the policy decision.") };
 const IdParam = z.object({ id: z.string().meta({ description: "Proposal id." }) });
 
+const pastDate = { 422: json(PurchasingErrorSchema, "`DATE_IN_PAST`: the delivery date is before today (Helsinki).") };
+
 export const createProposalRoute = createRoute({
   method: "post",
   path: "/proposals",
@@ -58,6 +60,7 @@ export const createProposalRoute = createRoute({
   responses: {
     201: json(ProposalSchema, "Created."),
     ...auth,
+    ...pastDate,
     502: json(ErrorResponseSchema, "The Valio API failed or is unreachable."),
   },
 });
@@ -157,7 +160,7 @@ export const createProposalFromPromptRoute = createRoute({
     "differs from the sales unit. `proposal` is null when nothing matched.",
   security,
   request: { body: { content: { "application/json": { schema: CreateProposalFromPromptRequestSchema } }, required: true } },
-  responses: { 201: json(ProposalFromPromptResponseSchema, "Created (or nothing matched)."), ...auth, ...modelErrors },
+  responses: { 201: json(ProposalFromPromptResponseSchema, "Created (or nothing matched)."), ...auth, ...pastDate, ...modelErrors },
 });
 
 export const createProposalFromRecipeRoute = createRoute({
@@ -175,6 +178,7 @@ export const createProposalFromRecipeRoute = createRoute({
     ...badRequest,
     ...auth,
     404: json(PurchasingErrorSchema, "No such recipe."),
+    ...pastDate,
     ...valioDown,
   },
 });

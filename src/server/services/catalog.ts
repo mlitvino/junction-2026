@@ -23,6 +23,8 @@ import {
 
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
+import { computeNameMatchScore, wordStems } from "@/server/search/name-match";
+import { correctWord, parseSearchQuery, type ParsedQuery } from "@/server/search/query";
 import {
   valioAvailabilitySnapshot,
   valioPriceSnapshot,
@@ -152,10 +154,45 @@ async function summaries(d: Awaited<ReturnType<typeof db>>, rows: SummaryRow[]):
  */
 export async function searchProducts(query: ProductSearchQuery): Promise<ProductSearchResponse> {
   const d = await db();
+  const parsed = query.q?.trim() ? parseSearchQuery(query.q) : null;
+  const first = await runSearch(d, query, parsed);
+  if (first.total > 0 || !parsed?.terms.length) return first;
+
+  // Nothing found: correct typos against words that occur in the catalog, and try once more.
+  const vocabulary = await catalogVocabulary(d);
+  let corrected = false;
+  const terms = parsed.terms.map((group) => {
+    const fix = correctWord(group[0]!, vocabulary);
+    if (!fix) return group;
+    corrected = true;
+    return [...new Set([fix, ...wordStems(fix)])];
+  });
+  if (!corrected) return first;
+  const text = terms.map((g) => g[0]).join(" ");
+  const second = await runSearch(d, query, { ...parsed, terms, text, scoringText: text });
+  return { ...second, matchedFuzzy: true, searchedFor: text };
+}
+
+/** Rows reranked in memory for `relevance` (the first pages); later pages keep the SQL order. */
+const RERANK_WINDOW = 200;
+
+async function runSearch(
+  d: Awaited<ReturnType<typeof db>>,
+  query: ProductSearchQuery,
+  parsed: ParsedQuery | null,
+): Promise<ProductSearchResponse> {
   const conditions: SQL[] = [];
-  // Words split on spaces and punctuation, so "lactose-free" also finds "lactose free".
-  for (const word of (query.q ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean)) {
-    conditions.push(like(valioProduct.searchText, `%${escapeLike(word)}%`));
+  // Every product word must match (any of its variants). Short words (≤ 3 letters, e.g. "voi")
+  // match only at a word start, so they don't hit "voima" or "savoie"; longer ones anywhere, so
+  // Finnish compounds ("kevytmaito") still match.
+  for (const group of parsed?.terms ?? []) {
+    conditions.push(
+      or(
+        ...group.map((w) =>
+          w.length <= 3 ? sql`${valioProduct.searchText} ~ ${`\\m${w}`}` : like(valioProduct.searchText, `%${escapeLike(w)}%`),
+        ),
+      )!,
+    );
   }
   if (query.category) conditions.push(eq(valioProduct.category, query.category));
   const banned = [...allergenCodes(list(query.excludeAllergens))];
@@ -163,7 +200,8 @@ export async function searchProducts(query: ProductSearchQuery): Promise<Product
     conditions.push(not(arrayOverlaps(valioProduct.allergens, banned)));
     if (query.excludeMayContain === "true") conditions.push(not(arrayOverlaps(valioProduct.mayContainAllergens, banned)));
   }
-  const dietary = list(query.dietary).map((t) => t.toLowerCase());
+  // Explicit dietary filters plus the ones the words imply ("lactose-free milk"), on the imported tags.
+  const dietary = [...new Set([...list(query.dietary).map((t) => t.toLowerCase()), ...(parsed?.dietary ?? [])])];
   if (dietary.length) conditions.push(arrayContains(valioProduct.dietaryTags, dietary));
   const origin = list(query.origin).map((c) => c.toLowerCase());
   if (origin.length) conditions.push(inArray(valioProduct.countryOfOrigin, origin));
@@ -176,17 +214,25 @@ export async function searchProducts(query: ProductSearchQuery): Promise<Product
   if (query.label) conditions.push(arrayContains(valioProduct.labels, [query.label]));
   const where = conditions.length ? and(...conditions) : undefined;
 
-  const q = query.q?.trim();
-  const sort = query.sort ?? (q ? "relevance" : "name");
+  const text = parsed?.text || query.q?.trim() || "";
+  const sort = query.sort ?? (text ? "relevance" : "name");
   const order =
-    sort === "relevance" && q
-      ? [sql`similarity(${valioProduct.name}, ${q}) desc`, asc(valioProduct.name), asc(valioProduct.id)]
+    sort === "relevance" && text
+      ? [
+          // Closest name in any language first (Finnish queries match Finnish names).
+          sql`greatest(similarity(${valioProduct.name}, ${text}), similarity(coalesce(${valioProduct.nameFi}, ''), ${text}), similarity(coalesce(${valioProduct.nameSv}, ''), ${text})) desc`,
+          asc(valioProduct.name),
+          asc(valioProduct.id),
+        ]
       : sort === "co2"
-      ? [sql`${valioProduct.co2PerKg} asc nulls last`, asc(valioProduct.name)]
-      : sort === "reliability"
-        ? [sql`${valioProduct.deliveryReliability} desc nulls last`, asc(valioProduct.name)]
-        : [asc(valioProduct.name), asc(valioProduct.id)];
+        ? [sql`${valioProduct.co2PerKg} asc nulls last`, asc(valioProduct.name)]
+        : sort === "reliability"
+          ? [sql`${valioProduct.deliveryReliability} desc nulls last`, asc(valioProduct.name)]
+          : [asc(valioProduct.name), asc(valioProduct.id)];
 
+  // Relevance pages within the window are reranked with the agent's name matcher, which knows that
+  // "coffee milk" or "milk chocolate" isn't milk; trigram similarity alone favours short names.
+  const rerank = sort === "relevance" && !!parsed?.scoringText && query.offset < RERANK_WINDOW;
   const [[totalRow], rows] = await Promise.all([
     d.select({ total: count() }).from(valioProduct).where(where),
     d
@@ -194,10 +240,31 @@ export async function searchProducts(query: ProductSearchQuery): Promise<Product
       .from(valioProduct)
       .where(where)
       .orderBy(...order)
-      .limit(query.limit)
-      .offset(query.offset),
+      .limit(rerank ? RERANK_WINDOW : query.limit)
+      .offset(rerank ? 0 : query.offset),
   ]);
-  return { total: totalRow?.total ?? 0, items: await summaries(d, rows) };
+  const page = rerank
+    ? rows
+        .map((r, i) => ({ r, i, score: computeNameMatchScore(parsed!.scoringText, r.name) }))
+        .sort((a, b) => b.score - a.score || a.i - b.i)
+        .slice(query.offset, query.offset + query.limit)
+        .map((x) => x.r)
+    : rows;
+  return { total: totalRow?.total ?? 0, items: await summaries(d, page) };
+}
+
+/** Words that occur in the catalog, with how many products use them (typo correction). */
+let vocabularyCache: { at: number; words: Map<string, number> } | null = null;
+const VOCABULARY_TTL_MS = 10 * 60_000;
+
+async function catalogVocabulary(d: Awaited<ReturnType<typeof db>>): Promise<Map<string, number>> {
+  if (vocabularyCache && Date.now() - vocabularyCache.at < VOCABULARY_TTL_MS) return vocabularyCache.words;
+  const rows = await d.execute<{ word: string; n: number }>(
+    sql`select word, count(*)::int as n from (select regexp_split_to_table(${valioProduct.searchText}, '[^a-z0-9äöå]+') as word from ${valioProduct}) w where length(word) >= 3 group by word`,
+  );
+  const words = new Map(rows.rows.map((r) => [r.word, Number(r.n)]));
+  vocabularyCache = { at: Date.now(), words };
+  return words;
 }
 
 export async function getProduct(id: string): Promise<ProductDetail | null> {

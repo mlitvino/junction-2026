@@ -406,6 +406,7 @@ describe("Selection relevance, stemming, and modifier handling", () => {
       ["cream", "Valio cream cheese 200 g"],
       ["oat", "Oatmeal 1 kg"],
       ["lactose-free milk", "Valio coffee milk 1 l lactose free UHT"],
+      ["milk", "Flora Professional Milk free 75% 2kg"],
       ["lactose-free milk", "Valio coffee milk drink vanilla 1 l lactose free"],
     ] as const)
       assert.ok(computeNameMatchScore(requested, name) < 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);

@@ -39,34 +39,70 @@ function config() {
   return { apiKey, baseUrl, customer };
 }
 
+let warnedMock = false;
+
 export function valioSource(): ValioSource {
-  return config().apiKey ? "valio" : "mock";
+  const source: ValioSource = config().apiKey ? "valio" : "mock";
+  // A production server without a key silently serves fake prices: say so once in the logs.
+  if (source === "mock" && !warnedMock && process.env.NODE_ENV === "production") {
+    warnedMock = true;
+    console.warn("VALIO_API_KEY is not set: prices and availability are MOCK data (see GET /api/health).");
+  }
+  return source;
 }
+
+/**
+ * How long to wait before the single retry of a failed Valio call, or null for no retry.
+ * Retried: connection failures (status null, not timeouts), 429 and 502/503/504, honouring
+ * Retry-After (seconds, capped at 5 s). Not retried: other 4xx (the request is wrong) and timeouts
+ * (they already waited TIMEOUT_MS).
+ */
+export function transientRetryDelay(status: number | null, retryAfter: string | null, timedOut = false): number | null {
+  if (timedOut) return null;
+  if (status !== null && ![429, 502, 503, 504].includes(status)) return null;
+  const seconds = Number(retryAfter);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 5) * 1000 : 800;
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function post<T>(path: string, body: ValioProductsRequest, schema: { parse: (v: unknown) => T }): Promise<T> {
   const { apiKey, baseUrl } = config();
   if (!baseUrl) throw new ValioApiError("VALIO_API_URL is not set", null);
 
-  let res: Response;
-  try {
-    res = await fetch(baseUrl + path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-API-Key": apiKey! },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-      cache: "no-store",
-    });
-  } catch (err) {
-    throw new ValioApiError(`Valio ${path} unreachable: ${err instanceof Error ? err.message : err}`, null);
-  }
-  if (!res.ok) {
-    const text = (await res.text()).slice(0, 300);
-    throw new ValioApiError(`Valio ${path} failed with HTTP ${res.status}: ${text}`, res.status);
-  }
-  try {
-    return schema.parse(await res.json());
-  } catch (err) {
-    throw new ValioApiError(`Valio ${path} returned an unexpected shape: ${err instanceof Error ? err.message : err}`, res.status);
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(baseUrl + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": apiKey! },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+        cache: "no-store",
+      });
+    } catch (err) {
+      const timedOut = err instanceof Error && err.name === "TimeoutError";
+      const delay = attempt === 1 ? transientRetryDelay(null, null, timedOut) : null;
+      if (delay !== null) {
+        await sleep(delay);
+        continue;
+      }
+      throw new ValioApiError(`Valio ${path} unreachable: ${err instanceof Error ? err.message : err}`, null);
+    }
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 300);
+      const delay = attempt === 1 ? transientRetryDelay(res.status, res.headers.get("retry-after")) : null;
+      if (delay !== null) {
+        await sleep(delay);
+        continue;
+      }
+      throw new ValioApiError(`Valio ${path} failed with HTTP ${res.status}: ${text}`, res.status);
+    }
+    try {
+      return schema.parse(await res.json());
+    } catch (err) {
+      throw new ValioApiError(`Valio ${path} returned an unexpected shape: ${err instanceof Error ? err.message : err}`, res.status);
+    }
   }
 }
 

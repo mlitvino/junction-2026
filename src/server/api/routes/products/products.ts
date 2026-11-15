@@ -54,7 +54,7 @@ productsRouter.openapi(getProductOfferRoute, async (c) => {
     return c.json(offer, 200);
   } catch (err) {
     upstreamFailure(err);
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });
 
@@ -64,7 +64,7 @@ productsRouter.openapi(getOffersRoute, async (c) => {
     return c.json(await getOffers(productIds, date), 200);
   } catch (err) {
     upstreamFailure(err);
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });
 
@@ -74,7 +74,7 @@ productsRouter.openapi(rankProductsRoute, async (c) => {
   } catch (err) {
     if (!(err instanceof ValioApiError)) throw err;
     console.error("Valio request failed", err.status, err.message);
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });
 

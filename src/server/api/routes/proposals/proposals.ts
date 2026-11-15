@@ -57,7 +57,7 @@ proposalsRouter.openapi(createProposalRoute, async (c) => {
     return c.json(await createProposal(actorFor(c.var.user), c.req.valid("json")), 201);
   } catch (err) {
     if (!valioDown(err)) throw err;
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });
 
@@ -66,7 +66,7 @@ proposalsRouter.openapi(createProposalFromPromptRoute, async (c) => {
     return c.json(await createProposalFromPrompt(actorFor(c.var.user), c.req.valid("json")), 201);
   } catch (err) {
     if (!valioDown(err)) throw err;
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });
 
@@ -74,7 +74,7 @@ proposalsRouter.openapi(createProposalFromRecipeRoute, async (c) => {
   try {
     return c.json(await createProposalFromRecipe(c.req.valid("json"), c.var.user), 201);
   } catch (err) {
-    if (valioDown(err)) return c.json({ error: "Valio is unavailable" }, 502);
+    if (valioDown(err)) return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
     if (err instanceof RecipeServiceError) {
       const body = { error: err.message, code: err.status === 404 ? "NOT_FOUND" : "INVALID_RECIPE" };
       return err.status === 404 ? c.json(body, 404) : c.json(body, 400);
@@ -99,7 +99,7 @@ proposalsRouter.openapi(reviseProposalRoute, async (c) => {
   try {
     return c.json(await reviseProposalFromRequest(actorFor(c.var.user), c.req.valid("param").id, c.req.valid("json")), 201);
   } catch (err) {
-    if (valioDown(err)) return c.json({ error: "Valio is unavailable" }, 502);
+    if (valioDown(err)) return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
     const f = failure(err);
     if (f.status === 400) return c.json(f.body, 400);
     if (f.status === 403) return c.json(f.body, 403);
@@ -140,7 +140,7 @@ proposalsRouter.openapi(placeOrderRoute, async (c) => {
     );
     return replayed ? c.json(order, 200) : c.json(order, 201);
   } catch (err) {
-    if (valioDown(err)) return c.json({ error: "Valio is unavailable" }, 502);
+    if (valioDown(err)) return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
     const f = failure(err);
     if (f.status === 403) return c.json(f.body, 403);
     if (f.status === 404) return c.json(f.body, 404);
