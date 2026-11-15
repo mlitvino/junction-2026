@@ -7,6 +7,7 @@ import { toPlainReply } from "@/server/agents/plain-text";
 import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { ACTOR_KEY } from "@/server/agents/tools/actor";
 import { getMastra } from "@/server/mastra";
+import { ValioApiError } from "@/server/valio/client";
 import { listAudit } from "@/server/services/audit";
 import { searchProducts } from "@/server/services/catalog";
 import { createPriceAvailabilityInquiry } from "@/server/services/inquiry";
@@ -70,10 +71,11 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
     const before = (await listProposals(actor, {}))[0]?.id ?? null;
     // Tools act as the signed-in user (agents/tools/actor.ts), never anonymously.
     const requestContext = new RequestContext([[ACTOR_KEY, user]]);
-    // A PurchasingError raised by a tool keeps its meaning (400/403/404/409); anything else is the model.
+    // A PurchasingError raised by a tool keeps its meaning (400/403/404/409), a Valio failure stays a
+    // 502 VALIO_UNAVAILABLE; anything else is the model.
     const result = await callModel(
       () => agent.generate(contextualMessage, { maxSteps: 6, requestContext }),
-      (err) => err instanceof PurchasingError,
+      (err) => err instanceof PurchasingError || err instanceof ValioApiError,
     );
 
     const toolCalls: AgentToolCallTrace[] = [];

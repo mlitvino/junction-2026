@@ -18,6 +18,6 @@ policyRouter.openapi(evaluatePolicyRoute, async (c) => {
   } catch (err) {
     if (!(err instanceof ValioApiError)) throw err;
     console.error("Valio request failed", err.status, err.message);
-    return c.json({ error: "Valio is unavailable" }, 502);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
 });

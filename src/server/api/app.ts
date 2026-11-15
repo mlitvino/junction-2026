@@ -4,6 +4,7 @@ import { swaggerUI } from "@hono/swagger-ui";
 import { HTTPException } from "hono/http-exception";
 
 import { AgentError } from "@/server/agents/mode";
+import { ValioApiError } from "@/server/valio/client";
 import { getAuth } from "@/server/auth/auth";
 import { ensureDatabase } from "@/server/db/migrate";
 
@@ -116,6 +117,11 @@ app.onError((err, c) => {
   if (err instanceof AgentError) {
     if (err.status === 502) console.error(err.message, err.cause);
     return c.json({ error: err.message, code: err.code }, err.status);
+  }
+  // Valio unreachable or failing, wherever it surfaced (e.g. inside the agent): say so, hide details.
+  if (err instanceof ValioApiError) {
+    console.error("Valio request failed", err.status, err.message);
+    return c.json({ error: "Valio is unavailable. Try again in a moment.", code: "VALIO_UNAVAILABLE" }, 502);
   }
   console.error(err);
   return c.json({ error: "Internal error" }, 500);

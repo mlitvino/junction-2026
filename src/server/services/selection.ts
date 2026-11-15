@@ -58,6 +58,7 @@ import {
   selectRelevantCandidates,
   wordStems,
 } from "@/server/search/name-match";
+import { ValioApiError } from "@/server/valio/client";
 import { toSalesUnits, type Conversion, type UnitFacts } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
 import type { Preferences } from "@/shared/contracts/preferences";
@@ -488,6 +489,12 @@ export async function getCandidatesByProductType(
   deliveryDate: string,
   /** The requested name ("lactose-free milk"): products containing all its core words come first. */
   productName?: string,
+  /**
+   * `strict`: a Valio failure is thrown (ValioApiError → 502 "Valio is unavailable") instead of
+   * returning no priced candidates. Buying flows use it, so a Valio outage isn't reported to the
+   * buyer as "no matching product"; background features (stock-out alerts, recommendations) don't.
+   */
+  options: { strict?: boolean } = {},
 ): Promise<UnifiedCatalogRecord[]> {
   const plan = planCandidateSearchTerms(productType, productName);
   const dbCandidates: UnifiedCatalogRecord[] = [];
@@ -594,8 +601,9 @@ export async function getCandidatesByProductType(
               date: a.availableDate,
             });
           }
-        } catch {
-          // Valio unavailable: candidates without a real price are skipped below.
+        } catch (err) {
+          if (options.strict && err instanceof ValioApiError) throw err;
+          // Valio unavailable (non-strict callers): candidates without a real price are skipped below.
         }
 
         for (const r of rows) {
@@ -640,7 +648,8 @@ export async function getCandidatesByProductType(
           });
         }
       }
-    } catch {
+    } catch (err) {
+      if (options.strict && err instanceof ValioApiError) throw err; // see `strict` above
       // Database unavailable or empty; fall back to mock catalog below.
     }
   }
@@ -755,8 +764,8 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
   for (const item of extractedItems) {
     // Step 2: Get list of products by [Product type]
     // Products matching every word of the requested name; the product type only if none do.
-    let rawByType = await getCandidatesByProductType(item.productType, deliveryDate, item.productName);
-    if (!rawByType.length) rawByType = await getCandidatesByProductType(item.productType, deliveryDate);
+    let rawByType = await getCandidatesByProductType(item.productType, deliveryDate, item.productName, { strict: true });
+    if (!rawByType.length) rawByType = await getCandidatesByProductType(item.productType, deliveryDate, undefined, { strict: true });
     const { quantity, unit } = parseQuantityAndUnit(item.productQuantity, "");
     // The requested amount in each candidate's sales unit ("1000 L" → 200 cases of 5 L).
     const facts = await getUnitFacts(rawByType.filter((r) => !isSyntheticId(r.id)).map((r) => r.id));
@@ -1641,7 +1650,7 @@ export async function reviseProposalFromRequest(
 
 /** The agent's candidates for a need, as product summaries, most relevant first. */
 async function rankCandidatesFor(q: string, date: string): Promise<ProductSummary[]> {
-  const records = await getCandidatesByProductType(inferProductType(q), date, q);
+  const records = await getCandidatesByProductType(inferProductType(q), date, q, { strict: true });
   const scored = records.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode ?? null, nameMatchScore: computeNameMatchScore(q, r.name) }));
   const ids = selectRelevantCandidates(scored)
     .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
