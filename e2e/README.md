@@ -6,7 +6,7 @@ These scenarios drive the **running app over HTTP**, the way a browser, a client
 
 ```bash
 pnpm dev                 # Postgres + migrations + app on http://localhost:3000
-pnpm data:import         # once: the scenarios order real catalog products
+pnpm data:import         # initially and after catalog parser/schema changes
 pnpm test:e2e            # in a second terminal
 ```
 

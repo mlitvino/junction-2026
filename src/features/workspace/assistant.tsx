@@ -22,6 +22,7 @@ import {
 import { ProductPicker } from "./product-picker";
 import { RestockPlanSummary } from "./restocking";
 import { ChatCheckout } from "./chat-checkout";
+import { RestockScenarioSetup } from "./restock-scenario";
 import type { Proposal } from "@/shared/contracts/purchasing";
 
 const suggestions = [
@@ -586,11 +587,9 @@ export function AssistantConversation({ id }: { id: string }) {
               </div>
             </Panel>
           )}
-          {thread.query === "restocking" && !thread.timeline?.some((e) => e.kind === "restock") && (
-            <div className="flex flex-wrap gap-3">
-              <Link className={buttonVariants()} href="/restocking/new">
-                Create restock plan
-              </Link>
+          {thread.query === "restocking" && (
+            <div className="space-y-4">
+              <RestockScenarioSetup threadId={id} />
               <Link className={buttonVariants({ variant: "outline" })} href="/restocking">
                 View restock plans
               </Link>

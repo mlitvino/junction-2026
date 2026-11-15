@@ -9,6 +9,7 @@ import type { CreateRecipeRequest, CreateOrderFromRecipeRequest } from "@/shared
 import type { LayerScope, UpdateLayerRequest } from "@/shared/contracts/preferences";
 import type { CreateMemberRequest } from "@/shared/contracts/organization";
 import { ApiError, type WorkspaceApi } from "./http";
+import { RESTOCK_SCENARIO, RESTOCK_SCENARIO_PROMPT } from "./restock-scenario";
 import {
   LocalSchema,
   PlanSchema,
@@ -553,6 +554,42 @@ export function createWorkspaceService(
     return created;
   }
   async function handleRestockSetup(id: string, text: string, current?: Proposal) {
+    if (
+      text
+        .trim()
+        .replace(/[.!?]+$/, "")
+        .toLowerCase() === RESTOCK_SCENARIO_PROMPT.toLowerCase() &&
+      snapshot.local.plans.some((p) => p.id.startsWith("starter-restock-") && !p.paused)
+    ) {
+      const run = await checkAllPlans();
+      const ready = run.lines.filter((line) => line.state === "ready");
+      const covered = run.lines.filter((line) => line.state === "covered");
+      const exceptions = run.lines.length - ready.length - covered.length;
+      answer(
+        id,
+        `Checked ${run.lines.length} restock plans: ${ready.length} need replenishment and are ready, ${covered.length} have enough stock${exceptions ? `, ${exceptions} need attention before purchasing` : ""}. Only confirmed shortages are included in the proposal.`,
+      );
+      if (ready.length) {
+        await createPurchase(
+          {
+            lines: ready.map((line) => ({ productId: line.productId, quantity: line.quantity })),
+            date: today(),
+          },
+          id,
+          "Restocking",
+        );
+        local((l) => {
+          const saved = l.runs.find((r) => r.id === run.id);
+          if (saved) saved.threadId = id;
+        });
+      } else {
+        answer(
+          id,
+          "No items can be added right now. Review the restock checks for stock coverage, open purchases or unconfirmed availability.",
+        );
+      }
+      return;
+    }
     await loadInventory();
     const requested = text
       .match(/(?:restock|replenish)\s+(.+?)(?:\s+to\s|\s+instead|$)/i)?.[1]
@@ -1291,9 +1328,9 @@ export function createWorkspaceService(
     const plan = snapshot.local.plans.find((p) => p.id === planId);
     if (!plan) throw new Error("Restocking plan not found.");
     const stock = await loadInventory();
-    const match = plan.inventoryId
-      ? stock.find((i) => i.id === plan.inventoryId)
-      : stock.find((i) => i.linkedProductId === plan.productId);
+    const match =
+      stock.find((i) => i.id === plan.inventoryId) ??
+      stock.find((i) => i.linkedProductId === plan.productId);
     const current = match
       ? compatibleQuantity(match.quantityInStock, match.unit, plan.unit)
       : plan.current;
@@ -1378,6 +1415,23 @@ export function createWorkspaceService(
         line.reason =
           "Several plans reference this product. Consolidate their stock targets before purchasing to avoid duplicate coverage.";
       }
+  }
+  async function checkAllPlans() {
+    return single("check-all-plans", async () => {
+      const plans = snapshot.local.plans.filter((p) => !p.paused);
+      if (!plans.length) throw new Error("Create or resume a plan before running a check.");
+      const runs: RestockRun[] = [];
+      for (const plan of plans) runs.push(await checkPlan(plan.id));
+      const combined: RestockRun = {
+        id: uid("check"),
+        planId: "all",
+        at: stamp(),
+        lines: runs.flatMap((r) => r.lines),
+      };
+      excludeOverlappingLines(combined.lines);
+      local((l) => l.runs.unshift(combined));
+      return combined;
+    });
   }
   return {
     api,
@@ -1474,26 +1528,76 @@ export function createWorkspaceService(
     loadRecipes,
     loadRecipe,
     loadInventory,
+    async setupRestockScenario() {
+      return single("setup-restock-scenario", async () => {
+        if (options.mock)
+          throw new Error("This scenario requires the connected Valio Aimo catalog.");
+        if (!snapshot.user?.roles.includes("buyer"))
+          throw new Error("A Buyer role is required to set up restocking.");
+        if (
+          snapshot.local.plans.some(
+            (p) =>
+              RESTOCK_SCENARIO.some((item) => item.productId === p.productId) &&
+              !p.id.startsWith("starter-restock-"),
+          )
+        ) {
+          throw new Error(
+            "One of these products already has a restock plan. Review that plan before loading the scenario.",
+          );
+        }
+        // Verify all four real products before changing stock. No synthetic fallback.
+        const products = await Promise.all(
+          RESTOCK_SCENARIO.map((item) => api.getProduct(item.productId)),
+        );
+        if (products.some((product, index) => product.id !== RESTOCK_SCENARIO[index]!.productId)) {
+          throw new Error(
+            "The catalog did not return the requested Valio products. No demo stock was changed.",
+          );
+        }
+        const stock = await loadInventory();
+        for (const [index, item] of RESTOCK_SCENARIO.entries()) {
+          const product = products[index]!;
+          const previous = stock.find((row) => row.linkedProductId === product.id);
+          const inventory = await api.saveInventory({
+            id: previous?.id ?? `starter-stock-${product.id}`,
+            ingredientName: product.name,
+            productType: item.productType,
+            linkedProductId: product.id,
+            quantityInStock: item.current,
+            unit: product.salesUnit,
+            minParLevel: item.threshold,
+            location: previous?.location ?? "Demo kitchen",
+          });
+          const plan = PlanSchema.parse({
+            id: `starter-restock-${product.id}`,
+            name: product.name,
+            ingredient: product.name,
+            productId: product.id,
+            inventoryId: inventory.id,
+            unit: product.salesUnit,
+            current: item.current,
+            threshold: item.threshold,
+            target: item.target,
+            location: inventory.location ?? "Demo kitchen",
+            schedule: "threshold",
+            paused: false,
+          });
+          local((l) => {
+            l.plans = [...l.plans.filter((p) => p.id !== plan.id), plan];
+          });
+        }
+        await loadInventory();
+        record(
+          "Four-product restock scenario configured",
+          "starter-restock",
+          "Real Valio catalog products; demo stock: two below trigger, two covered. Quantities are sales units.",
+        );
+      });
+    },
     loadSettings,
     loadMembers,
     checkPlan,
-    async checkAllPlans() {
-      return single("check-all-plans", async () => {
-        const plans = snapshot.local.plans.filter((p) => !p.paused);
-        if (!plans.length) throw new Error("Create or resume a plan before running a check.");
-        const runs: RestockRun[] = [];
-        for (const plan of plans) runs.push(await checkPlan(plan.id));
-        const combined: RestockRun = {
-          id: uid("check"),
-          planId: "all",
-          at: stamp(),
-          lines: runs.flatMap((r) => r.lines),
-        };
-        excludeOverlappingLines(combined.lines);
-        local((l) => l.runs.unshift(combined));
-        return combined;
-      });
-    },
+    checkAllPlans,
     async createRecipe(body: CreateRecipeRequest) {
       const recipe = await api.createRecipe(body);
       publish({ recipes: [recipe, ...snapshot.recipes] });

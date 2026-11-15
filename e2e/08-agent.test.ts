@@ -65,8 +65,16 @@ describe("agent", () => {
     const trail = ok(await org.buyer.get(`/api/proposals/${res.proposal.id}/audit`), 200, AuditListSchema, "audit");
     const auditActions = trail.items.map((e) => e.action);
     assert.deepEqual(
-      auditActions.slice(0, 5),
-      ["agent.prompt_extracted", "agent.catalog_searched", "agent.preferences_filtered", "agent.candidates_ranked", "proposal.created"],
+      auditActions,
+      [
+        "agent.prompt_extracted",
+        "agent.catalog_searched",
+        "agent.name_sorted",
+        "agent.preferences_filtered",
+        "agent.candidates_ranked",
+        "agent.budget_compared",
+        "proposal.created",
+      ],
       `audit order: ${auditActions.join(", ")}`,
     );
 

@@ -12,7 +12,9 @@ for (const file of [
   ...readdirSync(join(root, "src/shared/contracts"))
     .filter((f) => f.endsWith(".ts"))
     .map((f) => `src/shared/contracts/${f}`),
-  ...["http", "model", "helpers", "mock-api", "service"].map((f) => `src/client/workspace/${f}.ts`),
+  ...["http", "model", "helpers", "mock-api", "service", "restock-scenario"].map(
+    (f) => `src/client/workspace/${f}.ts`,
+  ),
 ]) {
   const destination = join(output, file.replace(/\.ts$/, ".js"));
   mkdirSync(dirname(destination), { recursive: true });
@@ -61,6 +63,148 @@ async function setup(options = {}) {
   return { service, mock, storage };
 }
 const state = (service) => service.getSnapshot();
+
+async function setupCatalogRestockScenario() {
+  const storage = memory(),
+    mock = createMockApi(() => storage);
+  const { RESTOCK_SCENARIO, RESTOCK_SCENARIO_PROMPT } = require(
+    join(output, "src/client/workspace/restock-scenario.js"),
+  );
+  const template = await mock.api.getProduct("milk");
+  const names = [
+    "Valio Hyvä suomalainen Arki Eila semi skimmed milk drink 1 l lactose free",
+    "Valio Keittiön cooking cream 15 % 2 dl UHT lactose free",
+    "Valio Eila butter 200 g lactose free",
+    "Valio Emmental-Edam grated cheese mix e2,5 kg",
+  ];
+  const products = RESTOCK_SCENARIO.map((row, index) => ({
+    ...template,
+    id: row.productId,
+    name: names[index],
+    salesUnit: index === 3 ? "KI" : "ST",
+  }));
+  const reads = [],
+    writes = [],
+    offers = [];
+  mock.api.getProduct = async (id) => {
+    reads.push(id);
+    const product = products.find((p) => p.id === id);
+    if (!product) throw new Error("Catalog product missing");
+    return structuredClone(product);
+  };
+  const save = mock.api.saveInventory;
+  mock.api.saveInventory = async (body) => {
+    writes.push(body);
+    return save(body);
+  };
+  const quote = mock.api.getOffers;
+  mock.api.getOffers = async (ids, date) => {
+    offers.push(ids);
+    const response = await quote(["milk"], date);
+    return {
+      ...response,
+      offers: ids.map((id) => {
+        const product = products.find((p) => p.id === id);
+        const original = response.offers[0];
+        return {
+          ...original,
+          productId: id,
+          price: { ...original.price, productId: id, salesUnit: product.salesUnit },
+          availability: { ...original.availability, productId: id, salesUnit: product.salesUnit },
+        };
+      }),
+    };
+  };
+  const service = createWorkspaceService(mock.api, { mock: false, storage: () => storage });
+  await service.initialize();
+  return { service, mock, products, reads, writes, offers, prompt: RESTOCK_SCENARIO_PROMPT };
+}
+
+test("real-catalog restock scenario submits exactly two shortages and keeps two products stocked", async () => {
+  const { service, mock, products, reads, writes, offers, prompt } =
+    await setupCatalogRestockScenario();
+  const untouched = (await mock.api.getInventory()).items;
+  await service.setupRestockScenario();
+  assert.deepEqual(
+    reads,
+    products.map((p) => p.id),
+  );
+  assert.equal(writes.length, 4);
+  assert.equal(offers.length, 0, "setup reads static product data only");
+  assert.equal(state(service).local.plans.length, 4);
+  const seeded = state(service).inventory.filter((i) =>
+    products.some((p) => p.id === i.linkedProductId),
+  );
+  assert.equal(seeded.filter((i) => i.quantityInStock < i.minParLevel).length, 2);
+  for (const previous of untouched)
+    assert.deepEqual(
+      state(service).inventory.find((i) => i.id === previous.id),
+      previous,
+    );
+
+  const id = service.newThread("Kitchen restock");
+  await service.sendMessage(id, prompt);
+  const proposal = state(service).proposals[0];
+  assert.deepEqual(
+    proposal.lines.map((line) => [line.productId, line.quantity, line.salesUnit]),
+    [
+      ["464306", 10, "ST"],
+      ["463828", 10, "ST"],
+    ],
+  );
+  assert.equal(proposal.status, "PENDING_APPROVAL");
+  assert.equal(state(service).orders.length, 0);
+  const run = state(service).local.runs.find((r) => r.planId === "all");
+  assert.equal(run.lines.filter((line) => line.state === "ready").length, 2);
+  assert.equal(run.lines.filter((line) => line.state === "covered").length, 2);
+  assert.equal(run.threadId, id);
+
+  await service.sendMessage(id, prompt);
+  assert.equal(state(service).proposals.length, 1, "open purchases prevent duplicate restocking");
+  await service.setupRestockScenario();
+  assert.equal(state(service).local.plans.length, 4, "loading again updates the four plans");
+  assert.equal(state(service).inventory.length, untouched.length + 4);
+});
+
+test("restock scenario never substitutes mock products or changes stock when catalog verification fails", async () => {
+  const demo = await setup();
+  await assert.rejects(demo.service.setupRestockScenario(), /connected Valio Aimo catalog/);
+  const { service, mock, writes } = await setupCatalogRestockScenario();
+  const get = mock.api.getProduct;
+  mock.api.getProduct = async (id) => {
+    if (id === "463828") throw new Error("Catalog unavailable");
+    return get(id);
+  };
+  await assert.rejects(service.setupRestockScenario(), /Catalog unavailable/);
+  assert.equal(writes.length, 0);
+  assert.equal(state(service).local.plans.length, 0);
+  mock.api.getProduct = async () => ({ ...(await get("464306")), id: "SYN-milk" });
+  await assert.rejects(service.setupRestockScenario(), /requested Valio products/);
+  assert.equal(writes.length, 0);
+});
+
+test("restock chat excludes unconfirmed supplier availability from the proposal", async () => {
+  const { service, mock, prompt } = await setupCatalogRestockScenario();
+  await service.setupRestockScenario();
+  const getOffers = mock.api.getOffers;
+  mock.api.getOffers = async (...args) => {
+    const result = await getOffers(...args);
+    for (const offer of result.offers)
+      if (offer.productId === "463828") offer.availability.availableQuantity = null;
+    return result;
+  };
+  await service.sendMessage(service.newThread("Restock with missing evidence"), prompt);
+  assert.deepEqual(
+    state(service).proposals[0].lines.map((line) => line.productId),
+    ["464306"],
+  );
+  assert.equal(
+    state(service)
+      .local.runs.find((r) => r.planId === "all")
+      .lines.find((line) => line.productId === "463828").state,
+    "unknown",
+  );
+});
 
 test("conversation timeline preserves selections, proposals and later messages across refresh", async () => {
   const { service, mock, storage } = await setup();
