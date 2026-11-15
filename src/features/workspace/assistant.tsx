@@ -20,6 +20,7 @@ import {
   StatusBadge,
 } from "./ui";
 import { ProductPicker } from "./product-picker";
+import { RestockPlanSummary } from "./restocking";
 
 const suggestions = [
   { text: "Order 100 litres of lactose-free milk", icon: "orders" },
@@ -312,6 +313,8 @@ export function AssistantConversation({ id }: { id: string }) {
                   </div>
                 ) : null;
               }
+              if (entry.kind === "restock")
+                return <RestockPlanSummary key={`restock-${entry.runId}`} runId={entry.runId} />;
               if (entry.kind === "products")
                 return (
                   <ProductPicker
@@ -520,10 +523,15 @@ export function AssistantConversation({ id }: { id: string }) {
               </div>
             </Panel>
           )}
-          {thread.query === "restocking" && (
-            <Link className={buttonVariants()} href="/restocking/new">
-              Create restock plan
-            </Link>
+          {thread.query === "restocking" && !thread.timeline?.some((e) => e.kind === "restock") && (
+            <div className="flex flex-wrap gap-3">
+              <Link className={buttonVariants()} href="/restocking/new">
+                Create restock plan
+              </Link>
+              <Link className={buttonVariants({ variant: "outline" })} href="/restocking">
+                View restock plans
+              </Link>
+            </div>
           )}
         </div>
         {swapChip && !thread.working && (

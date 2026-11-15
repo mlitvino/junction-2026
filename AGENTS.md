@@ -16,18 +16,6 @@ Valio Aimo's real challenge API (OpenAPI 3.1, auth via `X-API-Key` header) is sa
 
 This file is the shared instruction set for every AI coding agent in this repo (Codex reads it directly, Claude Code imports it from `CLAUDE.md`). Keep tool-specific notes out of it.
 
-## Ownership
-
-Two developers, each working with their own AI agent. **Edit only the zone of the person you work for.** If the task needs a change in another zone (a new endpoint, a contract change, a dependency), stop and describe the change instead of making it. If you don't know whose agent you are, ask.
-
-| Owner | Paths |
-| --- | --- |
-| Backend/infra dev | `src/server/`, `src/app/api/`, `src/proxy.ts`, `e2e/`, `deploy/`, `.github/`, `.claude/`, `Dockerfile`, `compose.dev.yml`, `next.config.ts`, `package.json` dependencies |
-| Frontend dev | `src/app/` (except `src/app/api/`), `src/components/`, `src/features/`, `src/client/` |
-| Joint, by agreement only | `src/shared/contracts/` |
-
-Before editing in a zone, read that zone's `AGENTS.md` (`src/<zone>/AGENTS.md`, also `src/app/api/AGENTS.md`).
-
 ## Stack (do not add or change without explicit approval)
 
 - Next.js 16, **App Router only**, TypeScript strict, everything under `src/`
@@ -79,9 +67,17 @@ Step 1 is joint, steps 2–3 belong to the backend dev, steps 4–5 to the front
    ```ts
    // routes/things/things.docs.ts: OpenAPI only
    export const createThingRoute = createRoute({
-     method: "post", path: "/things", tags: ["Things"], summary: "Create a thing",
+     method: "post",
+     path: "/things",
+     tags: ["Things"],
+     summary: "Create a thing",
      request: { body: { content: { "application/json": { schema: CreateThingRequestSchema } } } },
-     responses: { 200: { description: "Created", content: { "application/json": { schema: CreateThingResponseSchema } } } },
+     responses: {
+       200: {
+         description: "Created",
+         content: { "application/json": { schema: CreateThingResponseSchema } },
+       },
+     },
    });
 
    // routes/things/things.ts: router + handlers only
