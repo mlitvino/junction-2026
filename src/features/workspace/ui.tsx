@@ -244,7 +244,10 @@ export function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
       </dl>
       <div className="divide-y border-t pt-2 text-sm">
         {receipt.lines.map((line) => (
-          <div key={line.productId} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+          <div
+            key={line.productId}
+            className="flex flex-wrap items-center justify-between gap-2 py-2.5"
+          >
             <div>
               <p className="font-medium">{line.name}</p>
               <p className="text-caption text-muted-foreground">
@@ -264,9 +267,7 @@ export function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
       </div>
       <p className="break-all text-caption text-muted-foreground">
         Proposal {receipt.proposalId} · Hash {receipt.proposalHash}
-        {receipt.proposalSignature
-          ? ` · Signed (${receipt.signatureKeyId ?? "server"})`
-          : ""}
+        {receipt.proposalSignature ? ` · Signed (${receipt.signatureKeyId ?? "server"})` : ""}
       </p>
     </Panel>
   );
@@ -298,11 +299,13 @@ export function OrderSummary({ order }: { order: Order }) {
 export function ProductComparison({
   proposal,
   threadId,
+  compact = false,
   canRevise = false,
   onRevised,
 }: {
   proposal: Proposal;
   threadId?: string;
+  compact?: boolean;
   canRevise?: boolean;
   onRevised?: (revised: Proposal) => void;
 }) {
@@ -385,8 +388,7 @@ export function ProductComparison({
           unit: product.salesUnit,
           price: offer?.price?.priceExclVat ?? null,
           confirmed:
-            !!offer?.availability?.orderable &&
-            offer.availability.availableQuantity !== null,
+            !!offer?.availability?.orderable && offer.availability.availableQuantity !== null,
         };
       }),
       loaded: true,
@@ -741,6 +743,7 @@ export function ApprovalCard({
   threadId,
   compact = false,
   onReview,
+  onCheckout,
   onRevised,
   reviewLayout = false,
 }: {
@@ -748,6 +751,7 @@ export function ApprovalCard({
   threadId?: string;
   compact?: boolean;
   onReview?: () => void;
+  onCheckout?: () => void;
   onRevised?: (revised: Proposal) => void;
   reviewLayout?: boolean;
 }) {
@@ -764,8 +768,7 @@ export function ApprovalCard({
   }>({ proposalId: proposal.id, data: null });
   const reason = reasonState.proposalId === proposal.id ? reasonState.text : "";
   const setReason = (text: string) => setReasonState({ proposalId: proposal.id, text });
-  const verification =
-    verificationState.proposalId === proposal.id ? verificationState.data : null;
+  const verification = verificationState.proposalId === proposal.id ? verificationState.data : null;
   const setVerification = (data: ProposalVerification | null) =>
     setVerificationState({ proposalId: proposal.id, data });
   const buyer = s.user?.roles.includes("buyer"),
@@ -846,7 +849,8 @@ export function ApprovalCard({
                 label={
                   superseded
                     ? "Superseded — no longer actionable"
-                    : stale && !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
+                    : stale &&
+                        !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
                       ? "Prices need refreshing"
                       : canDecide
                         ? "Ready for review · Awaiting approval"
@@ -1252,7 +1256,14 @@ export function BasketReviewDrawer({
           <Icon name="close" />
         </Button>
       </div>
-      <ApprovalCard key={proposal.id} proposal={proposal} threadId={threadId} />
+      {children ?? (
+        <ApprovalCard
+          key={proposal.id}
+          proposal={proposal}
+          threadId={threadId}
+          onCheckout={onCheckout}
+        />
+      )}
     </aside>
   );
 }
