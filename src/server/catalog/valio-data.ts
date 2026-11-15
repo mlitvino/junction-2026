@@ -197,7 +197,35 @@ const CONTENT_UNITS: Record<string, { unit: "L" | "KG"; factor: number }> = {
  * Net content of one base unit (e.g. 1 L per carton). From the base unit's declared content, or the
  * case content divided by the case size. Piece units (H87) and unknown units give null.
  */
-function contentPerBaseUnit(raw: RawProduct, issues: DataIssue[]): { value: number; unit: "L" | "KG" } | null {
+const NAME_UNITS: Record<string, { unit: "L" | "KG"; factor: number }> = {
+  l: { unit: "L", factor: 1 },
+  dl: { unit: "L", factor: 0.1 },
+  cl: { unit: "L", factor: 0.01 },
+  ml: { unit: "L", factor: 0.001 },
+  kg: { unit: "KG", factor: 1 },
+  g: { unit: "KG", factor: 0.001 },
+};
+const AMOUNT = String.raw`(\d+(?:[.,]\d+)?)\s*(l|dl|cl|ml|kg|g)(?![a-zåäö])`;
+
+/**
+ * Net content per base unit read from the product name, for products whose data declares none.
+ * Conservative on purpose (a wrong content orders a wrong amount): only a name with exactly one
+ * amount and no multipack marker counts ("milk drink 1 l" → 1 L, "cream 3,3 dl" → 0.33 L).
+ * Multipacks ("12 x … 1 L", "10x2x85g") and names with several amounts ("18 KG 1CL") stay unknown,
+ * so the proposal keeps its "check the quantity" warning.
+ */
+export function contentFromName(name: string): { value: number; unit: "L" | "KG" } | null {
+  const lower = name.toLowerCase();
+  if (/\d\s*[x×]\s*\d|\d+\s*[x×]\s/.test(lower)) return null;
+  const amounts = [...lower.matchAll(new RegExp(AMOUNT, "g"))];
+  if (amounts.length !== 1) return null;
+  const [, value, unit] = amounts[0]!;
+  const u = NAME_UNITS[unit!]!;
+  const content = Math.round(Number.parseFloat(value!.replace(",", ".")) * u.factor * 1e6) / 1e6;
+  return content > 0 ? { value: content, unit: u.unit } : null;
+}
+
+function contentPerBaseUnit(raw: RawProduct, name: string, issues: DataIssue[]): { value: number; unit: "L" | "KG" } | null {
   const conversions = raw.synkkaData.unitConversions ?? [];
   const base = conversions.find((u) => u.synkkaPackagingType === "BASE_UNIT_OR_EACH" && u.volume);
   const of = (m: { unit: string; value: number } | undefined) => {
@@ -210,6 +238,12 @@ function contentPerBaseUnit(raw: RawProduct, issues: DataIssue[]): { value: numb
     const caseSize = raw.units.find((u) => u.unitId === "KI")?.sizeInBaseUnits;
     const caseContent = of(kase?.volume);
     if (caseContent && caseSize && caseSize > 0) content = { value: caseContent.value / caseSize, unit: caseContent.unit };
+  }
+  // Products sold by weight or volume (base unit KG, L…) have no "content per unit" to read.
+  if (!content && !/^(KG|KGM|G|GRM|L|LTR|DL|ML)$/i.test(raw.baseUnit.trim())) {
+    content = contentFromName(name);
+    if (content)
+      issues.push({ file: "products.json", ref: raw.id, problem: `no declared content; ${content.value} ${content.unit} per base unit read from the name` });
   }
   if (content && content.value >= 1000) {
     issues.push({ file: "products.json", ref: raw.id, problem: `content ${content.value} ${content.unit} per base unit is implausible` });
@@ -282,7 +316,8 @@ function normalize(raw: RawProduct, issues: DataIssue[]): CatalogProduct {
   const labels = classification(raw, "packagingMarkedLabel")
     .map((v) => v.id)
     .filter((id) => !/Temperature$/.test(id));
-  const content = contentPerBaseUnit(raw, issues);
+  const displayName = names.en ?? names.fi ?? raw.synkkaData.names[0]?.value ?? raw.id;
+  const content = contentPerBaseUnit(raw, displayName, issues);
 
   return {
     id: raw.id,
