@@ -65,6 +65,31 @@ export function lineTotal(line: PolicyLineFacts): number | null {
   return line.product && line.unitPriceExclVat !== null ? round(line.unitPriceExclVat * line.quantity) : null;
 }
 
+/**
+ * Merges draft lines sharing the same `productId` by summing their quantities and
+ * preserving the first non-null `substituteFor` when present.
+ */
+export function mergeDraftLines<T extends { productId: string; quantity: number; substituteFor?: unknown }>(
+  lines: readonly T[],
+): T[] {
+  const merged: T[] = [];
+  const byId = new Map<string, T>();
+  for (const line of lines) {
+    const existing = byId.get(line.productId);
+    if (existing) {
+      existing.quantity = Math.round((existing.quantity + line.quantity) * 100) / 100;
+      if (!existing.substituteFor && line.substituteFor) {
+        existing.substituteFor = line.substituteFor;
+      }
+    } else {
+      const copy = { ...line };
+      byId.set(line.productId, copy);
+      merged.push(copy);
+    }
+  }
+  return merged;
+}
+
 export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], options: PolicyOptions = {}): PolicyResult {
   const reasons: PolicyReason[] = [];
   const deny = (r: Omit<PolicyReason, "outcome">) => reasons.push({ ...r, outcome: "DENY" });

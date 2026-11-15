@@ -10,7 +10,14 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
-import type { Proposal, ProposalLine, Order } from "@/shared/contracts/purchasing";
+import { BudgetComparison, SelectionTrail } from "./selection-trail";
+import type {
+  Proposal,
+  ProposalLine,
+  ProposalVerification,
+  Order,
+  OrderReceipt,
+} from "@/shared/contracts/purchasing";
 import { TradeAirlock } from "./trade-airlock";
 import { AnimatedPrice } from "./animated-price";
 
@@ -149,6 +156,7 @@ const statusLabels: Record<string, string> = {
   REJECTED: "Rejected",
   BLOCKED: "Needs attention",
   CANCELLED: "Withdrawn",
+  EXPIRED: "Expired",
   ORDERED: "Order recorded",
   SIMULATED_CONFIRMED: "Recorded",
 };
@@ -161,7 +169,7 @@ export function StatusBadge({
   label?: string;
   icon?: IconName;
 }) {
-  const tone = ["BLOCKED", "REJECTED"].includes(status)
+  const tone = ["BLOCKED", "REJECTED", "EXPIRED"].includes(status)
     ? "bg-destructive/10 text-destructive"
     : ["APPROVED", "ORDERED", "SIMULATED_CONFIRMED"].includes(status)
       ? "bg-success-surface text-success"
@@ -200,6 +208,70 @@ export function ProductLine({ line }: { line: ProposalLine }) {
     </div>
   );
 }
+export function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
+  return (
+    <Panel className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="section-title">Order receipt</h2>
+          <p className="mt-1 text-caption text-muted-foreground">
+            Order {receipt.orderId} · Issued {displayDate(receipt.issuedAt)}
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => window.print()}>
+          Print receipt
+        </Button>
+      </div>
+      <dl className="grid gap-4 text-sm sm:grid-cols-2 md:grid-cols-4">
+        <div>
+          <dt className="text-muted-foreground">Organization</dt>
+          <dd className="mt-1 font-medium">{receipt.organizationName}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Ordered by</dt>
+          <dd className="mt-1 font-medium">{receipt.orderedByName ?? "Buyer"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Approved by</dt>
+          <dd className="mt-1 font-medium">
+            {receipt.approvedByName ?? "Explicit purchasing policy"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Delivery date</dt>
+          <dd className="mt-1 font-medium">{displayDate(receipt.deliveryDate)}</dd>
+        </div>
+      </dl>
+      <div className="divide-y border-t pt-2 text-sm">
+        {receipt.lines.map((line) => (
+          <div key={line.productId} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+            <div>
+              <p className="font-medium">{line.name}</p>
+              <p className="text-caption text-muted-foreground">
+                {line.quantity} {line.salesUnit ?? "units"} ×{" "}
+                {eur(line.unitPriceExclVat, receipt.currency)} · {line.vendorName}
+              </p>
+            </div>
+            <span className="font-medium tabular-nums">
+              {eur(line.lineTotalExclVat, receipt.currency)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between border-t pt-3">
+        <span className="font-medium">Total (excl. VAT)</span>
+        <PriceDisplay value={receipt.totalExclVat} currency={receipt.currency} />
+      </div>
+      <p className="break-all text-caption text-muted-foreground">
+        Proposal {receipt.proposalId} · Hash {receipt.proposalHash}
+        {receipt.proposalSignature
+          ? ` · Signed (${receipt.signatureKeyId ?? "server"})`
+          : ""}
+      </p>
+    </Panel>
+  );
+}
+
 export function OrderSummary({ order }: { order: Order }) {
   return (
     <Panel>
@@ -225,48 +297,107 @@ export function OrderSummary({ order }: { order: Order }) {
 
 export function ProductComparison({
   proposal,
-  compact = false,
+  threadId,
+  canRevise = false,
+  onRevised,
 }: {
   proposal: Proposal;
-  compact?: boolean;
+  threadId?: string;
+  canRevise?: boolean;
+  onRevised?: (revised: Proposal) => void;
 }) {
-  const [rows, setRows] = useState<
-    { id: string; name: string; unit: string; price: number | null; confirmed: boolean }[]
-  >([]);
-  const [loaded, setLoaded] = useState(false);
+  const [rowsState, setRowsState] = useState<{
+    proposalId: string;
+    rows: {
+      id: string;
+      name: string;
+      unit: string;
+      price: number | null;
+      confirmed: boolean;
+      tier?: string | null;
+      reasons?: string[];
+    }[];
+    loaded: boolean;
+  }>({ proposalId: proposal.id, rows: [], loaded: false });
+  const [selectedLineState, setSelectedLineState] = useState<{
+    proposalId: string;
+    lineId: string;
+  }>({ proposalId: proposal.id, lineId: proposal.lines[0]?.productId ?? "" });
   const action = useAction();
+
+  const rows = rowsState.proposalId === proposal.id ? rowsState.rows : [];
+  const loaded = rowsState.proposalId === proposal.id ? rowsState.loaded : false;
+  const selectedLineId =
+    selectedLineState.proposalId === proposal.id
+      ? selectedLineState.lineId
+      : (proposal.lines[0]?.productId ?? "");
+
+  const activeLine =
+    proposal.lines.find((l) => l.productId === selectedLineId) ?? proposal.lines[0];
+  const currentLineIds = new Set(proposal.lines.map((l) => l.productId));
+  const visibleRows = rows.filter((row) => !currentLineIds.has(row.id));
+
+  async function loadAlternatives(line: Proposal["lines"][number] | undefined) {
+    const query = line?.name.split(" ")[0] ?? "";
+    if (!store.mock && query) {
+      const ranked = await store.api.rankProducts({
+        q: query,
+        quantity: line?.quantity ?? 1,
+        date: proposal.pricingDate,
+        limit: 6,
+      });
+      const alt = ranked.ranked
+        .filter((r) => !proposal.lines.some((l) => l.productId === r.product.id))
+        .slice(0, 3);
+      if (alt.length) {
+        setRowsState({
+          proposalId: proposal.id,
+          rows: alt.map((r) => ({
+            id: r.product.id,
+            name: r.product.name,
+            unit: r.salesUnit,
+            price: r.unitPriceExclVat,
+            confirmed: r.availableQuantity !== null,
+            tier: r.tier,
+            reasons: r.reasons,
+          })),
+          loaded: true,
+        });
+        return;
+      }
+    }
+    const products = (await store.api.searchProducts(query)).items
+      .filter((p) => !proposal.lines.some((l) => l.productId === p.id))
+      .slice(0, 3);
+    const offers = products.length
+      ? await store.api.getOffers(
+          products.map((p) => p.id),
+          proposal.pricingDate,
+        )
+      : null;
+    setRowsState({
+      proposalId: proposal.id,
+      rows: products.map((product) => {
+        const offer = offers?.offers.find((o) => o.productId === product.id);
+        return {
+          id: product.id,
+          name: product.name,
+          unit: product.salesUnit,
+          price: offer?.price?.priceExclVat ?? null,
+          confirmed:
+            !!offer?.availability?.orderable &&
+            offer.availability.availableQuantity !== null,
+        };
+      }),
+      loaded: true,
+    });
+  }
+
   return (
     <details
-      className={compact ? "group/comparison open:col-span-full" : undefined}
       onToggle={(event) => {
         if (event.currentTarget.open && !loaded)
-          void action.run(async () => {
-            const query = proposal.lines[0]?.name.split(" ")[0] ?? "";
-            const products = (await store.api.searchProducts(query)).items
-              .filter((p) => !proposal.lines.some((l) => l.productId === p.id))
-              .slice(0, 3);
-            const offers = products.length
-              ? await store.api.getOffers(
-                  products.map((p) => p.id),
-                  proposal.pricingDate,
-                )
-              : null;
-            setRows(
-              products.map((product) => {
-                const offer = offers?.offers.find((o) => o.productId === product.id);
-                return {
-                  id: product.id,
-                  name: product.name,
-                  unit: product.salesUnit,
-                  price: offer?.price?.priceExclVat ?? null,
-                  confirmed:
-                    !!offer?.availability?.orderable &&
-                    offer.availability.availableQuantity !== null,
-                };
-              }),
-            );
-            setLoaded(true);
-          });
+          void action.run(() => loadAlternatives(activeLine));
       }}
     >
       <summary
@@ -287,23 +418,77 @@ export function ProductComparison({
       </summary>
       <div className="space-y-4 border-t py-4">
         <ErrorMessage error={action.error} />
+        {proposal.lines.length > 1 && (
+          <label className="block text-label">
+            Line to compare &amp; swap
+            <select
+              className={`${inputClass} mt-1.5`}
+              value={activeLine?.productId ?? ""}
+              onChange={(event) => {
+                const nextId = event.target.value;
+                setSelectedLineState({ proposalId: proposal.id, lineId: nextId });
+                setRowsState({ proposalId: proposal.id, rows: [], loaded: false });
+                const nextLine = proposal.lines.find((l) => l.productId === nextId);
+                void action.run(() => loadAlternatives(nextLine));
+              }}
+            >
+              {proposal.lines.map((line) => (
+                <option key={line.productId} value={line.productId}>
+                  {line.name} ({line.quantity} {line.salesUnit ?? "units"})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {action.busy ? (
           <p role="status" className="text-sm text-muted-foreground">
             Checking a shortlist of alternatives…
           </p>
-        ) : rows.length ? (
-          rows.map((row) => (
+        ) : visibleRows.length ? (
+          visibleRows.map((row) => (
             <div className="flex flex-wrap justify-between gap-3 border-b pb-4" key={row.id}>
               <div>
-                <h3 className="text-sm font-medium">{row.name}</h3>
+                <h3 className="text-sm font-medium">
+                  {row.tier ? `${row.tier.toUpperCase()} · ` : ""}
+                  {row.name}
+                </h3>
                 <p className="mt-2 text-caption text-muted-foreground">
                   Per {row.unit} ·{" "}
                   {row.confirmed
                     ? "Available in the current snapshot"
                     : "Availability not confirmed"}
                 </p>
+                {row.reasons && row.reasons.length > 0 && (
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    {row.reasons.join(" · ")}
+                  </p>
+                )}
               </div>
-              <PriceDisplay value={row.price} />
+              <div className="flex items-center gap-3">
+                <PriceDisplay value={row.price} />
+                {canRevise && activeLine && row.id !== activeLine.productId && (
+                  <Button
+                    variant="outline"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.run(async () => {
+                        const revised = await store.reviseProposal(
+                          proposal.id,
+                          {
+                            replacements: [
+                              { fromProductId: activeLine.productId, toProductId: row.id },
+                            ],
+                          },
+                          threadId,
+                        );
+                        onRevised?.(revised.proposal);
+                      })
+                    }
+                  >
+                    Swap to this
+                  </Button>
+                )}
+              </div>
             </div>
           ))
         ) : (
@@ -315,8 +500,9 @@ export function ProductComparison({
           )
         )}
         <p className="text-caption text-muted-foreground">
-          These are comparison candidates, not verified substitutes. Confirm packaging and dietary
-          requirements before preparing a new proposal.
+          {store.mock
+            ? "These are comparison candidates, not verified substitutes. Confirm packaging and dietary requirements before preparing a new proposal."
+            : "Ranked candidates exclude allergens, dietary restrictions, blocked vendors, and products exceeding CO2 or delivery-reliability limits from your organization policy."}
         </p>
         <Link href="/buyer/products" className={buttonVariants({ variant: "outline" })}>
           Choose products & review quantities
@@ -555,20 +741,33 @@ export function ApprovalCard({
   threadId,
   compact = false,
   onReview,
-  onCheckout,
+  onRevised,
   reviewLayout = false,
 }: {
   proposal: Proposal;
   threadId?: string;
   compact?: boolean;
   onReview?: () => void;
-  onCheckout?: () => void;
+  onRevised?: (revised: Proposal) => void;
   reviewLayout?: boolean;
 }) {
   const s = useWorkspace();
   const router = useRouter();
   const action = useAction();
-  const [reason, setReason] = useState("");
+  const [reasonState, setReasonState] = useState<{ proposalId: string; text: string }>({
+    proposalId: proposal.id,
+    text: "",
+  });
+  const [verificationState, setVerificationState] = useState<{
+    proposalId: string;
+    data: ProposalVerification | null;
+  }>({ proposalId: proposal.id, data: null });
+  const reason = reasonState.proposalId === proposal.id ? reasonState.text : "";
+  const setReason = (text: string) => setReasonState({ proposalId: proposal.id, text });
+  const verification =
+    verificationState.proposalId === proposal.id ? verificationState.data : null;
+  const setVerification = (data: ProposalVerification | null) =>
+    setVerificationState({ proposalId: proposal.id, data });
   const buyer = s.user?.roles.includes("buyer"),
     approver = s.user?.roles.includes("approver");
   const owner = proposal.createdBy === s.user?.id;
@@ -591,6 +790,11 @@ export function ApprovalCard({
     ? s.local.threads.find((t) => t.id === threadId)?.proposals.indexOf(proposal.id)
     : undefined;
   const superseded = proposal.status === "CANCELLED" && !!threadId;
+  const canRevise =
+    !!buyer &&
+    owner &&
+    ["READY", "PENDING_APPROVAL", "APPROVED"].includes(proposal.status) &&
+    !stale;
   const canDecide =
     approver &&
     proposal.status === "PENDING_APPROVAL" &&
@@ -642,8 +846,7 @@ export function ApprovalCard({
                 label={
                   superseded
                     ? "Superseded — no longer actionable"
-                    : stale &&
-                        !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
+                    : stale && !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
                       ? "Prices need refreshing"
                       : canDecide
                         ? "Ready for review · Awaiting approval"
@@ -651,135 +854,149 @@ export function ApprovalCard({
                 }
               />
             </div>
-            <div className="px-4 pt-4 md:px-6">
-              <TradeAirlock key={proposal.id} proposal={proposal} />
-            </div>
-            <div className="space-y-3 px-4 py-5 md:px-6 md:py-6">
-              <div className="grid gap-5 rounded-xl border bg-muted/30 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center md:p-5">
-                <div className="min-w-0 space-y-3">
-                  <p className="flex items-start gap-3 text-sm font-medium leading-6">
-                    <Icon name="restocking" className="mt-0.5 size-4 shrink-0 text-primary" />
-                    <span className="min-w-0 break-words">
-                      {proposal.lines.length} {proposal.lines.length === 1 ? "item" : "items"} ·{" "}
-                      {proposal.lines[0]?.name ?? "Purchase basket"}
-                      {proposal.lines.length > 1 ? ` + ${proposal.lines.length - 1} more` : ""}
-                      {proposal.lines.length === 1 && (
-                        <span className="font-normal">
-                          {" "}
-                          ({proposal.lines[0]?.quantity} {proposal.lines[0]?.salesUnit ?? "units"})
-                        </span>
-                      )}
-                    </span>
-                  </p>
-                  <p
-                    className={`flex items-start gap-3 text-sm leading-5 ${confirmedSupply ? "text-muted-foreground" : "text-warning"}`}
-                  >
-                    <Icon name="truck" className="mt-0.5 size-4 shrink-0" />
-                    <span>
-                      Needed {displayDate(proposal.pricingDate)} ·{" "}
-                      {confirmedSupply
-                        ? "Availability confirmed in quoted snapshot"
-                        : "Availability needs confirmation"}
-                    </span>
-                  </p>
-                  <p className="flex items-start gap-3 text-caption leading-5 text-muted-foreground">
-                    <Icon
-                      name={proposal.decision.outcome === "DENY" ? "info" : "shield-outline"}
-                      className="mt-0.5 size-4 shrink-0"
-                    />
-                    <span>
-                      {proposal.decision.outcome === "DENY"
-                        ? "Purchasing policy blocks this proposal"
-                        : proposal.decision.outcome === "REQUIRE_APPROVAL"
-                          ? "Human approval required by purchasing policy"
-                          : "Within configured purchasing limits"}
-                    </span>
-                  </p>
-                </div>
-                <div className="border-t pt-4 text-right sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0">
-                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                    Total (excl. VAT)
-                  </p>
-                  <p className="mt-2 text-2xl font-semibold tabular-nums text-primary">
-                    <AnimatedPrice value={proposal.totalExclVat} currency={proposal.currency} />
-                  </p>
-                </div>
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="font-medium">{proposal.lines[0]?.name ?? "Purchase basket"}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {proposal.lines.map((l) => `${l.quantity} ${l.salesUnit ?? "units"}`).join(" · ")}{" "}
+                  · Needed {displayDate(proposal.pricingDate)}
+                </p>
               </div>
-              {proposal.status === "BLOCKED" && (
-                <p className="text-sm text-destructive">
-                  {proposal.decision.reasons.map((r) => r.message).join(" ")}
-                </p>
-              )}
-              {proposal.approval?.status === "REJECTED" && (
-                <p className="text-sm">
-                  Reason: {proposal.approval.comment ?? "The purchase was declined."} You can revise
-                  this request in the Assistant.
-                </p>
-              )}
-              {proposal.lines.some(
-                (l) =>
-                  !l.orderable ||
-                  l.availableQuantity === null ||
-                  (l.availableQuantity ?? 0) < l.quantity,
-              ) && (
+              <PriceDisplay value={proposal.totalExclVat} currency={proposal.currency} />
+            </div>
+            {proposal.status === "BLOCKED" && (
+              <p className="text-sm text-destructive">
+                {proposal.decision.reasons.map((r) => r.message).join(" ")}
+              </p>
+            )}
+            {proposal.approval?.status === "REJECTED" && (
+              <p className="text-sm">
+                Reason: {proposal.approval.comment ?? "The purchase was declined."} You can revise
+                this request in the Assistant.
+              </p>
+            )}
+            {proposal.lines.some(
+              (l) =>
+                !l.orderable ||
+                l.availableQuantity === null ||
+                (l.availableQuantity ?? 0) < l.quantity,
+            ) && (
+              <p className="text-sm text-warning">
+                Some availability or quantity conditions need attention. Review them before
+                deciding.
+              </p>
+            )}
+            {proposal.status === "READY" &&
+              proposal.decision.outcome === "ALLOW" &&
+              !confirmedSupply && (
                 <p className="text-sm text-warning">
-                  Some availability or quantity conditions need attention. Review them before
-                  deciding.
+                  Autonomous ordering is paused because supply is not confirmed. Ask an Approver to
+                  require human review in purchasing policies, then prepare a fresh proposal, or
+                  choose a product with confirmed supply.
                 </p>
               )}
-              {proposal.status === "READY" &&
-                proposal.decision.outcome === "ALLOW" &&
-                !confirmedSupply && (
-                  <p className="text-sm text-warning">
-                    Autonomous ordering is paused because supply is not confirmed. Ask an Approver
-                    to require human review in purchasing policies, then prepare a fresh proposal,
-                    or choose a product with confirmed supply.
-                  </p>
-                )}
-              <div className="grid gap-x-6 sm:grid-cols-2">
-                <details className="group/items open:col-span-full">
-                  <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm">
-                    View items ({proposal.lines.length}){" "}
-                    <Icon
-                      name="chevron"
-                      className="size-3.5 transition-transform group-open/items:rotate-90"
-                    />
-                  </summary>
-                  <div className="divide-y border-t">
-                    {proposal.lines.map((line) => (
-                      <ProductLine line={line} key={line.productId} />
-                    ))}
-                  </div>
-                </details>
-                <ProductComparison proposal={proposal} compact />
-              </div>
-              <EvidenceDisclosure title="Purchasing conditions & evidence">
-                <p>{proposal.decision.reasons.map((r) => r.message).join(" ")}</p>
-                <p>
-                  Policy limits are excluding VAT. A VAT-inclusive total is not provided by this
-                  purchasing snapshot.
-                </p>
-                <p>
-                  Fixed prices valid until{" "}
-                  {proposal.quoteExpiresAt
-                    ? new Date(proposal.quoteExpiresAt).toLocaleString("en-GB", {
-                        timeZone: "Europe/Helsinki",
+            {proposal.selection && proposal.selection.warnings.length > 0 && (
+              <p className="text-sm text-warning">{proposal.selection.warnings.join(" ")}</p>
+            )}
+            <BudgetComparison proposal={proposal} />
+            <SelectionTrail
+              key={`trail-${proposal.id}`}
+              proposal={proposal}
+              threadId={threadId}
+              canRevise={canRevise}
+              onRevised={onRevised}
+            />
+            {
+              <details>
+                <summary className="min-h-11 py-3 text-sm">
+                  View items ({proposal.lines.length})
+                </summary>
+                <div className="divide-y">
+                  {proposal.lines.map((line) => (
+                    <ProductLine line={line} key={line.productId} />
+                  ))}
+                </div>
+              </details>
+            }
+            <ProductComparison
+              key={proposal.id}
+              proposal={proposal}
+              threadId={threadId}
+              canRevise={canRevise}
+              onRevised={onRevised}
+            />
+            <EvidenceDisclosure title="Purchasing conditions & evidence">
+              <p>{proposal.decision.reasons.map((r) => r.message).join(" ")}</p>
+              <p>
+                Policy limits are excluding VAT. A VAT-inclusive total is not provided by this
+                purchasing snapshot.
+              </p>
+              <p>
+                Fixed prices valid until{" "}
+                {proposal.quoteExpiresAt
+                  ? new Date(proposal.quoteExpiresAt).toLocaleString("en-GB", {
+                      timeZone: "Europe/Helsinki",
+                    })
+                  : "not supplied"}{" "}
+                (Helsinki).
+              </p>
+              <p>
+                Source:{" "}
+                {proposal.priceSource === "valio"
+                  ? "Valio catalog lookup"
+                  : "Development fixture data"}
+                . Availability is a snapshot, not a reserved delivery slot.
+              </p>
+              <p className="break-all text-caption">
+                Proposal: {proposal.id} · Content reference: {proposal.hash}
+              </p>
+              {proposal.selection && proposal.selection.pipeline.length > 0 && (
+                <div className="space-y-2 border-t pt-3">
+                  <p className="font-medium text-foreground">Agent selection trail</p>
+                  {proposal.selection.pipeline.map((step, index) => (
+                    <p key={index}>
+                      {step.extractedItem.productName} ({step.parsedQuantity} {step.parsedUnit}
+                      {step.conversionNote ? ` · ${step.conversionNote}` : ""}):{" "}
+                      {step.selectedProduct
+                        ? `Selected ${step.selectedProduct.name} (${step.selectedProduct.rankReasons?.join(", ") || "best match"}).`
+                        : "No matching product selected."}{" "}
+                      {step.removedByPreferences.length > 0
+                        ? `${step.removedByPreferences.length} candidate(s) excluded by rules.`
+                        : ""}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {!store.mock && (
+                <div className="space-y-2 border-t pt-3">
+                  <Button
+                    variant="ghost"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.run(async () => {
+                        setVerification(await store.api.verifyProposal(proposal.id));
                       })
-                    : "not supplied"}{" "}
-                  (Helsinki).
-                </p>
-                <p>
-                  Source:{" "}
-                  {proposal.priceSource === "valio"
-                    ? "Valio catalog lookup"
-                    : "Development fixture data"}
-                  . Availability is a snapshot, not a reserved delivery slot.
-                </p>
-                <p className="break-all text-caption">
-                  Proposal: {proposal.id} · Content reference: {proposal.hash}
-                </p>
-              </EvidenceDisclosure>
-            </div>
+                    }
+                  >
+                    Verify hash &amp; Valio snapshots
+                  </Button>
+                  {verification && (
+                    <p className="text-caption">
+                      Hash valid: {verification.hashValid ? "Yes" : "No"} · Signature valid:{" "}
+                      {verification.signatureValid === null ||
+                      verification.signatureValid === undefined
+                        ? "Unsigned"
+                        : verification.signatureValid
+                          ? `Yes (${verification.signatureKeyId ?? "server"})`
+                          : "No"}{" "}
+                      · Snapshots matched:{" "}
+                      {verification.lines.filter((l) => l.snapshotFound).length}/
+                      {verification.lines.length}
+                    </p>
+                  )}
+                </div>
+              )}
+            </EvidenceDisclosure>
           </>
         )}
         {reviewLayout && (
@@ -1035,7 +1252,7 @@ export function BasketReviewDrawer({
           <Icon name="close" />
         </Button>
       </div>
-      {children ?? <ApprovalCard proposal={proposal} threadId={threadId} onCheckout={onCheckout} />}
+      <ApprovalCard key={proposal.id} proposal={proposal} threadId={threadId} />
     </aside>
   );
 }

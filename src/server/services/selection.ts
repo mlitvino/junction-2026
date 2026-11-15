@@ -13,6 +13,7 @@ import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { purchaseOrder, valioProduct } from "@/server/db/schema";
 import { getMastra } from "@/server/mastra";
+import { mergeDraftLines } from "@/server/policy/evaluate";
 import {
   getAvailability,
   getPrices,
@@ -43,8 +44,9 @@ import {
   type Actor,
 } from "@/server/services/purchasing";
 import { rankCandidates } from "@/server/purchasing/ranking";
-import { toSalesUnits, type Conversion } from "@/server/valio/units";
+import { toSalesUnits, type Conversion, type UnitFacts } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
+import type { Preferences } from "@/shared/contracts/preferences";
 import type {
   ProductSummary,
   RankedProduct,
@@ -56,6 +58,7 @@ import type {
   CandidateProduct,
   CustomerPreferences,
   ItemProcurementTrace,
+  NutritionPreferences,
   PreviousOrderRecord,
   RemovedCandidate,
   SuggestedAlternative,
@@ -111,7 +114,11 @@ function makeAuditEvent(params: {
 
 /** The organization's buyer rules, in the shape the candidate filter uses. */
 export async function customerPreferencesFor(organizationId: string): Promise<CustomerPreferences> {
-  const effective = (await getEffectiveFor(organizationId, "buyer")).values;
+  return toCustomerPreferences((await getEffectiveFor(organizationId, "buyer")).values);
+}
+
+/** Same, from already-loaded effective buyer preferences (no second database round trip). */
+export function toCustomerPreferences(effective: Preferences): CustomerPreferences {
   return {
     dietaryRestrictions: effective.dietaryRestrictions,
     // Candidates are tagged with allergen names; preferences may hold names or GS1 codes.
@@ -165,8 +172,274 @@ export function parseQuantityAndUnit(
 }
 
 /**
+ * Generic culinary/packaging modifiers that must not match unrelated products on their own
+ * during fallback catalog queries or name scoring.
+ */
+export const GENERIC_MODIFIERS = new Set([
+  "fresh",
+  "diced",
+  "sliced",
+  "chopped",
+  "minced",
+  "grated",
+  "shredded",
+  "organic",
+  "unsalted",
+  "salted",
+  "whole",
+  "frozen",
+  "raw",
+  "cooked",
+  "local",
+  "natural",
+  "pure",
+  "extra",
+  "large",
+  "small",
+  "medium",
+  "young",
+  "baby",
+  "lean",
+  "tuore",
+  "pakaste",
+  "luomu",
+  "suolaton",
+]);
+
+const INGREDIENT_CHANGING_QUALIFIERS = new Set([
+  "sweet",
+  "wild",
+  "smoked",
+  "cured",
+  "pickled",
+  "marinated",
+  "candied",
+  "spiced",
+  "flavored",
+  "flavoured",
+  "fermented",
+  "imitation",
+  "vegan",
+  "plant",
+  "oat",
+  "soy",
+  "almond",
+  "coconut",
+  "rice",
+  "horseradish",
+  "jerusalem",
+  "water",
+  "garlic",
+  "chili",
+  "chilli",
+  "herb",
+  "lemon",
+  "honey",
+  "truffle",
+  "curry",
+  "mustard",
+  "smashed",
+  "mashed",
+  "cocoa",
+  "ice",
+  "chocolate",
+  "sour",
+  "brioche",
+  "burger",
+  "lolly",
+  "dipmix",
+  "shaker",
+  "beans",
+  "bean",
+  "spreader",
+  "jug",
+  "scoop",
+  "slicer",
+  "onion",
+  "tomato",
+  "cheese",
+  "peanut",
+  "balsamic",
+  "condensed",
+  "condensated",
+  "caramelized",
+  "caramelised",
+  "evaporated",
+  "saithe",
+]);
+
+const MODIFIER_SYNONYM_GROUPS: readonly (readonly string[])[] = [
+  ["diced", "dice", "dices", "cube", "cubes", "cubed"],
+  ["sliced", "slice", "slices", "ring", "rings"],
+  ["chopped", "chop", "minced", "mince"],
+  ["shredded", "shred", "grated", "grate"],
+  ["mashed", "mash", "smashed", "smash", "puree", "purée"],
+  ["fillet", "fillets", "filet", "filets"],
+];
+
+const SYNONYM_LOOKUP = new Map<string, Set<string>>(
+  MODIFIER_SYNONYM_GROUPS.flatMap((group) => {
+    const set = new Set(group);
+    return group.map((w) => [w, set] as const);
+  }),
+);
+
+const OPPOSITE_MODIFIER_PAIRS: readonly (readonly [string, string])[] = [
+  ["unsalted", "salted"],
+  ["suolaton", "suolattu"],
+  ["unsalted", "suolattu"],
+  ["salted", "unsalted"],
+  ["unsweetened", "sweetened"],
+  ["unsweetened", "sweet"],
+  ["sweetened", "unsweetened"],
+  ["unflavored", "flavored"],
+  ["unflavored", "flavoured"],
+  ["unflavoured", "flavoured"],
+  ["unflavoured", "flavored"],
+];
+
+/** Valio ERP 2-digit category prefixes that represent non-food items (utensils, packaging, office, etc.). */
+export const NON_FOOD_CATEGORY_PREFIXES = new Set(["20", "30", "32", "63", "64", "67", "77", "90"]);
+
+/** Returns true when the product's catalog classification (category prefix or STANDARD VAT) is non-food. */
+export function isNonFoodProduct(category: string, vatCode?: string | null): boolean {
+  const prefix = category.trim().slice(0, 2);
+  if (NON_FOOD_CATEGORY_PREFIXES.has(prefix)) return true;
+  if (vatCode && vatCode.toUpperCase().includes("STANDARD")) return true;
+  return false;
+}
+
+const DERIVED_OR_DIFFERENT_HEAD_NOUNS = new Set([
+  "gnocchi",
+  "salad",
+  "salads",
+  "chips",
+  "chip",
+  "crisps",
+  "crisp",
+  "starch",
+  "powder",
+  "flake",
+  "flakes",
+  "casserole",
+  "soup",
+  "soups",
+  "flatbread",
+  "bread",
+  "bun",
+  "buns",
+  "roll",
+  "rolls",
+  "rosti",
+  "peeler",
+  "press",
+  "masher",
+  "ricer",
+  "herring",
+  "fish",
+  "salmon",
+  "cheese",
+  "sauce",
+  "sauces",
+  "dip",
+  "dips",
+  "dressing",
+  "seasoning",
+  "spice",
+  "seed",
+  "seeds",
+  "fond",
+  "broth",
+  "stock",
+  "brine",
+  "gum",
+  "beer",
+  "drink",
+  "drinks",
+  "juice",
+  "tea",
+  "jam",
+  "jelly",
+  "syrup",
+  "oil",
+  "vinegar",
+  "pasta",
+  "noodle",
+  "noodles",
+  "pie",
+  "cake",
+  "cookie",
+  "cookies",
+  "cracker",
+  "crackers",
+  "snack",
+  "snacks",
+  "wedges",
+  "fries",
+  "puree",
+  "purée",
+  "paste",
+  "extract",
+  "essence",
+  "mayo",
+  "mayonnaise",
+  "mustard",
+  "ketchup",
+  "butter",
+  "potato",
+  "potatoes",
+]);
+
+/**
+ * Extra words that still name the same product as the requested word: a variety plus its class noun
+ * ("Cheddar" → "Valio Cheddar cheese", "rapeseed" → "Rapeseed oil") or a product sold under a
+ * longer name ("milk" → "lactose free milk drink"). They skip the qualifier/head-noun penalty, which
+ * otherwise rejects "Potato salad" for "potato" or "Cocoa butter" for "butter".
+ */
+const SAME_PRODUCT_EXTRA_WORDS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  (
+    [
+      // Only unambiguous varieties: "cream" (cream cheese), "olive" (olives) and "sesame" (seeds) stay out.
+      [["cheddar", "emmental", "emmentaler", "edam", "gouda", "mozzarella", "brie", "camembert", "feta", "parmesan",
+        "halloumi", "mascarpone", "ricotta", "gruyere", "gruyère", "oltermanni"], ["cheese"]],
+      [["rapeseed", "sunflower", "canola", "rypsi"], ["oil"]],
+      [["milk"], ["drink"]],
+    ] as const
+  ).flatMap(([words, extras]) => words.map((w) => [w, new Set<string>(extras)] as const)),
+);
+
+/** Strips verb endings for inflection matching: "skimmed" → "skim", "whipping" / "whipped" → "whip". */
+function verbStem(word: string): string {
+  const m = /^(.{3,}?)(?:ing|ed)$/.exec(word);
+  if (!m) return word;
+  const stem = m[1]!;
+  return /([b-df-hj-np-tv-z])\1$/.test(stem) ? stem.slice(0, -1) : stem;
+}
+
+/** Returns a word and its singularized English stem (e.g. "potatoes" → "potato", "cheeses" → "cheese"). */
+export function wordStems(word: string): string[] {
+  const lower = word.trim().toLowerCase();
+  if (!lower) return [];
+  if (lower.endsWith("ies") && lower.length > 4) {
+    return [lower, `${lower.slice(0, -3)}y`];
+  }
+  if (lower.endsWith("oes") && lower.length > 4) {
+    return [lower, lower.slice(0, -2)];
+  }
+  if (/(?:ches|shes|xes|sses|zes)$/.test(lower) && lower.length > 4) {
+    return [lower, lower.slice(0, -2)];
+  }
+  if (lower.endsWith("s") && !lower.endsWith("ss") && lower.length > 3) {
+    return [lower, lower.slice(0, -1)];
+  }
+  return [lower];
+}
+
+/**
  * Calculates similarity between requested productName and candidate product name in [0, 1].
- * Combines exact/substring checks with word-level overlap and prefix matching.
+ * Combines exact/stem/substring checks with prefix matching (requiring token length >= 3)
+ * and prevents generic modifier-only matches, unrequested ingredient-changing qualifiers,
+ * and derived/compound head nouns from clearing the relevance floor when a plain match exists.
  */
 export function computeNameMatchScore(requestedName: string, candidateName: string): number {
   const reqNorm = requestedName.trim().toLowerCase();
@@ -185,21 +458,309 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
   const candTokens = tokenize(candNorm);
   if (reqTokens.length === 0 || candTokens.length === 0) return 0;
 
+  const reqStemSet = new Set(reqTokens.flatMap(wordStems));
+  const candStemSet = new Set(candTokens.flatMap(wordStems));
+  const coreReqTokens = reqTokens.filter((t) => !GENERIC_MODIFIERS.has(t));
+
   let matchedReqTokens = 0;
+  let matchedCoreTokens = 0;
+  let unmatchedCoreCount = 0;
+  const matchedCoreIndices: number[] = [];
+
+  // Same word in another form: a short ending ("dice"/"diced") or a verb form ("skim"/"skimmed",
+  // "whipping"/"whipped"). Stems must keep 3+ letters, so "oat" never matches "oatmeal".
+  const isInflectionPrefix = (a: string, b: string) =>
+    a.length >= 3 &&
+    b.length >= 3 &&
+    ((b.startsWith(a) && b.length - a.length <= 2) ||
+      (a.startsWith(b) && a.length - b.length <= 2) ||
+      verbStem(a) === verbStem(b));
+
   for (const rt of reqTokens) {
-    if (candTokens.includes(rt)) {
-      matchedReqTokens += 1;
-    } else if (candTokens.some((ct) => ct.startsWith(rt) || rt.startsWith(ct))) {
-      matchedReqTokens += 0.75;
+    const rtStems = wordStems(rt);
+    const rtSynonyms = SYNONYM_LOOKUP.get(rt);
+    const isCore = !GENERIC_MODIFIERS.has(rt);
+    let tokenScore = 0;
+
+    if (candTokens.includes(rt) || rtStems.some((s) => candStemSet.has(s))) {
+      tokenScore = 1;
+      if (isCore) {
+        candTokens.forEach((ct, idx) => {
+          if (ct === rt || wordStems(ct).some((cs) => rtStems.includes(cs))) {
+            matchedCoreIndices.push(idx);
+          }
+        });
+      }
+    } else if (rtSynonyms && candTokens.some((ct) => rtSynonyms.has(ct))) {
+      tokenScore = 0.95;
+      if (isCore) {
+        candTokens.forEach((ct, idx) => {
+          if (rtSynonyms.has(ct)) {
+            matchedCoreIndices.push(idx);
+          }
+        });
+      }
+    } else if (candTokens.some((ct) => isInflectionPrefix(rt, ct))) {
+      tokenScore = 0.75;
+      if (isCore) {
+        candTokens.forEach((ct, idx) => {
+          if (isInflectionPrefix(rt, ct)) {
+            matchedCoreIndices.push(idx);
+          }
+        });
+      }
+    }
+
+    matchedReqTokens += tokenScore;
+    if (isCore) {
+      if (tokenScore === 0) {
+        unmatchedCoreCount++;
+      } else {
+        matchedCoreTokens += tokenScore;
+      }
     }
   }
 
+  // Every core (non-modifier) request token must match; partial core matches (e.g. "unicorn milk"
+  // matching only "milk") must not clear the 0.35 relevance floor.
+  if (coreReqTokens.length > 0 && unmatchedCoreCount > 0) {
+    return Math.min(0.25, Math.round((matchedCoreTokens / coreReqTokens.length) * 0.25 * 1000) / 1000);
+  }
+
   const reqCoverage = matchedReqTokens / reqTokens.length;
+  const effectiveReqCoverage =
+    coreReqTokens.length > 0 && coreReqTokens.length < reqTokens.length
+      ? Math.max(reqCoverage, (matchedCoreTokens / coreReqTokens.length) * 0.85)
+      : reqCoverage;
   const candCoverage = matchedReqTokens / candTokens.length;
   const substringBonus = candNorm.includes(reqNorm) ? 0.2 : 0;
 
-  const rawScore = reqCoverage * 0.7 + candCoverage * 0.2 + substringBonus;
+  let rawScore = effectiveReqCoverage * 0.7 + candCoverage * 0.2 + substringBonus;
+
+  // Opposite modifier check (e.g. requested "unsalted" must penalize "salted" and vice versa).
+  const hasOppositeModifier = OPPOSITE_MODIFIER_PAIRS.some(
+    ([reqMod, oppMod]) => reqStemSet.has(reqMod) && !reqStemSet.has(oppMod) && candStemSet.has(oppMod),
+  );
+  if (hasOppositeModifier) {
+    rawScore *= 0.2;
+  }
+
+  if (coreReqTokens.length > 0 && matchedCoreIndices.length > 0) {
+    // Words that only complete the requested product's name ("Cheddar" + "cheese") are not penalized.
+    const sameProductExtras = new Set(reqTokens.flatMap((t) => [...(SAME_PRODUCT_EXTRA_WORDS.get(t) ?? [])]));
+    const isSameProductExtra = (ct: string) => wordStems(ct).some((s) => sameProductExtras.has(s));
+
+    // (a) Penalize unrequested ingredient-changing qualifiers anywhere in the candidate name
+    // (e.g. "Smoked salmon fillet" for "Salmon fillet", "Cocoa butter" for "butter",
+    // "smashed potatoes" for "Diced potatoes").
+    const hasUnrequestedQualifier = candTokens.some((ct, idx) => {
+      if (matchedCoreIndices.includes(idx) || isSameProductExtra(ct)) return false;
+      const stems = wordStems(ct);
+      if (stems.some((s) => reqStemSet.has(s))) return false;
+      return INGREDIENT_CHANGING_QUALIFIERS.has(ct) || stems.some((s) => INGREDIENT_CHANGING_QUALIFIERS.has(s));
+    });
+
+    // (b) Penalize matched core noun used as a modifier of a different head noun
+    // (e.g. "Potato Gnocchi", "Potato Salad", "Potato Peeler", "dill herring").
+    const hasDifferentHeadNoun = candTokens.some(
+      (ct, idx) =>
+        !matchedCoreIndices.includes(idx) &&
+        !isSameProductExtra(ct) &&
+        DERIVED_OR_DIFFERENT_HEAD_NOUNS.has(ct) &&
+        !reqStemSet.has(ct) &&
+        !wordStems(ct).some((s) => reqStemSet.has(s)),
+    );
+
+    if (hasUnrequestedQualifier || hasDifferentHeadNoun) {
+      rawScore *= 0.35;
+    }
+  }
+
   return Math.min(1, Math.round(rawScore * 1000) / 1000);
+}
+
+/** Keeps only candidates meeting the 0.35 relevance floor and at least 70% of the top match. */
+export function filterRelevantCandidates<T extends Pick<CandidateProduct, "nameMatchScore">>(
+  candidates: readonly T[],
+): T[] {
+  const topMatch = Math.max(0, ...candidates.map((c) => c.nameMatchScore));
+  const minScore = Math.max(0.35, topMatch * 0.7);
+  return candidates.filter((c) => c.nameMatchScore >= minScore);
+}
+
+/**
+ * Drops non-food items (utensils, packaging, STANDARD VAT) whenever at least one food item
+ * clears the 0.35 relevance floor; keeps non-food items when the request itself is non-food
+ * (e.g. "Potato peeler").
+ */
+export function filterFoodCandidatesIfAvailable<
+  T extends { category: string; vatCode?: string | null; nameMatchScore: number },
+>(candidates: readonly T[]): T[] {
+  const foodRelevant = candidates.filter(
+    (c) => !isNonFoodProduct(c.category, c.vatCode) && c.nameMatchScore >= 0.35,
+  );
+  if (foodRelevant.length > 0) {
+    return candidates.filter((c) => !isNonFoodProduct(c.category, c.vatCode));
+  }
+  return [...candidates];
+}
+
+/**
+ * Category voting among relevant candidates: derives dominant category codes from the best
+ * plain matches and keeps candidates in categories whose top score and vote weight are competitive.
+ */
+export function applyCategoryVoting<T extends { category: string; nameMatchScore: number }>(
+  candidates: readonly T[],
+): T[] {
+  if (candidates.length <= 1) return [...candidates];
+
+  const byCat = new Map<string, number[]>();
+  for (const c of candidates) {
+    const arr = byCat.get(c.category) ?? [];
+    arr.push(c.nameMatchScore);
+    byCat.set(c.category, arr);
+  }
+  if (byCat.size <= 1) return [...candidates];
+
+  const stats = [...byCat.entries()].map(([category, scores]) => {
+    const sorted = [...scores].sort((a, b) => b - a);
+    const maxScore = sorted[0] ?? 0;
+    const topSum = sorted.slice(0, 5).reduce((acc, s) => acc + s * s, 0);
+    return { category, maxScore, topSum };
+  });
+
+  const bestMaxScore = Math.max(...stats.map((s) => s.maxScore));
+  const bestTopSum = Math.max(...stats.map((s) => s.topSum));
+  const dominant = new Set(
+    stats
+      .filter((s) => s.maxScore >= bestMaxScore - 0.12 && s.topSum >= bestTopSum * 0.2)
+      .map((s) => s.category),
+  );
+
+  const filtered = candidates.filter((c) => dominant.has(c.category));
+  return filtered.length > 0 ? filtered : [...candidates];
+}
+
+/**
+ * Full pure relevance pipeline:
+ * 1. Exclude non-food items when food candidates exist.
+ * 2. Keep candidates meeting the relevance floor (>= 0.35 and >= 70% of top).
+ * 3. Restrict to dominant category code(s) via category voting.
+ */
+export function selectRelevantCandidates<
+  T extends { category: string; vatCode?: string | null; nameMatchScore: number },
+>(candidates: readonly T[]): T[] {
+  const foodFirst = filterFoodCandidatesIfAvailable(candidates);
+  const relevant = filterRelevantCandidates(foodFirst);
+  return applyCategoryVoting(relevant);
+}
+
+export type BuyerPreferenceRuleTarget = {
+  dietaryTags: readonly string[];
+  allergens: readonly string[];
+  vendorName: string;
+  co2PerKg?: number | null;
+  deliveryReliability?: number | null;
+  nutrition?: UnifiedCatalogRecord["nutrition"] | null;
+};
+
+export type BuyerPreferenceRules = Pick<
+  Preferences,
+  "dietaryRestrictions" | "excludedAllergens" | "blockedVendors" | "maxCo2PerKg" | "minDeliveryReliability"
+>;
+
+/**
+ * Shared buyer-preference check used by product selection, product ranking, and proposal revision.
+ * Checks dietary restrictions, excluded allergens (names or GS1 codes), blocked vendors,
+ * max CO2 per kg, min delivery reliability, and optional nutrition limits.
+ */
+export function evaluateBuyerPreferences(
+  product: BuyerPreferenceRuleTarget,
+  rules: BuyerPreferenceRules,
+  nutritionLimits?: NutritionPreferences,
+): string[] {
+  const reasons: string[] = [];
+
+  const productDietary = new Set(product.dietaryTags.map((t) => t.toLowerCase()));
+  for (const reqDiet of rules.dietaryRestrictions) {
+    if (!productDietary.has(reqDiet.toLowerCase())) {
+      reasons.push(`Missing required dietary restriction: ${reqDiet}`);
+    }
+  }
+
+  if (rules.excludedAllergens.length > 0 && product.allergens.length > 0) {
+    const banned = allergenCodes(rules.excludedAllergens);
+    const seen = new Set<string>();
+    for (const allergen of product.allergens) {
+      const codes = allergenCodes([allergen]);
+      if ([...codes].some((c) => banned.has(c))) {
+        const display = allergenNames([allergen])[0] ?? allergen;
+        if (!seen.has(display)) {
+          seen.add(display);
+          reasons.push(`Contains excluded allergen: ${display}`);
+        }
+      }
+    }
+  }
+
+  if (rules.blockedVendors.includes(product.vendorName)) {
+    reasons.push(`Vendor ${product.vendorName} is blocked`);
+  }
+  if (
+    rules.maxCo2PerKg !== null &&
+    product.co2PerKg !== null &&
+    product.co2PerKg !== undefined &&
+    product.co2PerKg > rules.maxCo2PerKg
+  ) {
+    reasons.push(`CO2 (${product.co2PerKg} kg/kg) exceeds maximum (${rules.maxCo2PerKg} kg/kg)`);
+  }
+  if (
+    rules.minDeliveryReliability !== null &&
+    product.deliveryReliability !== null &&
+    product.deliveryReliability !== undefined &&
+    product.deliveryReliability < rules.minDeliveryReliability
+  ) {
+    reasons.push(
+      `Delivery reliability (${product.deliveryReliability}) is below minimum (${rules.minDeliveryReliability})`,
+    );
+  }
+
+  const actual = product.nutrition;
+  if (actual && nutritionLimits) {
+    if (
+      nutritionLimits.maxCaloriesPer100g !== undefined &&
+      actual.caloriesPer100g > nutritionLimits.maxCaloriesPer100g
+    ) {
+      reasons.push(
+        `Calories (${actual.caloriesPer100g} kcal/100g) exceed maximum (${nutritionLimits.maxCaloriesPer100g} kcal/100g)`,
+      );
+    }
+    if (nutritionLimits.maxFatPer100g !== undefined && actual.fatPer100g > nutritionLimits.maxFatPer100g) {
+      reasons.push(
+        `Fat (${actual.fatPer100g}g/100g) exceeds maximum (${nutritionLimits.maxFatPer100g}g/100g)`,
+      );
+    }
+    if (nutritionLimits.maxSugarPer100g !== undefined && actual.sugarPer100g > nutritionLimits.maxSugarPer100g) {
+      reasons.push(
+        `Sugar (${actual.sugarPer100g}g/100g) exceeds maximum (${nutritionLimits.maxSugarPer100g}g/100g)`,
+      );
+    }
+    if (nutritionLimits.maxSaltPer100g !== undefined && actual.saltPer100g > nutritionLimits.maxSaltPer100g) {
+      reasons.push(
+        `Salt (${actual.saltPer100g}g/100g) exceeds maximum (${nutritionLimits.maxSaltPer100g}g/100g)`,
+      );
+    }
+    if (
+      nutritionLimits.minProteinPer100g !== undefined &&
+      actual.proteinPer100g < nutritionLimits.minProteinPer100g
+    ) {
+      reasons.push(
+        `Protein (${actual.proteinPer100g}g/100g) is below minimum (${nutritionLimits.minProteinPer100g}g/100g)`,
+      );
+    }
+  }
+
+  return reasons;
 }
 
 /**
@@ -210,57 +771,17 @@ export function evaluateCustomerPreferences(
   candidate: Pick<UnifiedCatalogRecord, "dietaryTags" | "allergens" | "nutrition">,
   preferences: CustomerPreferences,
 ): string[] {
-  const reasons: string[] = [];
-
-  const candidateDietary = new Set(candidate.dietaryTags.map((t) => t.toLowerCase()));
-  for (const reqDiet of preferences.dietaryRestrictions) {
-    if (!candidateDietary.has(reqDiet.toLowerCase())) {
-      reasons.push(`Missing required dietary restriction: ${reqDiet}`);
-    }
-  }
-
-  const candidateAllergens = new Set(candidate.allergens.map((a) => a.toLowerCase()));
-  for (const excluded of preferences.excludedAllergens) {
-    if (candidateAllergens.has(excluded.toLowerCase())) {
-      reasons.push(`Contains excluded allergen: ${excluded}`);
-    }
-  }
-
-  const { nutrition: limits } = preferences;
-  const { nutrition: actual } = candidate;
-  // No nutrition data: no nutrition rule applies (missing data never excludes a product).
-  if (!actual) return reasons;
-
-  if (
-    limits.maxCaloriesPer100g !== undefined &&
-    actual.caloriesPer100g > limits.maxCaloriesPer100g
-  ) {
-    reasons.push(
-      `Calories (${actual.caloriesPer100g} kcal/100g) exceed maximum (${limits.maxCaloriesPer100g} kcal/100g)`,
-    );
-  }
-  if (limits.maxFatPer100g !== undefined && actual.fatPer100g > limits.maxFatPer100g) {
-    reasons.push(
-      `Fat (${actual.fatPer100g}g/100g) exceeds maximum (${limits.maxFatPer100g}g/100g)`,
-    );
-  }
-  if (limits.maxSugarPer100g !== undefined && actual.sugarPer100g > limits.maxSugarPer100g) {
-    reasons.push(
-      `Sugar (${actual.sugarPer100g}g/100g) exceeds maximum (${limits.maxSugarPer100g}g/100g)`,
-    );
-  }
-  if (limits.maxSaltPer100g !== undefined && actual.saltPer100g > limits.maxSaltPer100g) {
-    reasons.push(
-      `Salt (${actual.saltPer100g}g/100g) exceeds maximum (${limits.maxSaltPer100g}g/100g)`,
-    );
-  }
-  if (limits.minProteinPer100g !== undefined && actual.proteinPer100g < limits.minProteinPer100g) {
-    reasons.push(
-      `Protein (${actual.proteinPer100g}g/100g) is below minimum (${limits.minProteinPer100g}g/100g)`,
-    );
-  }
-
-  return reasons;
+  return evaluateBuyerPreferences(
+    { ...candidate, vendorName: "" },
+    {
+      dietaryRestrictions: preferences.dietaryRestrictions,
+      excludedAllergens: preferences.excludedAllergens,
+      blockedVendors: [],
+      maxCo2PerKg: null,
+      minDeliveryReliability: null,
+    },
+    preferences.nutrition,
+  );
 }
 
 
@@ -298,55 +819,187 @@ export async function loadHistoricalOrderRecords(organizationId: string): Promis
   return (await syntheticCatalogEnabled()) ? [...historical, ...DEFAULT_MOCK_PREVIOUS_ORDERS] : historical;
 }
 
-export async function getCandidatesByProductType(
-  productType: string,
-  deliveryDate: string,
-  /** The requested name ("lactose-free milk"): products containing all its words come first. */
-  productName?: string,
-): Promise<UnifiedCatalogRecord[]> {
+export type CandidateSearchPlan = {
+  typeNorm: string;
+  nameWords: string[];
+  coreWords: string[];
+  modifierBoostTerms: string[];
+  primaryTermGroups: string[][];
+  fallbackOrStems: string[];
+  scoringQuery: string;
+};
+
+/**
+ * Plans the SQL candidate search terms for `getCandidatesByProductType`.
+ * Builds the primary AND over core (non-generic-modifier) word stems when at least one
+ * core word exists, and a fallback OR over core stems of length >= 4 for multi-core-word queries
+ * without requiring the English productType in the numeric ERP category column.
+ */
+export function planCandidateSearchTerms(productType: string, productName?: string): CandidateSearchPlan {
   const typeNorm = productType.trim().toLowerCase();
   const nameWords = (productName ?? "")
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((w) => w.length > 1);
+  const coreWords = nameWords.filter((w) => !GENERIC_MODIFIERS.has(w));
+  const modifierWords = nameWords.filter((w) => GENERIC_MODIFIERS.has(w));
+  const modifierBoostTerms = [
+    ...new Set(
+      modifierWords.flatMap((w) => {
+        const syn = SYNONYM_LOOKUP.get(w);
+        return syn ? [...syn] : wordStems(w);
+      }),
+    ),
+  ];
+  const primaryWords = coreWords.length > 0 ? coreWords : nameWords;
+  const primaryTermGroups = primaryWords.map((w) => wordStems(w));
+  const fallbackOrStems =
+    coreWords.length > 1
+      ? [...new Set(coreWords.flatMap((w) => wordStems(w)).filter((s) => s.length >= 4))]
+      : [];
+  const scoringQuery = (productName?.trim() || typeNorm).toLowerCase();
+
+  return {
+    typeNorm,
+    nameWords,
+    coreWords,
+    modifierBoostTerms,
+    primaryTermGroups,
+    fallbackOrStems,
+    scoringQuery,
+  };
+}
+
+/** Pure filter for the synthetic catalog fallback (used when Postgres has no imported Valio catalog). */
+export function filterSyntheticCatalogProducts<
+  T extends Pick<UnifiedCatalogRecord, "productType" | "category" | "name">,
+>(products: readonly T[], plan: Pick<CandidateSearchPlan, "typeNorm" | "coreWords">): T[] {
+  if (!plan.typeNorm && plan.coreWords.length === 0) return [];
+  return products.filter((p) => {
+    const pt = p.productType.toLowerCase();
+    const cat = p.category.toLowerCase();
+    const nm = p.name.toLowerCase();
+    if (
+      plan.typeNorm &&
+      (pt.includes(plan.typeNorm) ||
+        (pt.length > 0 && plan.typeNorm.includes(pt)) ||
+        cat.includes(plan.typeNorm) ||
+        nm.includes(plan.typeNorm))
+    ) {
+      return true;
+    }
+    if (plan.coreWords.length > 0) {
+      return plan.coreWords.every((w) => wordStems(w).some((s) => nm.includes(s) || pt.includes(s)));
+    }
+    return false;
+  });
+}
+
+/** Most products priced per requested item (Valio price + availability lookups). */
+const PRICE_LOOKUP_CAP = 40;
+
+/**
+ * Static pre-filter before live lookups: with a requested name, keeps the rows that pass the same
+ * relevance pipeline the selection applies later (best first); without one, the first rows in SQL
+ * (similarity) order. Never more than PRICE_LOOKUP_CAP.
+ */
+export function narrowBeforePricing<T extends { id: string; name: string; category: string; vatCode: string | null }>(
+  rows: readonly T[],
+  productName?: string,
+): T[] {
+  if (!productName?.trim()) return rows.slice(0, PRICE_LOOKUP_CAP);
+  const scored = rows.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode, nameMatchScore: computeNameMatchScore(productName, r.name) }));
+  const score = new Map(
+    selectRelevantCandidates(scored)
+      .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
+      .slice(0, PRICE_LOOKUP_CAP)
+      .map((c) => [c.id, c.nameMatchScore] as const),
+  );
+  return rows.filter((r) => score.has(r.id)).sort((a, b) => score.get(b.id)! - score.get(a.id)!);
+}
+
+export async function getCandidatesByProductType(
+  productType: string,
+  deliveryDate: string,
+  /** The requested name ("lactose-free milk"): products containing all its core words come first. */
+  productName?: string,
+): Promise<UnifiedCatalogRecord[]> {
+  const plan = planCandidateSearchTerms(productType, productName);
   const dbCandidates: UnifiedCatalogRecord[] = [];
 
   if (process.env.DATABASE_URL) {
     try {
       await ensureDatabase();
       const db = getDb();
-      const likePattern = `%${typeNorm.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-      const rows = await db
-        .select({
-          id: valioProduct.id,
-          name: valioProduct.name,
-          brand: valioProduct.brand,
-          vendorName: valioProduct.vendorName,
-          category: valioProduct.category,
-          salesUnit: valioProduct.salesUnit,
-          baseUnit: valioProduct.baseUnit,
-          allowedLotSize: valioProduct.allowedLotSize,
-          gtin: valioProduct.gtin,
-          countryOfOrigin: valioProduct.countryOfOrigin,
-          netWeightKg: valioProduct.netWeightKg,
-          storageTempMin: valioProduct.storageTempMin,
-          storageTempMax: valioProduct.storageTempMax,
-          co2PerKg: valioProduct.co2PerKg,
-          deliveryReliability: valioProduct.deliveryReliability,
-          allergens: valioProduct.allergens,
-          dietaryTags: valioProduct.dietaryTags,
-          labels: valioProduct.labels,
-          nutrition: valioProduct.nutrition,
-        })
+      const escapeLike = (s: string) => `%${s.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      const likePattern = escapeLike(plan.typeNorm);
+      const selectFields = {
+        id: valioProduct.id,
+        name: valioProduct.name,
+        brand: valioProduct.brand,
+        vendorName: valioProduct.vendorName,
+        category: valioProduct.category,
+        vatCode: valioProduct.vatCode,
+        salesUnit: valioProduct.salesUnit,
+        baseUnit: valioProduct.baseUnit,
+        allowedLotSize: valioProduct.allowedLotSize,
+        gtin: valioProduct.gtin,
+        countryOfOrigin: valioProduct.countryOfOrigin,
+        netWeightKg: valioProduct.netWeightKg,
+        storageTempMin: valioProduct.storageTempMin,
+        storageTempMax: valioProduct.storageTempMax,
+        co2PerKg: valioProduct.co2PerKg,
+        deliveryReliability: valioProduct.deliveryReliability,
+        allergens: valioProduct.allergens,
+        dietaryTags: valioProduct.dietaryTags,
+        labels: valioProduct.labels,
+        nutrition: valioProduct.nutrition,
+      };
+      const typeScope = or(ilike(valioProduct.category, likePattern), ilike(valioProduct.searchText, likePattern));
+      const isFoodSql = sql`CASE WHEN LEFT(${valioProduct.category}, 2) NOT IN ('20','30','32','63','64','67','77','90') AND COALESCE(${valioProduct.vatCode}, '') NOT ILIKE '%STANDARD%' THEN 0.25 ELSE 0 END`;
+      const modifierBoostSql =
+        plan.modifierBoostTerms.length > 0
+          ? sql`CASE WHEN ${or(...plan.modifierBoostTerms.map((t) => ilike(valioProduct.name, escapeLike(t))))} THEN 0.2 ELSE 0 END`
+          : sql`0`;
+      const orderBySimilarity = [
+        plan.typeNorm
+          ? sql`${isFoodSql} + ${modifierBoostSql} + (CASE WHEN ${valioProduct.searchText} ILIKE ${likePattern} THEN 0.1 ELSE 0 END) + similarity(${valioProduct.name}, ${plan.scoringQuery}) desc`
+          : sql`${isFoodSql} + ${modifierBoostSql} + similarity(${valioProduct.name}, ${plan.scoringQuery}) desc`,
+        asc(valioProduct.id),
+      ] as const;
+
+      let rows = await db
+        .select(selectFields)
         .from(valioProduct)
         .where(
-          nameWords.length
-            ? and(...nameWords.map((w) => ilike(valioProduct.searchText, `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`)))
-            : or(ilike(valioProduct.category, likePattern), ilike(valioProduct.searchText, likePattern)),
+          plan.primaryTermGroups.length
+            ? and(
+                ...plan.primaryTermGroups.map((stems) =>
+                  stems.length > 1
+                    ? or(...stems.map((s) => ilike(valioProduct.searchText, escapeLike(s))))
+                    : ilike(valioProduct.searchText, escapeLike(stems[0]!)),
+                ),
+              )
+            : typeScope,
         )
-        // Most similar to what was asked first (pg_trgm), not alphabetical.
-        .orderBy(sql`similarity(${valioProduct.searchText}, ${productName ?? typeNorm}) desc`, asc(valioProduct.id))
-        .limit(40);
+        // Most similar to what was asked first (food + modifier hint + pg_trgm on English name), not alphabetical.
+        .orderBy(...orderBySimilarity)
+        .limit(200);
+
+      // If a multi-core-word AND returns 0 rows, fall back to OR over core stems of length >= 4
+      // without requiring the English productType in the numeric category column.
+      if (rows.length === 0 && plan.fallbackOrStems.length > 0) {
+        rows = await db
+          .select(selectFields)
+          .from(valioProduct)
+          .where(or(...plan.fallbackOrStems.map((w) => ilike(valioProduct.searchText, escapeLike(w)))))
+          .orderBy(...orderBySimilarity)
+          .limit(200);
+      }
+
+      // Narrow down with the static data before asking Valio (undisclosed rate limits): only products
+      // whose names can match the request are priced, at most PRICE_LOOKUP_CAP per item.
+      rows = narrowBeforePricing(rows, productName);
 
       if (rows.length > 0) {
         const priceMap = new Map<string, { price: number; vat: number }>();
@@ -412,6 +1065,7 @@ export async function getCandidatesByProductType(
             salesBlock: availInfo?.salesBlock ?? false,
             orderable: availInfo ? availInfo.orderable : null,
             labels: r.labels,
+            vatCode: r.vatCode,
             deliveryReliability: r.deliveryReliability,
             co2PerKg: r.co2PerKg,
             dietaryTags,
@@ -428,17 +1082,7 @@ export async function getCandidatesByProductType(
 
   // Synthetic products only when there is no real catalog (dev without data), never mixed in.
   const useSynthetic = await syntheticCatalogEnabled();
-  const matchingMocks = (useSynthetic ? MOCK_CATALOG_PRODUCTS : []).filter((p) => {
-    const pt = p.productType.toLowerCase();
-    const cat = p.category.toLowerCase();
-    const nm = p.name.toLowerCase();
-    return (
-      pt.includes(typeNorm) ||
-      typeNorm.includes(pt) ||
-      cat.includes(typeNorm) ||
-      nm.includes(typeNorm)
-    );
-  });
+  const matchingMocks = useSynthetic ? filterSyntheticCatalogProducts(MOCK_CATALOG_PRODUCTS, plan) : [];
 
   const mergedById = new Map<string, UnifiedCatalogRecord>();
   for (const item of [...matchingMocks, ...dbCandidates]) {
@@ -521,11 +1165,11 @@ export type SelectionInput = {
 /** Ranks products for every requested item and creates one proposal from the chosen lines. */
 export async function createProposalFromItems(actor: Actor, input: SelectionInput): Promise<ProposalFromPromptResponse> {
   const { extractedItems, deliveryDate, autoResolvePartialStock } = input;
-  const [preferences, previousOrders, rules] = await Promise.all([
-    customerPreferencesFor(actor.organizationId),
+  const [previousOrders, rules] = await Promise.all([
     loadHistoricalOrderRecords(actor.organizationId),
     getEffectiveFor(actor.organizationId, "buyer").then((e) => e.values),
   ]);
+  const preferences = toCustomerPreferences(rules);
   const orderId = "pending";
   const auditTrail: PreparationStep[] = [...(input.initialSteps ?? [])];
   const actorId = actor.userId;
@@ -590,12 +1234,13 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
       })
       .sort((a, b) => b.nameMatchScore - a.nameMatchScore || a.name.localeCompare(b.name));
 
-    // Step 4: Remove entries that don't match Customer preferences
+    // Step 4: Remove entries that don't match buyer preferences (dietary, allergens, blocked vendors,
+    // CO2, delivery reliability).
     const survivingCandidates: CandidateProduct[] = [];
     const removedByPreferences: RemovedCandidate[] = [];
 
     for (const candidate of scoredByName) {
-      const reasons = evaluateCustomerPreferences(candidate, preferences);
+      const reasons = evaluateBuyerPreferences(candidate, rules, preferences.nutrition);
       if (reasons.length > 0) {
         removedByPreferences.push({
           id: candidate.id,
@@ -615,7 +1260,7 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
         actorId,
         actorName,
         eventType: "preferences_filtered",
-        summary: `Filtered candidates for '${item.productName}' against dietary/allergen/nutrition preferences: ${survivingCandidates.length} compliant, ${removedByPreferences.length} excluded.`,
+        summary: `Filtered candidates for '${item.productName}' against dietary/allergen/vendor/CO2/reliability preferences: ${survivingCandidates.length} compliant, ${removedByPreferences.length} excluded.`,
         details: {
           requestedName: item.productName,
           survivingCount: survivingCandidates.length,
@@ -624,14 +1269,15 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
       }),
     );
 
-    // Only products that actually match the request compete (≥ 0.35 and ≥ 70% of the best match).
-    const topMatch = Math.max(0, ...survivingCandidates.map((c) => c.nameMatchScore));
-    const relevant = survivingCandidates.filter((c) => c.nameMatchScore >= Math.max(0.35, topMatch * 0.7));
+    // Only food products (when available) that match the request and dominant categories compete.
+    const recordBy = new Map(rawByType.map((r) => [r.id, r]));
+    const relevant = selectRelevantCandidates(
+      survivingCandidates.map((c) => ({ ...c, vatCode: recordBy.get(c.id)?.vatCode ?? null })),
+    );
     survivingCandidates.splice(0, survivingCandidates.length, ...relevant);
 
     // Step 5: Rank the compliant candidates: price per litre/kg, availability by the date,
     // relevance and history, reliability, CO2, organization preferences (server/purchasing/ranking.ts).
-    const recordBy = new Map(rawByType.map((r) => [r.id, r]));
     const { ranked, unavailable } = rankCandidates(
       survivingCandidates.map((c) => {
         const r = recordBy.get(c.id)!;
@@ -811,6 +1457,18 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     if (!d.conversion) warnings.push(`'${d.requestedProductName}': no packaging data for ${d.selected.name}; ordered ${d.quantity} ${d.unit}. Check the quantity.`);
     else if (!d.conversion.converted) warnings.push(`'${d.requestedProductName}': ${d.conversion.note}`);
   }
+  for (const trace of pipeline) {
+    if (trace.selectedProduct) continue;
+    if (trace.sortedCandidates.length > 0) {
+      warnings.push(`'${trace.extractedItem.productName}': no deliverable product found for ${deliveryDate}.`);
+    } else if (trace.matchedByTypeCount > 0 && trace.removedByPreferences.length === trace.matchedByTypeCount) {
+      warnings.push(
+        `'${trace.extractedItem.productName}': all ${trace.removedByPreferences.length} candidate(s) were excluded by organization preferences.`,
+      );
+    } else {
+      warnings.push(`'${trace.extractedItem.productName}': no matching product found in catalog.`);
+    }
+  }
 
   const suggestedAlternatives: SuggestedAlternative[] = finalDrafts.map((d) => ({
     forProductId: d.selected.id,
@@ -917,16 +1575,205 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
       if (score > (best?.score ?? 0.25)) best = { id: cand.id, score };
     }
   if (best) return best.id;
-  const search = await searchProducts({ q: toTarget, limit: 5, offset: 0, sort: "name" });
-  return search.items[0]?.id ?? null;
+  const search = await searchProducts({ q: toTarget, limit: 20, offset: 0, sort: "name" });
+  let bestSearch: { id: string; score: number } | null = null;
+  for (const item of search.items) {
+    const score = computeNameMatchScore(toTarget, item.name);
+    if (!bestSearch || score > bestSearch.score) bestSearch = { id: item.id, score };
+  }
+  return bestSearch?.id ?? null;
 }
 
 const badRequest = (message: string) => new PurchasingError(400, "INVALID_CHANGE", message);
 
 /**
+ * Recomputes a replacement line's sales-unit quantity from the old line's amount using catalog unit
+ * facts (`toSalesUnits`). The originally requested amount (`trace`) is used only while the line still
+ * has the quantity the selection gave it; after the buyer changed it, the line's current quantity
+ * counts. Falls back to `oldQuantity` plus a warning when the catalog has no content info or the
+ * units are incompatible.
+ */
+export function computeReplacementQuantity(params: {
+  repQuantity?: number;
+  oldQuantity: number;
+  oldUnit: string;
+  oldName: string;
+  newName: string;
+  newSalesUnit: string;
+  /** Pass only when this trace is the line's sole source (not a merge of several requests). */
+  trace?: { parsedQuantity: number; parsedUnit: string; orderedQuantity?: number | null } | null;
+  oldFacts?: UnitFacts | null;
+  newFacts?: UnitFacts | null;
+}): { quantity: number; conversionNote: string | null; warning: string | null } {
+  if (params.repQuantity !== undefined) {
+    return { quantity: params.repQuantity, conversionNote: null, warning: null };
+  }
+
+  let reqAmount = params.oldQuantity;
+  let reqUnit = params.oldUnit;
+  // The original request still describes the line only if converting it again gives the line's
+  // current quantity; a revised quantity ("set to 20") means the current quantity counts.
+  const t = params.trace;
+  const traceUsable = !!t && t.parsedQuantity > 0 && !!t.parsedUnit;
+  const lineUnchanged =
+    traceUsable &&
+    (params.oldFacts
+      ? toSalesUnits(t!.parsedQuantity, t!.parsedUnit, params.oldFacts).quantity === params.oldQuantity
+      : t!.orderedQuantity === undefined || t!.orderedQuantity === null || t!.orderedQuantity === params.oldQuantity);
+  if (params.trace && lineUnchanged) {
+    reqAmount = params.trace.parsedQuantity;
+    reqUnit = params.trace.parsedUnit;
+  } else if (params.oldFacts) {
+    const oldConv = toSalesUnits(params.oldQuantity, params.oldUnit, params.oldFacts);
+    if (oldConv.perSalesUnit) {
+      reqAmount = roundCurrency(params.oldQuantity * oldConv.perSalesUnit.value);
+      reqUnit = oldConv.perSalesUnit.unit;
+    }
+  }
+
+  if (params.newFacts) {
+    const conv = toSalesUnits(reqAmount, reqUnit, params.newFacts);
+    if (conv.converted) {
+      return { quantity: conv.quantity, conversionNote: conv.note, warning: null };
+    }
+    return {
+      quantity: params.oldQuantity,
+      conversionNote: conv.note,
+      warning: `Replaced '${params.oldName}' with '${params.newName}': ${conv.note} Kept ${params.oldQuantity} ${params.newSalesUnit}; check the quantity.`,
+    };
+  }
+
+  return {
+    quantity: params.oldQuantity,
+    conversionNote: null,
+    warning: `Replaced '${params.oldName}' with '${params.newName}': no packaging data for ${params.newName}; kept ${params.oldQuantity} ${params.newSalesUnit}. Check the quantity.`,
+  };
+}
+
+/**
+ * Updates `oldSelection` so `pipeline`, `suggestedAlternatives`, and `warnings` reflect the
+ * revised proposal's lines after swaps, quantity updates, removals, and additions.
+ */
+export function updateSelectionForRevision(params: {
+  oldSelection: ProposalSelection | null;
+  newLines: readonly { productId: string; quantity: number }[];
+  replacements: readonly {
+    fromProductId: string;
+    toProduct: CandidateProduct;
+    quantity: number;
+    conversionNote?: string | null;
+  }[];
+  quantityUpdates: readonly { productId: string; quantity: number }[];
+  removedProductIds: readonly string[];
+  addedItems: readonly { product: CandidateProduct; quantity: number }[];
+  appliedChanges: readonly string[];
+  extraWarnings?: readonly string[];
+}): ProposalSelection | null {
+  const { oldSelection } = params;
+  if (!oldSelection) return null;
+
+  const pipeline: ItemProcurementTrace[] = oldSelection.pipeline.map((trace) => ({
+    ...trace,
+    sortedCandidates: [...trace.sortedCandidates],
+    removedByPreferences: [...trace.removedByPreferences],
+  }));
+
+  for (const rep of params.replacements) {
+    for (const trace of pipeline) {
+      if (trace.selectedProduct?.id === rep.fromProductId) {
+        trace.selectedProduct = rep.toProduct;
+        trace.orderedQuantity = rep.quantity;
+        if (rep.conversionNote !== undefined) {
+          trace.conversionNote = rep.conversionNote;
+        }
+        if (!trace.sortedCandidates.some((c) => c.id === rep.toProduct.id)) {
+          trace.sortedCandidates.unshift(rep.toProduct);
+        }
+      }
+    }
+  }
+
+  for (const qu of params.quantityUpdates) {
+    for (const trace of pipeline) {
+      if (trace.selectedProduct?.id === qu.productId) {
+        trace.orderedQuantity = qu.quantity;
+      }
+    }
+  }
+
+  // Sync orderedQuantity with merged newLines (e.g. when a swap merged two lines of the same productId).
+  const qtyById = new Map(params.newLines.map((l) => [l.productId, l.quantity]));
+  for (const trace of pipeline) {
+    const id = trace.selectedProduct?.id;
+    if (id && qtyById.has(id)) {
+      trace.orderedQuantity = qtyById.get(id)!;
+    }
+  }
+
+  const remainingIds = new Set(params.newLines.map((l) => l.productId));
+  const removedSet = new Set(params.removedProductIds);
+  const filteredPipeline = pipeline.filter((trace) => {
+    const id = trace.selectedProduct?.id;
+    if (!id) return true;
+    if (removedSet.has(id) && !remainingIds.has(id)) return false;
+    return remainingIds.has(id);
+  });
+
+  for (const add of params.addedItems) {
+    const newQty = params.newLines.find((l) => l.productId === add.product.id)?.quantity ?? add.quantity;
+    const existingTrace = filteredPipeline.find((t) => t.selectedProduct?.id === add.product.id);
+    if (existingTrace) {
+      existingTrace.orderedQuantity = newQty;
+    } else {
+      filteredPipeline.push({
+        extractedItem: {
+          productName: add.product.name,
+          productType: add.product.productType,
+          productQuantity: `${newQty} ${add.product.salesUnit}`.trim(),
+        },
+        parsedQuantity: newQty,
+        parsedUnit: add.product.salesUnit,
+        orderedQuantity: newQty,
+        conversionNote: null,
+        matchedByTypeCount: 1,
+        removedByPreferences: [],
+        sortedCandidates: [add.product],
+        selectedProduct: add.product,
+      });
+    }
+  }
+
+  const seenAlt = new Set<string>();
+  const suggestedAlternatives: SuggestedAlternative[] = [];
+  for (const trace of filteredPipeline) {
+    const sel = trace.selectedProduct;
+    if (!sel || seenAlt.has(sel.id)) continue;
+    seenAlt.add(sel.id);
+    suggestedAlternatives.push({
+      forProductId: sel.id,
+      forProductName: sel.name,
+      alternatives: trace.sortedCandidates.filter((c) => c.id !== sel.id),
+    });
+  }
+
+  const warnings = [...oldSelection.warnings, ...(params.extraWarnings ?? [])];
+  if (params.appliedChanges.length > 0) {
+    warnings.push(`Revised by user: ${params.appliedChanges.join("; ")}`);
+  }
+
+  return {
+    ...oldSelection,
+    pipeline: filteredPipeline,
+    suggestedAlternatives,
+    warnings,
+  };
+}
+
+/**
  * Applies changes to a proposal's lines and creates the revised proposal (the old one is
- * cancelled). Accepts structured changes and/or a natural-language `prompt`
- * ("change 469330 to 469386", "set 30 cases of milk", "remove the oat drink").
+ * cancelled unless the revised proposal is BLOCKED by policy). Accepts structured changes
+ * and/or a natural-language `prompt` ("change 469330 to 469386", "set 30 cases of milk",
+ * "remove the oat drink").
  */
 export async function reviseProposalFromRequest(
   actor: Actor,
@@ -948,7 +1795,7 @@ export async function reviseProposalFromRequest(
   if (input.prompt) {
     let parsed: ParsedOrderChange;
     if (isAgentTestMode()) {
-      parsed = parseOrderChangeDeterministically(input.prompt);
+      parsed = parseOrderChangeDeterministically(input.prompt, refs);
     } else {
       requireGeminiApiKey();
       const agent = process.env.DATABASE_URL ? getMastra().getAgentById("order-change-agent") : orderChangeAgent;
@@ -992,16 +1839,47 @@ export async function reviseProposalFromRequest(
     substituteFor: l.substituteFor ?? null,
   }));
   const applied: string[] = [];
-  const preferences = await customerPreferencesFor(actor.organizationId);
+  const extraWarnings: string[] = [];
+  const appliedReplacements: {
+    fromProductId: string;
+    toProduct: CandidateProduct;
+    quantity: number;
+    conversionNote?: string | null;
+  }[] = [];
+  const appliedAdditions: { product: CandidateProduct; quantity: number }[] = [];
+  const rules = (await getEffectiveFor(actor.organizationId, "buyer")).values;
+  const unitFactsMap = await getUnitFacts(
+    [
+      ...new Set([
+        ...lines.map((l) => l.productId),
+        ...replacements.map((r) => r.toProductId),
+      ]),
+    ].filter((id) => !isSyntheticId(id)),
+  );
+
   for (const rep of replacements) {
     const idx = lines.findIndex((l) => l.productId === rep.fromProductId);
     if (idx === -1) throw badRequest(`Product ${rep.fromProductId} is not in the proposal.`);
     const record = await resolveUnifiedCatalogRecord(rep.toProductId, date);
     if (!record) throw badRequest(`Product ${rep.toProductId} has no price for ${date} or is not in the catalog.`);
-    const violations = evaluateCustomerPreferences(record, preferences);
+    const violations = evaluateBuyerPreferences(record, rules);
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const old = lines[idx]!;
-    const quantity = rep.quantity ?? old.quantity;
+    const traces = pipeline.filter((t) => t.selectedProduct?.id === old.productId);
+    const trace = traces[0];
+    const { quantity, conversionNote, warning } = computeReplacementQuantity({
+      repQuantity: rep.quantity,
+      oldQuantity: old.quantity,
+      oldUnit: old.unit,
+      oldName: old.name,
+      newName: record.name,
+      newSalesUnit: record.salesUnit,
+      // A line merged from several requests has no single original amount: use its current quantity.
+      trace: traces.length === 1 ? trace : null,
+      oldFacts: unitFactsMap.get(old.productId) ?? null,
+      newFacts: unitFactsMap.get(record.id) ?? null,
+    });
+    if (warning) extraWarnings.push(warning);
     // A swap stands in for what the line was for originally.
     lines[idx] = {
       productId: record.id,
@@ -1010,6 +1888,20 @@ export async function reviseProposalFromRequest(
       unit: record.salesUnit,
       substituteFor: { requested: old.substituteFor?.requested ?? old.name, reason: "swap" },
     };
+    const toProduct = toCandidateProduct({
+      record,
+      nameMatchScore: trace ? computeNameMatchScore(trace.extractedItem.productName, record.name) : 1,
+      previouslyOrderedProduct: false,
+      previouslyOrderedBrand: false,
+      requestedQuantity: quantity,
+      deliveryDate: date,
+    });
+    appliedReplacements.push({
+      fromProductId: rep.fromProductId,
+      toProduct,
+      quantity,
+      conversionNote,
+    });
     applied.push(`Replaced ${old.name} (${old.productId}) with ${record.name} (${record.id}), ${quantity} ${record.salesUnit}.`);
   }
   for (const qu of quantityUpdates) {
@@ -1027,19 +1919,44 @@ export async function reviseProposalFromRequest(
   for (const add of addItems) {
     const record = await resolveUnifiedCatalogRecord(add.productId, date);
     if (!record) throw badRequest(`Product ${add.productId} has no price for ${date} or is not in the catalog.`);
-    const violations = evaluateCustomerPreferences(record, preferences);
+    const violations = evaluateBuyerPreferences(record, rules);
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const existing = lines.find((l) => l.productId === record.id);
     if (existing) existing.quantity = roundCurrency(existing.quantity + add.quantity);
     else lines.push({ productId: record.id, name: record.name, quantity: add.quantity, unit: record.salesUnit, substituteFor: null });
+    appliedAdditions.push({
+      product: toCandidateProduct({
+        record,
+        nameMatchScore: 1,
+        previouslyOrderedProduct: false,
+        previouslyOrderedBrand: false,
+        requestedQuantity: add.quantity,
+        deliveryDate: date,
+      }),
+      quantity: add.quantity,
+    });
     applied.push(`Added ${add.quantity} ${record.salesUnit} of ${record.name} (${record.id}).`);
   }
   if (input.date && input.date !== current.pricingDate) applied.push(`Moved the delivery date from ${current.pricingDate} to ${input.date}.`);
 
+  const mergedLines = mergeDraftLines(lines);
+
+  const updatedSelection = updateSelectionForRevision({
+    oldSelection: current.selection,
+    newLines: mergedLines,
+    replacements: appliedReplacements,
+    quantityUpdates,
+    removedProductIds: removeProductIds,
+    addedItems: appliedAdditions,
+    appliedChanges: applied,
+    extraWarnings,
+  });
+
   return reviseProposal(actor, proposalId, {
-    lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity, substituteFor: l.substituteFor })),
+    lines: mergedLines.map((l) => ({ productId: l.productId, quantity: l.quantity, substituteFor: l.substituteFor })),
     date,
     appliedChanges: applied,
+    selection: updatedSelection,
   });
 }
 
@@ -1047,8 +1964,9 @@ export async function reviseProposalFromRequest(
 
 /**
  * Good / better / best for a need ("1000 L of lactose-free milk"): candidates from the catalog,
- * the organization's rules (excluded allergens, dietary tags, blocked vendors) applied, the amount
- * converted per product, live prices and availability for the date, then `rankCandidates`.
+ * the organization's rules (excluded allergens, dietary tags, blocked vendors, max CO2, min
+ * reliability) applied, the amount converted per product, live prices and availability for the
+ * date, then `rankCandidates`.
  */
 export async function rankProducts(actor: Actor, req: RankProductsRequest): Promise<RankProductsResponse> {
   const date = req.date ?? todayIsoDate();
@@ -1066,15 +1984,8 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
 
   const excluded: RankProductsResponse["excluded"] = [];
   const allowed: ProductSummary[] = [];
-  const banned = allergenCodes(rules.excludedAllergens);
-  const blocked = new Set(rules.blockedVendors);
   for (const p of found) {
-    const reasons: string[] = [];
-    const hits = p.allergens.filter((a) => banned.has(a.toUpperCase()));
-    if (hits.length) reasons.push(`contains excluded allergens: ${allergenNames(hits).join(", ")}`);
-    const missing = rules.dietaryRestrictions.filter((t) => !p.dietaryTags.includes(t.toLowerCase()));
-    if (missing.length) reasons.push(`not declared ${missing.join(", ")}`);
-    if (blocked.has(p.vendorName)) reasons.push(`vendor ${p.vendorName} is blocked`);
+    const reasons = evaluateBuyerPreferences(p, rules);
     if (reasons.length) excluded.push({ product: p, reasons });
     else allowed.push(p);
   }

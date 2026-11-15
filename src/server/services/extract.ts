@@ -74,12 +74,16 @@ function capitalizeFirst(text: string): string {
 function extractDeterministically(prompt: string): ExtractedProductItem[] {
   const items: ExtractedProductItem[] = [];
   const clauses = prompt
-    .split(/(?:,|;|\band\b|\bplus\b)/i)
+    .split(/(?:(?<!\d),(?!\d)|;|\band\b|\bplus\b)/i)
     .map((s) => s.trim())
     .filter(Boolean);
 
   const qtyOfProductRegex =
-    /(\d+(?:[.,]\d+)?)\s*(kg|g|l|ml|st|ki|pcs|packs?|units?|liters?|litres?|kilograms?)\s+(?:of\s+)?([a-zA-ZäöåÄÖÅ0-9\s%-]+?)(?:\s+(?:delivered|for|by|tomorrow|today|please)\b.*)?$/i;
+    /(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|cl|ml|st|ki|kpl|pcs|pieces?|packs?|cases?|boxes?|cartons?|units?|liters?|litres?|kilograms?)\s+(?:of\s+)?([a-zA-ZäöåÄÖÅ0-9\s%-]+?)(?:\s+(?:delivered|for|by|tomorrow|today|please)\b.*)?$/i;
+  const dashFormatRegex =
+    /^([a-zA-ZäöåÄÖÅ0-9\s%-]+?)\s+-\s+([a-zA-ZäöåÄÖÅ0-9\s%-]+?)\s+-\s+(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|cl|ml|st|ki|kpl|pcs|pieces?|packs?|cases?|boxes?|cartons?|units?|liters?|litres?|kilograms?)$/i;
+  const productThenQtyRegex =
+    /^([a-zA-ZäöåÄÖÅ0-9\s%-]+?)\s+(\d+(?:[.,]\d+)?)\s*(kg|g|l|dl|cl|ml|st|ki|kpl|pcs|pieces?|packs?|cases?|boxes?|cartons?|units?|liters?|litres?|kilograms?)(?:\s+(?:delivered|for|by|tomorrow|today|please)\b.*)?$/i;
 
   for (const clause of clauses) {
     const cleanedClause = clause
@@ -89,11 +93,42 @@ function extractDeterministically(prompt: string): ExtractedProductItem[] {
       )
       .trim();
 
+    const dashMatch = dashFormatRegex.exec(cleanedClause);
+    if (dashMatch) {
+      const rawName = dashMatch[1]!.trim();
+      const rawType = dashMatch[2]!.trim();
+      const amount = dashMatch[3]!.replace(",", ".");
+      const unit = dashMatch[4]!;
+      if (rawName) {
+        items.push({
+          productName: capitalizeFirst(rawName),
+          productType: capitalizeFirst(rawType) || inferProductType(rawName),
+          productQuantity: `${amount} ${unit}`,
+        });
+        continue;
+      }
+    }
+
     const m = qtyOfProductRegex.exec(cleanedClause);
     if (m) {
       const amount = m[1]!.replace(",", ".");
       const unit = m[2]!;
       const rawName = m[3]!.trim();
+      if (rawName) {
+        items.push({
+          productName: capitalizeFirst(rawName),
+          productType: inferProductType(rawName),
+          productQuantity: `${amount} ${unit}`,
+        });
+        continue;
+      }
+    }
+
+    const trailingMatch = productThenQtyRegex.exec(cleanedClause);
+    if (trailingMatch) {
+      const rawName = trailingMatch[1]!.trim();
+      const amount = trailingMatch[2]!.replace(",", ".");
+      const unit = trailingMatch[3]!;
       if (rawName) {
         items.push({
           productName: capitalizeFirst(rawName),

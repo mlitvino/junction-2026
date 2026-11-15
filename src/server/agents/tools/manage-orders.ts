@@ -43,7 +43,7 @@ export const createProposalTool = createTool({
 export const reviseProposalTool = createTool({
   id: "revise-proposal",
   description:
-    "Change a proposal (swap products, change quantities, remove or add lines, move the date). Creates a new, re-priced and re-checked proposal and cancels the old one.",
+    "Change a proposal (swap products, change quantities, remove or add lines, move the date). Creates a new, re-priced and re-checked proposal and cancels the old one; if the new one is BLOCKED by policy, the old one stays usable (previousCancelled: false).",
   inputSchema: ReviseProposalRequestSchema.extend({
     proposalId: z.string().describe("The proposal to change."),
   }),

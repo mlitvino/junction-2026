@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
+import { mergeDraftLines } from "@/server/policy/evaluate";
 import {
   approval,
   organization,
@@ -245,9 +246,10 @@ export async function createProposal(
   request: CreateProposalRequest,
   options: CreateProposalOptions = {},
 ): Promise<Proposal> {
-  const decision = await evaluateDraft(actor.organizationId, request);
+  const mergedRequestLines = mergeDraftLines(request.lines);
+  const decision = await evaluateDraft(actor.organizationId, { ...request, lines: mergedRequestLines });
   const d = await db();
-  const ids = [...new Set(request.lines.map((l) => l.productId))];
+  const ids = [...new Set(mergedRequestLines.map((l) => l.productId))];
   const products = await d
     .select({ id: valioProduct.id, name: valioProduct.name, vendorName: valioProduct.vendorName })
     .from(valioProduct)
@@ -265,7 +267,7 @@ export async function createProposal(
     orderable: l.orderable,
     availableDate: l.availableDate,
     availableQuantity: l.availableQuantity,
-    substituteFor: request.lines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
+    substituteFor: mergedRequestLines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
     priceSnapshotId: l.priceSnapshotId,
     availabilitySnapshotId: l.availabilitySnapshotId,
   }));
@@ -372,8 +374,9 @@ export async function cancelProposal(actor: Actor, id: string): Promise<Proposal
 
 /**
  * Proposals never change: a revision creates a new proposal from the changed lines (priced and
- * checked again) and cancels the old one. Only the creator may revise, and only while it can
- * still be cancelled.
+ * checked again) and cancels the old one unless the revised proposal is BLOCKED by policy
+ * (keeping the old proposal active so a buyer never loses a valid READY proposal).
+ * Only the creator may revise, and only while it can still be cancelled.
  */
 export async function reviseProposal(
   actor: Actor,
@@ -382,6 +385,7 @@ export async function reviseProposal(
     lines: { productId: string; quantity: number; substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null }[];
     date?: string;
     appliedChanges: string[];
+    selection?: ProposalSelection | null;
   },
 ): Promise<ReviseProposalResponse> {
   const old = await getProposal(actor, id);
@@ -399,7 +403,7 @@ export async function reviseProposal(
     },
     {
       source: old.source ?? "buyer",
-      selection: old.selection,
+      selection: next.selection !== undefined ? next.selection : old.selection,
       preparation: [
         {
           action: "proposal.revised",
@@ -409,11 +413,15 @@ export async function reviseProposal(
       ],
     },
   );
-  await (await db()).transaction(async (tx) => {
-    const row = await lockProposal(tx, actor.organizationId, old.id);
-    await cancelLocked(tx, actor, row, `Replaced by revised proposal ${revised.id}.`);
-  });
-  return { previousProposalId: old.id, appliedChanges: next.appliedChanges, proposal: revised };
+  // A BLOCKED revision doesn't replace a usable proposal: the old one stays as it was.
+  const previousCancelled = revised.status !== "BLOCKED";
+  if (previousCancelled) {
+    await (await db()).transaction(async (tx) => {
+      const row = await lockProposal(tx, actor.organizationId, old.id);
+      await cancelLocked(tx, actor, row, `Replaced by revised proposal ${revised.id}.`);
+    });
+  }
+  return { previousProposalId: old.id, previousCancelled, appliedChanges: next.appliedChanges, proposal: revised };
 }
 
 // ---------- Approvals ----------

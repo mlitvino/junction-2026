@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useWorkspace } from "@/client/use-workspace";
+import type { AuditEvent } from "@/shared/contracts/purchasing";
 import {
   PreferencesLayerValuesSchema,
   PreferencesSchema,
@@ -602,17 +603,91 @@ export function Organization() {
 }
 export function Audit() {
   const s = useWorkspace(),
-    [query, setQuery] = useState("");
-  const events = s.local.activities.filter((e) =>
-    `${e.text} ${e.resourceId}`.toLowerCase().includes(query.toLowerCase()),
-  );
+    action = useAction(),
+    [query, setQuery] = useState(""),
+    [serverEvents, setServerEvents] = useState<AuditEvent[]>([]),
+    [auditError, setAuditError] = useState<unknown>(null);
+  const approver = !!s.user?.roles.includes("approver");
+  const fetchAudit = useCallback(async () => {
+    if (store.mock || !s.user) return [];
+    if (approver) return (await store.api.listAudit({ limit: 100 })).items;
+    const results = await Promise.allSettled(
+      s.proposals.slice(0, 10).map((p) => store.api.getProposalAudit(p.id)),
+    );
+    const map = new Map<string, AuditEvent>();
+    for (const res of results)
+      if (res.status === "fulfilled")
+        for (const item of res.value.items) map.set(item.id, item);
+    return [...map.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [approver, s.proposals, s.user]);
+  useEffect(() => {
+    let active = true;
+    fetchAudit()
+      .then((items) => {
+        if (!active) return;
+        setServerEvents(items);
+        setAuditError(null);
+      })
+      .catch((error: unknown) => {
+        if (active) setAuditError(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [fetchAudit]);
+  const events = store.mock
+    ? s.local.activities
+        .filter((e) => `${e.text} ${e.resourceId}`.toLowerCase().includes(query.toLowerCase()))
+        .map((e) => ({
+          id: e.id,
+          at: e.at,
+          text: e.text,
+          resourceId: e.resourceId,
+          detail: e.detail || "No additional details were recorded.",
+        }))
+    : serverEvents
+        .filter((e) =>
+          `${e.summary} ${e.action} ${e.resourceType} ${e.resourceId} ${e.actorName ?? ""}`
+            .toLowerCase()
+            .includes(query.toLowerCase()),
+        )
+        .map((e) => ({
+          id: e.id,
+          at: e.createdAt,
+          text: `${e.summary}${e.actorName ? ` · ${e.actorName} (${e.actorType})` : ` · ${e.actorType}`}`,
+          resourceId: `${e.resourceType}:${e.resourceId}`,
+          detail: `${e.action} · ${JSON.stringify(e.details)}`,
+        }));
   return (
     <Page
       title="Activity & Audit"
-      description="Understand the purchasing decisions observed in this workspace."
+      description={
+        store.mock
+          ? "Understand the purchasing decisions observed in this workspace."
+          : approver
+            ? "Organization-wide audit trail of proposals, approvals, orders, preferences and members."
+            : "Audit trail for your recent purchasing proposals."
+      }
       wide
+      action={
+        !store.mock && (
+          <Button
+            variant="outline"
+            disabled={action.busy}
+            onClick={() =>
+              void action.run(async () => {
+                setServerEvents(await fetchAudit());
+                setAuditError(null);
+              })
+            }
+          >
+            Refresh
+          </Button>
+        )
+      }
     >
       <AdminNavigation />
+      <ErrorMessage error={auditError || action.error} />
       <input
         type="search"
         className={inputClass}
@@ -621,9 +696,15 @@ export function Audit() {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      {!events.length ? (
+      {action.busy && !events.length ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Loading audit trail…
+        </p>
+      ) : !events.length ? (
         <EmptyState title="No matching activity yet">
-          Prepare or review a purchase to start its local activity history.
+          {store.mock
+            ? "Prepare or review a purchase to start its local activity history."
+            : "Prepare or review a purchase to record events in the organization audit log."}
         </EmptyState>
       ) : (
         <div className="space-y-4">
@@ -634,9 +715,7 @@ export function Audit() {
                 {new Date(event.at).toLocaleString("en-GB", { timeZone: "Europe/Helsinki" })}
               </time>
               <EvidenceDisclosure title="Evidence">
-                <p className="break-words">
-                  {event.detail || "No additional details were recorded."}
-                </p>
+                <p className="break-words">{event.detail}</p>
                 <p className="break-all text-caption">Reference: {event.resourceId}</p>
               </EvidenceDisclosure>
             </Panel>
@@ -645,9 +724,11 @@ export function Audit() {
       )}
       <EvidenceDisclosure title="Activity scope">
         <p>
-          This view contains events observed in this browser. Organization-wide audit retrieval,
-          durable event attribution and external agent logs are not connected. It is not a
-          tamper-proof or cryptographically verified ledger.
+          {store.mock
+            ? "This view contains events observed in this browser. Organization-wide audit retrieval, durable event attribution and external agent logs are not connected."
+            : approver
+              ? "Loaded from the insert-only organization audit log (GET /api/audit). Proposals and orders also carry SHA-256 content hashes and Ed25519 signatures."
+              : "Shows recorded proposal audit events (GET /api/proposals/{id}/audit). Organization-wide preference and member audit requires the Approver role."}
         </p>
       </EvidenceDisclosure>
     </Page>

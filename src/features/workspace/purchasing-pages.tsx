@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import type { AuditEvent, OrderReceipt } from "@/shared/contracts/purchasing";
 import {
   Page,
   Panel,
@@ -13,6 +15,7 @@ import {
   ApprovalCard,
   StatusBadge,
   OrderSummary,
+  ReceiptPanel,
   PriceDisplay,
   inputClass,
   displayDate,
@@ -20,29 +23,62 @@ import {
 } from "./ui";
 import { useLoad } from "./use-load";
 
-export function ActivityTimeline({ resourceId }: { resourceId?: string }) {
+export function ActivityTimeline({
+  resourceId,
+  proposalId,
+}: {
+  resourceId?: string;
+  proposalId?: string;
+}) {
   const s = useWorkspace();
-  const events = s.local.activities.filter((a) => !resourceId || a.resourceId === resourceId);
+  const [serverEvents, setServerEvents] = useState<AuditEvent[] | null>(null);
+  const targetProposalId = proposalId ?? resourceId;
+  useEffect(() => {
+    let active = true;
+    if (store.mock || !targetProposalId) return;
+    store.api
+      .getProposalAudit(targetProposalId)
+      .then((res) => {
+        if (active) setServerEvents(res.items);
+      })
+      .catch(() => {
+        if (active) setServerEvents(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [targetProposalId]);
+  const localEvents = s.local.activities
+    .filter((a) => !resourceId || a.resourceId === resourceId)
+    .slice()
+    .reverse();
+  const events =
+    !store.mock && serverEvents && serverEvents.length > 0
+      ? serverEvents.map((e) => ({
+          id: e.id,
+          at: e.createdAt,
+          text: `${e.summary}${e.actorName ? ` · ${e.actorName} (${e.actorType})` : ` · ${e.actorType}`}`,
+        }))
+      : localEvents.map((e) => ({ id: e.id, at: e.at, text: e.text }));
   return (
     <section>
-      <h2 className="section-title mb-5">Activity & lifecycle</h2>
+      <h2 className="section-title mb-5">Activity &amp; lifecycle</h2>
       {events.length ? (
         <ol className="space-y-5 border-l pl-5">
-          {events
-            .slice()
-            .reverse()
-            .map((event) => (
-              <li key={event.id}>
-                <p className="text-sm">{event.text}</p>
-                <time className="mt-1 block text-caption text-muted-foreground" dateTime={event.at}>
-                  {displayDate(event.at)}
-                </time>
-              </li>
-            ))}
+          {events.map((event) => (
+            <li key={event.id}>
+              <p className="text-sm">{event.text}</p>
+              <time className="mt-1 block text-caption text-muted-foreground" dateTime={event.at}>
+                {displayDate(event.at)}
+              </time>
+            </li>
+          ))}
         </ol>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No browser-local activity is available for this record.
+          {store.mock
+            ? "No browser-local activity is available for this record."
+            : "No recorded audit events are available for this record."}
         </p>
       )}
     </section>
@@ -70,10 +106,10 @@ export function ReviewDetail({ id }: { id: string }) {
           <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} reviewLayout />
           <details className="luukku-audit rounded-md border px-6 py-2">
             <summary className="cursor-pointer py-3 text-xs text-muted-foreground">
-              Activity & lifecycle
+              Activity &amp; lifecycle
             </summary>
             <div className="pb-4 pt-2">
-              <ActivityTimeline resourceId={proposal.id} />
+              <ActivityTimeline resourceId={proposal.id} proposalId={proposal.id} />
             </div>
           </details>
         </>
@@ -89,7 +125,8 @@ export function ReviewDetail({ id }: { id: string }) {
 }
 
 export function PurchaseDetail({ id }: { id: string }) {
-  const s = useWorkspace(),
+  const router = useRouter(),
+    s = useWorkspace(),
     error = useLoad(() => store.loadProposal(id), `proposal:${id}`);
   const p = s.proposals.find((p) => p.id === id),
     thread = s.local.threads.find((t) => t.proposals.includes(id));
@@ -101,8 +138,17 @@ export function PurchaseDetail({ id }: { id: string }) {
       <ErrorMessage error={error || s.error} />
       {p ? (
         <>
-          <ApprovalCard proposal={p} threadId={thread?.id} />
-          <ActivityTimeline resourceId={p.id} />
+          <ApprovalCard
+            key={p.id}
+            proposal={p}
+            threadId={thread?.id}
+            onRevised={(next) => {
+              if (next.status !== "BLOCKED" && next.id !== p.id) {
+                router.replace(`/proposals/${next.id}`);
+              }
+            }}
+          />
+          <ActivityTimeline resourceId={p.id} proposalId={p.id} />
         </>
       ) : (
         !error && <p role="status">Loading purchase details…</p>
@@ -207,17 +253,33 @@ export function Orders() {
   );
 }
 export { OrderDetail } from "./order-detail";
-
 export function Checkout({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadOrder(id), `checkout:${id}`),
     order = s.orders.find((o) => o.id === id);
+  const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (!order) return;
+    void store.api
+      .getOrderReceipt(id)
+      .then((res) => {
+        if (active) setReceipt(res);
+      })
+      .catch(() => {
+        /* Receipt remains optional if unavailable. */
+      });
+    return () => {
+      active = false;
+    };
+  }, [id, order]);
   return (
-    <Page title="Checkout" description="Review your recorded purchase and payment availability.">
+    <Page title="Checkout" description="Review your recorded purchase, receipt and payment availability.">
       <ErrorMessage error={error} />
       {order && (
         <>
           <OrderSummary order={order} />
+          {receipt && <ReceiptPanel receipt={receipt} />}
           <Panel>
             <StatusBadge status="PENDING" label="Payment unavailable" />
             <h2 className="section-title mt-4">Online payment is not connected</h2>

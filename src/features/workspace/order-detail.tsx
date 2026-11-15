@@ -1,14 +1,21 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Order, Proposal, ProposalLine } from "@/shared/contracts/purchasing";
+import type {
+  Order,
+  OrderReceipt,
+  Proposal,
+  ProposalLine,
+  ProposalVerification,
+} from "@/shared/contracts/purchasing";
 import type { Thread } from "@/client/workspace/model";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { useAction } from "@/features/procurement/use-action";
-import { ErrorMessage, Panel, StatusBadge, displayDate, eur, store } from "./ui";
+import { ErrorMessage, Panel, ReceiptPanel, StatusBadge, displayDate, eur, store } from "./ui";
 import { useLoad } from "./use-load";
 
 function time(value: string) {
@@ -195,6 +202,33 @@ export function OrderDetail({ id }: { id: string }) {
       : undefined;
   const suppliers = [...new Set(order?.lines.map((line) => line.vendorName).filter(Boolean))];
   const mismatch = related && order && related.hash !== order.proposalHash;
+  const [receiptState, setReceiptState] = useState<{
+    orderId: string;
+    receipt: OrderReceipt | null;
+    verification: ProposalVerification | null;
+  }>({ orderId: id, receipt: null, verification: null });
+  const receipt = receiptState.orderId === id ? receiptState.receipt : null;
+  const verification = receiptState.orderId === id ? receiptState.verification : null;
+  const proposalId = order?.proposalId;
+  useEffect(() => {
+    let active = true;
+    if (!order) return;
+    void Promise.allSettled([
+      store.api.getOrderReceipt(id),
+      !store.mock && proposalId ? store.api.verifyProposal(proposalId) : Promise.resolve(null),
+    ]).then(([receiptRes, verifyRes]) => {
+      if (!active) return;
+      setReceiptState({
+        orderId: id,
+        receipt: receiptRes.status === "fulfilled" ? receiptRes.value : null,
+        verification:
+          verifyRes.status === "fulfilled" && verifyRes.value ? verifyRes.value : null,
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, order, proposalId]);
   return (
     <div className="mx-auto w-full max-w-conversation space-y-6">
       <Link
@@ -329,6 +363,7 @@ export function OrderDetail({ id }: { id: string }) {
               </div>
             </dl>
           </Panel>
+          {receipt && <ReceiptPanel receipt={receipt} />}
           <Panel>
             <h2 className="text-base font-semibold">Order Activity & Lifecycle</h2>
             <OrderLifecycle
@@ -361,6 +396,33 @@ export function OrderDetail({ id }: { id: string }) {
                     <dt className="font-medium text-foreground">Frozen content reference</dt>
                     <dd className="break-all font-mono text-caption">{order.proposalHash}</dd>
                   </div>
+                  {receipt?.proposalSignature && (
+                    <div>
+                      <dt className="font-medium text-foreground">
+                        Ed25519 signature ({receipt.signatureKeyId ?? "server"})
+                      </dt>
+                      <dd className="break-all font-mono text-caption">
+                        {receipt.proposalSignature}
+                      </dd>
+                    </div>
+                  )}
+                  {verification && (
+                    <div>
+                      <dt className="font-medium text-foreground">Integrity check</dt>
+                      <dd>
+                        Hash {verification.hashValid ? "valid" : "mismatch"} · signature{" "}
+                        {verification.signatureValid === null ||
+                        verification.signatureValid === undefined
+                          ? "unsigned"
+                          : verification.signatureValid
+                            ? "valid"
+                            : "invalid"}{" "}
+                        · snapshots verified{" "}
+                        {verification.lines.filter((l) => l.snapshotFound).length}/
+                        {verification.lines.length}
+                      </dd>
+                    </div>
+                  )}
                   <div>
                     <dt className="font-medium text-foreground">Price source</dt>
                     <dd>
