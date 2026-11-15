@@ -1548,7 +1548,7 @@ export async function reviseProposalFromRequest(
     if (idx === -1) throw badRequest(`Product ${rep.fromProductId} is not in the proposal.`);
     const record = await resolveUnifiedCatalogRecord(rep.toProductId, date);
     if (!record) throw badRequest(`Product ${rep.toProductId} has no price for ${date} or is not in the catalog.`);
-    const violations = evaluateBuyerPreferences(record, rules);
+    const violations = evaluateBuyerPreferences(record, rules, nutritionLimitsOf(rules));
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const old = lines[idx]!;
     const traces = pipeline.filter((t) => t.selectedProduct?.id === old.productId);
@@ -1605,7 +1605,7 @@ export async function reviseProposalFromRequest(
   for (const add of addItems) {
     const record = await resolveUnifiedCatalogRecord(add.productId, date);
     if (!record) throw badRequest(`Product ${add.productId} has no price for ${date} or is not in the catalog.`);
-    const violations = evaluateBuyerPreferences(record, rules);
+    const violations = evaluateBuyerPreferences(record, rules, nutritionLimitsOf(rules));
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const existing = lines.find((l) => l.productId === record.id);
     if (existing) existing.quantity = roundCurrency(existing.quantity + add.quantity);
@@ -1648,6 +1648,17 @@ export async function reviseProposalFromRequest(
 
 // ---------- Ranking (POST /api/products/rank) ----------
 
+/** Nutrition per 100 g/ml for products (as the candidate filter reads it); missing data → absent. */
+async function nutritionOf(ids: readonly string[]): Promise<Map<string, UnifiedCatalogRecord["nutrition"]>> {
+  if (!ids.length) return new Map();
+  await ensureDatabase();
+  const rows = await getDb()
+    .select({ id: valioProduct.id, name: valioProduct.name, allergens: valioProduct.allergens, dietaryTags: valioProduct.dietaryTags, nutrition: valioProduct.nutrition })
+    .from(valioProduct)
+    .where(inArray(valioProduct.id, [...ids]));
+  return new Map(rows.map((r) => [r.id, realProductFacts(r).nutrition]));
+}
+
 /** The agent's candidates for a need, as product summaries, most relevant first. */
 async function rankCandidatesFor(q: string, date: string): Promise<ProductSummary[]> {
   const records = await getCandidatesByProductType(inferProductType(q), date, q, { strict: true });
@@ -1673,10 +1684,13 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
     ? await getProductSummaries(req.productIds)
     : await rankCandidatesFor(req.q!, date);
 
+  // Summaries carry no nutrition: load it, so the organization's nutrition limits apply here too.
+  const nutritionBy = await nutritionOf(found.map((p) => p.id));
+  const limits = nutritionLimitsOf(rules);
   const excluded: RankProductsResponse["excluded"] = [];
   const allowed: ProductSummary[] = [];
   for (const p of found) {
-    const reasons = evaluateBuyerPreferences(p, rules);
+    const reasons = evaluateBuyerPreferences({ ...p, nutrition: nutritionBy.get(p.id) ?? null }, rules, limits);
     if (reasons.length) excluded.push({ product: p, reasons });
     else allowed.push(p);
   }
