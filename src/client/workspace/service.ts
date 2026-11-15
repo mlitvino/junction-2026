@@ -1,12 +1,14 @@
-import type { CreateProposalRequest, Proposal } from "@/shared/contracts/purchasing";
+import type {
+  CreateProposalRequest,
+  Proposal,
+  ReviseProposalRequest,
+} from "@/shared/contracts/purchasing";
 import { CreateProposalRequestSchema } from "@/shared/contracts/purchasing";
 import type { Role } from "@/shared/contracts/me";
 import type {
-  Recipe,
   CreateRecipeRequest,
   CreateOrderFromRecipeRequest,
 } from "@/shared/contracts/recipes";
-import type { InventoryItem } from "@/shared/contracts/inventory";
 import type { LayerScope, UpdateLayerRequest } from "@/shared/contracts/preferences";
 import type { CreateMemberRequest } from "@/shared/contracts/organization";
 import { ApiError, type WorkspaceApi } from "./http";
@@ -20,6 +22,30 @@ import {
   type Thread,
   type RestockRun,
 } from "./model";
+import {
+  buildSwapChipText,
+  compatibleQuantity,
+  convertToSalesUnits,
+  findMatchingRecipe,
+  isRevisableProposal,
+  parseQuantityRevisionCommand,
+  parseSwapCommand,
+  recipeNeeds,
+  resolveActiveProposal,
+  type ParsedQuantityRevision,
+} from "./helpers";
+
+export {
+  buildSwapChipText,
+  compatibleQuantity,
+  convertToSalesUnits,
+  findMatchingRecipe,
+  isRevisableProposal,
+  parseQuantityRevisionCommand,
+  parseSwapCommand,
+  recipeNeeds,
+  resolveActiveProposal,
+};
 
 export const today = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -30,22 +56,6 @@ export const today = () =>
   }).format(new Date());
 const stamp = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
-export function compatibleQuantity(quantity: number, from: string, to: string): number | null {
-  const units: Record<string, { group: string; ratio: number }> = {
-    KG: { group: "mass", ratio: 1 },
-    G: { group: "mass", ratio: 0.001 },
-    L: { group: "volume", ratio: 1 },
-    DL: { group: "volume", ratio: 0.1 },
-    CL: { group: "volume", ratio: 0.01 },
-    ML: { group: "volume", ratio: 0.001 },
-  };
-  const a = from.toUpperCase(),
-    b = to.toUpperCase();
-  if (a === b) return quantity;
-  return units[a] && units[b] && units[a].group === units[b].group
-    ? (quantity * units[a].ratio) / units[b].ratio
-    : null;
-}
 function parseQtyUnitQuery(text: string) {
   const unitMatch = text.match(
     /\b(\d+(?:[.,]\d+)?)\s*(kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?)\b/i,
@@ -71,36 +81,6 @@ function parseQtyUnitQuery(text: string) {
     unit,
     query: stripped || text.trim(),
   };
-}
-export function recipeNeeds(recipe: Recipe, servings: number, inventory: InventoryItem[]) {
-  const grouped: Recipe["ingredients"] = [];
-  for (const ingredient of recipe.ingredients) {
-    const previous = grouped.find(
-      (i) =>
-        i.productName.toLowerCase() === ingredient.productName.toLowerCase() &&
-        compatibleQuantity(ingredient.quantity, ingredient.unit, i.unit) !== null,
-    );
-    if (previous)
-      previous.quantity += compatibleQuantity(ingredient.quantity, ingredient.unit, previous.unit)!;
-    else grouped.push({ ...ingredient });
-  }
-  return grouped.map((ingredient) => {
-    const needed = (ingredient.quantity * servings) / recipe.baseServings;
-    const stock = inventory.filter(
-      (i) => i.ingredientName.toLowerCase() === ingredient.productName.toLowerCase(),
-    );
-    const usable = stock.reduce(
-      (sum, i) => sum + (compatibleQuantity(i.quantityInStock, i.unit, ingredient.unit) ?? 0),
-      0,
-    );
-    return {
-      ingredient,
-      needed,
-      stock: usable,
-      shortage: Math.max(0, needed - usable),
-      inventory: stock,
-    };
-  });
 }
 
 export function createWorkspaceService(
@@ -324,19 +304,14 @@ export function createWorkspaceService(
       const id =
         threadId ??
         newThread(source === "Assistant" ? "Purchase request" : `${source} purchase`, source);
-      // Never mark an old version superseded until the server has actually cancelled it.
+      let oldToCancel: Proposal | undefined;
       if (replaceId) {
         const old = await api.getProposal(replaceId);
-        if (["READY", "PENDING_APPROVAL", "APPROVED"].includes(old.status)) {
-          const cancelled = await api.cancelProposal(old.id);
-          putProposal(cancelled);
-          record(
-            "Previous proposal withdrawn after a change",
-            old.id,
-            `Replaced revision in ${id}`,
-          );
-        } else if (old.status === "ORDERED")
+        if (old.status === "ORDERED")
           throw new Error("A recorded order cannot be edited. Start a separate purchase request.");
+        if (["READY", "PENDING_APPROVAL", "APPROVED"].includes(old.status)) {
+          oldToCancel = old;
+        }
       }
       const created = await api.createProposal(body);
       record(
@@ -344,14 +319,30 @@ export function createWorkspaceService(
         created.id,
         `Source: ${source}. Prices excluding VAT. ${created.hash}`,
       );
+      if (oldToCancel && created.status !== "BLOCKED") {
+        const cancelled = await api.cancelProposal(oldToCancel.id);
+        putProposal(cancelled);
+        record(
+          "Previous proposal withdrawn after a change",
+          oldToCancel.id,
+          `Replaced revision in ${id}`,
+        );
+      }
       const current = await syncProposalToThread(
         created,
         id,
         source,
         replaceId
-          ? "A new purchase proposal replaces the previous quantity, products or delivery requirements."
+          ? created.status === "BLOCKED"
+            ? "Change blocked by policy; previous proposal remains active."
+            : "A new purchase proposal replaces the previous quantity, products or delivery requirements."
           : undefined,
       );
+      if (source !== "Recipes" && !replaceId) {
+        editThread(id, (t) => {
+          t.recipeReconciliation = undefined;
+        });
+      }
       answer(
         id,
         current.status === "BLOCKED"
@@ -384,6 +375,16 @@ export function createWorkspaceService(
         );
         current = await syncProposalToThread(result.proposal, id, "Recipes");
       }
+      editThread(id, (t) => {
+        t.recipeChoice = false;
+        t.recipeReconciliation = {
+          recipeId: result.recipeUsed.id,
+          recipeName: result.recipeUsed.name,
+          requestedServings: result.requestedServings,
+          scaleFactor: result.scaleFactor,
+          items: result.ingredientReconciliation,
+        };
+      });
       const covered = result.ingredientReconciliation.filter((r) => r.coveredByInventory).length;
       const ordered = result.ingredientReconciliation.filter((r) => !r.coveredByInventory).length;
       answer(
@@ -409,21 +410,7 @@ export function createWorkspaceService(
   }
   async function toSales(productId: string, quantity: number, unit: string) {
     const product = snapshot.productDetails[productId] ?? (await loadProduct(productId));
-    const direct = compatibleQuantity(quantity, unit, product.salesUnit);
-    if (direct !== null) return direct;
-    if (product.contentPerSalesUnit && product.contentPerSalesUnit.value > 0) {
-      const inContent = compatibleQuantity(quantity, unit, product.contentPerSalesUnit.unit);
-      if (inContent !== null) return Math.ceil(inContent / product.contentPerSalesUnit.value);
-    }
-    const unitInfo = product.units.find((u) => u.unitId === product.salesUnit);
-    if (unitInfo?.sizeInBaseUnits) {
-      const inBase = compatibleQuantity(quantity, unit, product.baseUnit);
-      if (inBase !== null) return Math.ceil(inBase / unitInfo.sizeInBaseUnits);
-      const kg = compatibleQuantity(quantity, unit, "KG");
-      if (kg !== null && product.netWeightKg)
-        return Math.ceil(kg / (product.netWeightKg * unitInfo.sizeInBaseUnits));
-    }
-    return null;
+    return convertToSalesUnits(product, quantity, unit)?.quantity ?? null;
   }
   async function handleRestockSetup(id: string, text: string, current?: Proposal) {
     await loadInventory();
@@ -469,6 +456,88 @@ export function createWorkspaceService(
       t.query = "restocking";
     });
   }
+  async function executeSwap(
+    id: string,
+    current: Proposal,
+    swap: { fromProductId: string; toProductId: string },
+  ) {
+    editThread(id, (t) => {
+      t.stage = "Updating purchase proposal";
+    });
+    const revised = await api.reviseProposal(current.id, { replacements: [swap] });
+    const updated = await syncProposalToThread(
+      revised.proposal,
+      id,
+      thread(id).source,
+      revised.proposal.status === "BLOCKED"
+        ? "Change blocked by policy; previous proposal remains active."
+        : revised.appliedChanges.join(" ") || "Swapped to an alternative product.",
+    );
+    await refresh();
+    answer(
+      id,
+      updated.status === "BLOCKED"
+        ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
+        : `Updated the proposal (${revised.appliedChanges.join(", ") || "swapped product"}). Please review before continuing.`,
+    );
+  }
+  async function executeQuantityRevision(
+    id: string,
+    current: Proposal,
+    parsed: Extract<ParsedQuantityRevision, { recognized: true }>,
+    note: string,
+  ) {
+    const sales = await toSales(parsed.productId, parsed.quantity, parsed.unit);
+    if (sales === null) {
+      answer(
+        id,
+        `I need a verified conversion from ${parsed.unit} to ${parsed.salesUnit ?? "sales units"}. Confirm the quantity below; the current proposal has not changed.`,
+      );
+      editThread(id, (t) => {
+        t.query = parsed.lineName;
+      });
+      return;
+    }
+    const prevProposal: Proposal = current;
+    if (isRevisableProposal(current)) {
+      editThread(id, (t) => {
+        t.stage = "Updating purchase proposal";
+      });
+      const revised = await api.reviseProposal(current.id, {
+        quantityUpdates: [{ productId: parsed.productId, quantity: sales }],
+      });
+      const updated = await syncProposalToThread(
+        revised.proposal,
+        id,
+        thread(id).source,
+        revised.proposal.status === "BLOCKED"
+          ? "Change blocked by policy; previous proposal remains active."
+          : revised.appliedChanges.join(" ") ||
+            "A new purchase proposal replaces the previous quantity.",
+      );
+      await refresh();
+      answer(
+        id,
+        updated.status === "BLOCKED"
+          ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
+          : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${parsed.salesUnit ?? "units"}`}). Please review before continuing.`,
+      );
+      return;
+    }
+    await createPurchase(
+      {
+        lines: prevProposal.lines.map((l) => ({
+          productId: l.productId,
+          quantity: l.productId === parsed.productId ? sales : l.quantity,
+        })),
+        date: prevProposal.pricingDate,
+        note,
+      },
+      id,
+      thread(id).source,
+      prevProposal.id,
+    );
+  }
   async function handleConnectedMessage(id: string, text: string, current?: Proposal) {
     if (!snapshot.user?.roles.includes("buyer")) {
       answer(
@@ -484,58 +553,9 @@ export function createWorkspaceService(
       await handleRestockSetup(id, text, current);
       return;
     }
-    const quantity = Number(
-      text.match(/(?:make|change|set|order|need|buy|to)\s+(?:it\s+)?([\d,.]+)/i)?.[1]?.replace(/,/g, ""),
-    );
-    const quantityOnly =
-      /^(?:make|change|set)(?:\s+it|\s+the quantity)?\s+(?:to\s+)?[\d,.]+(?:\s*(?:kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?))?[.!]?$/i.test(
-        text,
-      );
-    if (current && current.status !== "ORDERED" && quantityOnly && Number.isFinite(quantity) && quantity > 0) {
-      const first = current.lines[0];
-      if (!first) throw new Error("This purchase has no items to revise.");
-      const rawUnit =
-        text.match(/\b(kg|g|dl|cl|ml|litres?|liters?|l|st|kpl|pcs|cases?)\b/i)?.[1]?.toUpperCase() ??
-        first.salesUnit ??
-        "ST";
-      const normalized = /^LIT/.test(rawUnit)
-        ? "L"
-        : /^CASE/.test(rawUnit)
-          ? "KI"
-          : rawUnit === "PCS" || rawUnit === "KPL"
-            ? "ST"
-            : rawUnit;
-      const sales = await toSales(first.productId, quantity, normalized);
-      if (sales === null) {
-        answer(
-          id,
-          `I need a verified conversion from ${normalized} to ${first.salesUnit ?? "sales units"}. Confirm the quantity below; the current proposal has not changed.`,
-        );
-        editThread(id, (t) => {
-          t.query = first.name;
-        });
-        return;
-      }
-      editThread(id, (t) => {
-        t.stage = "Updating purchase proposal";
-      });
-      const revised = await api.reviseProposal(current.id, {
-        quantityUpdates: [{ productId: first.productId, quantity: sales }],
-      });
-      const updated = await syncProposalToThread(
-        revised.proposal,
-        id,
-        thread(id).source,
-        revised.appliedChanges.join(" ") ||
-          "A new purchase proposal replaces the previous quantity.",
-      );
-      await refresh();
-      answer(
-        id,
-        updated.status === "BLOCKED"
-          ? "The updated proposal does not meet purchasing requirements. Review the policy reasons below."
-          : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${first.salesUnit ?? "units"}`}). Please review before continuing.`,
-      );
+    const qtyCheck = parseQuantityRevisionCommand(text, current);
+    if (isRevisableProposal(current) && qtyCheck.recognized) {
+      await executeQuantityRevision(id, current, qtyCheck, text);
       return;
     }
     editThread(id, (t) => {
@@ -544,7 +564,7 @@ export function createWorkspaceService(
     try {
       const result = await api.runAgent({
         message: text,
-        ...(current && current.status !== "ORDERED" ? { proposalId: current.id } : {}),
+        ...(isRevisableProposal(current) ? { proposalId: current.id } : {}),
       });
       if (result.activeProposal) {
         const replaced = !!current && result.activeProposal.id !== current.id;
@@ -555,9 +575,66 @@ export function createWorkspaceService(
           replaced ? "Updated purchase proposal based on your latest request." : undefined,
         );
         if (replaced) await refresh();
+        let nextReconciliation = thread(id).recipeReconciliation;
+        if (synced.source === "recipe") {
+          const [recipes, inventory] = await Promise.all([loadRecipes(), loadInventory()]);
+          const recipeCall = result.toolCalls.find((tc) => /recipe/i.test(tc.toolName));
+          const recipeIdArg =
+            typeof recipeCall?.args.recipeId === "string" ? recipeCall.args.recipeId : undefined;
+          const dishArg =
+            typeof recipeCall?.args.dishQuery === "string" ? recipeCall.args.dishQuery : undefined;
+          const hint = `${recipeIdArg ?? ""} ${dishArg ?? ""} ${synced.note ?? ""} ${synced.selection?.prompt ?? ""} ${text}`.toLowerCase();
+          const matchedRecipe =
+            (recipeIdArg ? recipes.find((r) => r.id === recipeIdArg) : undefined) ??
+            recipes.find(
+              (r) =>
+                hint.includes(r.name.toLowerCase().split(" (")[0]!.toLowerCase()) ||
+                r.tags.some((tag) => hint.includes(tag.replace("-", " "))),
+            );
+          if (matchedRecipe) {
+            const argServings =
+              typeof recipeCall?.args.servings === "number" ? recipeCall.args.servings : undefined;
+            const textServings = Number(
+              `${synced.note ?? ""} ${synced.selection?.prompt ?? ""} ${text}`.match(
+                /(\d+(?:\.\d+)?)\s*(?:portions|servings)/i,
+              )?.[1],
+            );
+            const servings =
+              argServings && argServings > 0
+                ? argServings
+                : textServings > 0
+                  ? textServings
+                  : matchedRecipe.baseServings;
+            const rows = recipeNeeds(matchedRecipe, servings, inventory);
+            nextReconciliation = {
+              recipeId: matchedRecipe.id,
+              recipeName: matchedRecipe.name,
+              requestedServings: servings,
+              scaleFactor: servings / matchedRecipe.baseServings,
+              items: rows.map((row) => ({
+                productName: row.ingredient.productName,
+                productType: row.ingredient.productType,
+                normalizedUnit: row.ingredient.unit.toUpperCase(),
+                aggregatedBaseQuantity: row.ingredient.quantity,
+                totalNeededQuantity: row.needed,
+                inventoryStockQuantity: row.stock,
+                actuallyNeededQuantity: row.shortage,
+                coveredByInventory: row.shortage === 0,
+                matchedInventoryItemIds: row.inventory.map((inv) => inv.id),
+              })),
+            };
+          }
+        } else if (
+          !replaced ||
+          current?.source !== "recipe" ||
+          !/\b(change|swap|replace|make it|set)\b/i.test(text)
+        ) {
+          nextReconciliation = undefined;
+        }
         editThread(id, (t) => {
           t.query = "";
           t.recipeChoice = false;
+          t.recipeReconciliation = nextReconciliation;
         });
         const warnings = synced.selection?.warnings ?? [];
         answer(
@@ -586,13 +663,29 @@ export function createWorkspaceService(
         error instanceof ApiError &&
         (error.status === 503 || error.code === "AGENT_NOT_CONFIGURED" || error.code === "MODEL_FAILED");
       if (!agentUnavailable) throw error;
-      if (/recipe|portions|servings/i.test(text)) {
+      const swapCheck = parseSwapCommand(text, current);
+      if (swapCheck.recognized) {
+        if (swapCheck.swap && isRevisableProposal(current)) {
+          await executeSwap(id, current, swapCheck.swap);
+        } else {
+          answer(
+            id,
+            swapCheck.swap === null
+              ? swapCheck.error
+              : "There is no active revisable proposal to swap products on.",
+          );
+        }
+        return;
+      }
+      const fallbackQty = parseQuantityRevisionCommand(text, current);
+      if (isRevisableProposal(current) && fallbackQty.recognized) {
+        await executeQuantityRevision(id, current, fallbackQty, text);
+        return;
+      }
+      if (/recipe|macaroni|salmon|soup|meal|portions|servings/i.test(text)) {
         const recipes = await loadRecipes();
         const servings = Number(text.match(/(\d+(?:\.\d+)?)\s*(?:portions|servings)/i)?.[1]);
-        const matched = recipes.find((r) =>
-          text.toLowerCase().includes(r.name.toLowerCase().split(" (")[0]!.toLowerCase()) ||
-          r.tags.some((tag) => text.toLowerCase().includes(tag.replace("-", " "))),
-        );
+        const matched = findMatchingRecipe(text, recipes);
         if (matched) {
           await createPurchaseFromRecipe(
             {
@@ -664,7 +757,7 @@ export function createWorkspaceService(
         t.stage = "Understanding your request";
       });
       try {
-        const current = snapshot.proposals.find((p) => p.id === thread(id).proposals.at(-1));
+        const current = resolveActiveProposal(thread(id), snapshot.proposals);
         const mandatory = /milk.protein.free|gluten.free|no.*allergen/i.test(text);
         if (!mandatory && /^(why|what|explain|compare|show.*alternative)/i.test(text)) {
           if (current && /alternative|compare/i.test(text))
@@ -682,14 +775,54 @@ export function createWorkspaceService(
           );
           return;
         }
+        if (!mandatory) {
+          const swapCheck = parseSwapCommand(text, current);
+          if (swapCheck.recognized) {
+            if (swapCheck.swap && isRevisableProposal(current)) {
+              await executeSwap(id, current, swapCheck.swap);
+              return;
+            }
+            if (options.mock) {
+              answer(
+                id,
+                swapCheck.swap === null
+                  ? swapCheck.error
+                  : "There is no active revisable proposal to swap products on.",
+              );
+              return;
+            }
+          }
+        }
         if (!options.mock) {
           await handleConnectedMessage(id, text, current);
           return;
         }
-        if (/recipe|macaroni|meal|portions/i.test(text)) {
-          if (current && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(current.status)) {
+        const hasRecipeKeyword = /\b(?:recipe|macaroni|salmon|soup|meal|portions|servings)\b/i.test(
+          text,
+        );
+        const loadedRecipes =
+          snapshot.recipes.length > 0
+            ? snapshot.recipes
+            : hasRecipeKeyword
+              ? await loadRecipes()
+              : [];
+        const matchedRecipe = findMatchingRecipe(text, loadedRecipes);
+        if (hasRecipeKeyword || matchedRecipe) {
+          if (isRevisableProposal(current)) {
             putProposal(await api.cancelProposal(current.id));
             record("Previous purchase withdrawn for recipe planning", current.id);
+          }
+          if (!mandatory && !thread(id).requirement && matchedRecipe) {
+            const servings = Number(text.match(/(\d+(?:\.\d+)?)\s*(?:portions|servings)/i)?.[1]);
+            await createPurchaseFromRecipe(
+              {
+                recipeId: matchedRecipe.id,
+                ...(servings > 0 ? { servings } : {}),
+                autoResolvePartialStock: true,
+              },
+              id,
+            );
+            return;
           }
           await loadRecipes();
           editThread(id, (t) => {
@@ -725,49 +858,16 @@ export function createWorkspaceService(
           );
           return;
         }
+        const qtyCheck = parseQuantityRevisionCommand(text, current);
+        if (current && current.status !== "ORDERED" && qtyCheck.recognized) {
+          await executeQuantityRevision(id, current, qtyCheck, text);
+          return;
+        }
         const quantity = Number(
           text
             .match(/(?:make|change|set|order|need|buy|to)\s+(?:it\s+)?([\d,.]+)/i)?.[1]
             ?.replace(/,/g, ""),
         );
-        const quantityOnly =
-          /^(?:make|change|set)(?:\s+it|\s+the quantity)?\s+(?:to\s+)?[\d,.]+(?:\s*(?:kg|litres?|liters?|l|st|cases?))?[.!]?$/i.test(
-            text,
-          );
-        if (current && quantityOnly && Number.isFinite(quantity) && quantity > 0) {
-          const unit =
-            text.match(/\b(kg|litres?|liters?|l|st|cases?)\b/i)?.[1]?.toUpperCase() ??
-            current.lines[0]?.salesUnit ??
-            "ST";
-          const normalized = /^LIT/.test(unit) ? "L" : /^CASE/.test(unit) ? "KI" : unit;
-          const first = current.lines[0];
-          if (!first) throw new Error("This purchase has no items to revise.");
-          const sales = await toSales(first.productId, quantity, normalized);
-          if (sales === null) {
-            answer(
-              id,
-              `I need a verified conversion from ${normalized} to ${first.salesUnit}. Please confirm the quantity in sales units using the product picker; the current proposal has not changed.`,
-            );
-            editThread(id, (t) => {
-              t.query = first.name;
-            });
-            return;
-          }
-          await createPurchase(
-            {
-              lines: current.lines.map((l, i) => ({
-                productId: l.productId,
-                quantity: i === 0 ? sales : l.quantity,
-              })),
-              date: current.pricingDate,
-              note: text,
-            },
-            id,
-            thread(id).source,
-            current.id,
-          );
-          return;
-        }
         if (
           current &&
           /prefer|substitut|budget|delivery|needed.by|by monday|by friday/i.test(text)
@@ -811,12 +911,13 @@ export function createWorkspaceService(
           if (sales !== null) {
             editThread(id, (t) => {
               t.stage = "Checking purchasing conditions";
+              t.recipeReconciliation = undefined;
             });
             await createPurchase(
               { lines: [{ productId: p.id, quantity: sales }], date: "2026-11-20", note: text },
               id,
               thread(id).source,
-              current?.status === "ORDERED" ? undefined : current?.id,
+              isRevisableProposal(current) ? current.id : undefined,
             );
             return;
           }
@@ -1041,6 +1142,38 @@ export function createWorkspaceService(
     sendMessage,
     createPurchase,
     createPurchaseFromRecipe,
+    async reviseProposal(proposalId: string, body: ReviseProposalRequest, threadId?: string) {
+      return single(`revise:${proposalId}`, async () => {
+        if (!snapshot.user?.roles.includes("buyer"))
+          throw new Error("A Buyer is required to revise this purchase.");
+        const revised = await api.reviseProposal(proposalId, body);
+        if (threadId) {
+          const updated = await syncProposalToThread(
+            revised.proposal,
+            threadId,
+            thread(threadId).source,
+            revised.proposal.status === "BLOCKED"
+              ? "Change blocked by policy; previous proposal remains active."
+              : revised.appliedChanges.join(" ") || "Updated purchase proposal.",
+          );
+          answer(
+            threadId,
+            updated.status === "BLOCKED"
+              ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
+              : `Updated the proposal (${revised.appliedChanges.join(", ") || "revised items"}). Please review before continuing.`,
+          );
+        } else {
+          putProposal(revised.proposal);
+          record(
+            "Purchase proposal revised",
+            revised.proposal.id,
+            revised.appliedChanges.join(" "),
+          );
+        }
+        await refresh();
+        return revised;
+      });
+    },
     searchProducts,
     loadProduct,
     toSales,

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
+import { buildSwapChipText, resolveActiveProposal } from "@/client/workspace/service";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { useAction } from "@/features/procurement/use-action";
@@ -25,7 +26,10 @@ export function ConversationComposer({ id, welcome = false }: { id?: string; wel
   const key = id ?? "welcome";
   const draft = s.local.drafts[key] ?? "";
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const running = id ? s.local.threads.find((t) => t.id === id)?.working : false;
+  const thread = id ? s.local.threads.find((t) => t.id === id) : undefined;
+  const running = thread?.working ?? false;
+  const activeProposal = thread ? resolveActiveProposal(thread, s.proposals) : undefined;
+  const swapChip = buildSwapChipText(activeProposal);
   const [queued, setQueued] = useState(false);
   function set(text: string) {
     store.draft(key, text);
@@ -34,7 +38,12 @@ export function ConversationComposer({ id, welcome = false }: { id?: string; wel
     <div className={welcome ? "mt-8" : "conversation-composer"}>
       {!welcome && (
         <div className="mb-2 flex gap-2 overflow-x-auto py-1" aria-label="Suggested follow-ups">
-          {["Make it 150 litres", "Why this product?", "Show another alternative"].map((text) => (
+          {[
+            "Make it 150 litres",
+            ...(swapChip ? [swapChip] : []),
+            "Why this product?",
+            "Show another alternative",
+          ].map((text) => (
             <button
               key={text}
               type="button"
@@ -176,8 +185,9 @@ export function AssistantConversation({ id }: { id: string }) {
   const close = useCallback(() => setReview(null), []);
   const thread = s.local.threads.find((t) => t.id === id);
   const recommendation = useRef<HTMLDivElement>(null);
-  const currentProposalId = thread?.proposals.at(-1);
-  const hasCurrentProposal = s.proposals.some((proposal) => proposal.id === currentProposalId);
+  const active = resolveActiveProposal(thread, s.proposals);
+  const currentProposalId = active?.id;
+  const hasCurrentProposal = !!active;
   useEffect(() => {
     if (currentProposalId)
       recommendation.current?.scrollIntoView({ block: "start", behavior: "instant" });
@@ -193,8 +203,7 @@ export function AssistantConversation({ id }: { id: string }) {
         </EmptyState>
       </Page>
     );
-  const activeId = thread.proposals.at(-1),
-    active = s.proposals.find((p) => p.id === activeId);
+  const activeId = active?.id;
   const drawerProposal =
     review === active?.id &&
     !["CANCELLED", "REJECTED", "ORDERED", "EXPIRED"].includes(active.status)
@@ -277,6 +286,50 @@ export function AssistantConversation({ id }: { id: string }) {
             </div>
           </Panel>
         )}
+        {thread.recipeReconciliation && (
+          <Panel>
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="section-title">
+                Recipe inventory check · {thread.recipeReconciliation.recipeName}
+              </h2>
+              <span className="text-caption text-muted-foreground">
+                {thread.recipeReconciliation.requestedServings} portions (
+                {thread.recipeReconciliation.scaleFactor}× base)
+              </span>
+            </div>
+            <div className="mt-4 divide-y text-sm">
+              {thread.recipeReconciliation.items.map((item, idx) => (
+                <div
+                  key={`${item.productName}:${idx}`}
+                  className="flex flex-wrap items-center justify-between gap-3 py-2.5"
+                >
+                  <div>
+                    <p className="font-medium">
+                      {item.productName}{" "}
+                      <span className="font-normal text-muted-foreground">
+                        — {item.productType}
+                      </span>
+                    </p>
+                    <p className="text-caption text-muted-foreground">
+                      Total needed: {Number(item.totalNeededQuantity.toFixed(3))}{" "}
+                      {item.normalizedUnit} · Inventory stock:{" "}
+                      {Number(item.inventoryStockQuantity.toFixed(3))} {item.normalizedUnit}
+                    </p>
+                  </div>
+                  <span
+                    className={`text-caption font-medium tabular-nums ${
+                      item.coveredByInventory ? "text-success" : "text-foreground"
+                    }`}
+                  >
+                    {item.coveredByInventory
+                      ? "Covered by stock"
+                      : `Actually needed: ${Number(item.actuallyNeededQuantity.toFixed(3))} ${item.normalizedUnit}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        )}
         {thread.diff && (
           <div className="rounded-lg bg-secondary p-4 text-sm">
             <h2 className="font-medium">What changed</h2>
@@ -285,7 +338,30 @@ export function AssistantConversation({ id }: { id: string }) {
         )}
         {thread.proposals.map((proposalId, index) => {
           const proposal = s.proposals.find((p) => p.id === proposalId);
-          return proposal && proposalId !== activeId ? (
+          if (!proposal || proposalId === activeId) return null;
+          if (proposal.status === "BLOCKED") {
+            return (
+              <details key={proposalId} className="rounded-lg border border-destructive/40 bg-destructive/5 px-4" open>
+                <summary className="min-h-11 py-3 text-sm font-medium text-destructive">
+                  Proposal v{index + 1} · Change blocked by policy · Previous proposal kept active
+                </summary>
+                <div className="space-y-2 py-3 text-sm">
+                  <p>
+                    Attempted change:{" "}
+                    {proposal.lines.map((l) => `${l.quantity} ${l.salesUnit} ${l.name}`).join(", ")}
+                  </p>
+                  {proposal.decision.reasons.length > 0 && (
+                    <ul className="list-disc space-y-1 pl-5 text-destructive">
+                      {proposal.decision.reasons.map((r, rIdx) => (
+                        <li key={rIdx}>{r.message}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </details>
+            );
+          }
+          return (
             <details key={proposalId} className="rounded-lg border bg-muted px-4">
               <summary className="min-h-11 py-3 text-sm">
                 Proposal v{index + 1} ·{" "}
@@ -297,11 +373,12 @@ export function AssistantConversation({ id }: { id: string }) {
                 <p className="mt-2">This proposal is no longer the current recommendation.</p>
               </div>
             </details>
-          ) : null;
+          );
         })}
         {active && (
           <div ref={recommendation} className="scroll-mt-24">
             <ApprovalCard
+              key={active.id}
               proposal={active}
               threadId={id}
               compact

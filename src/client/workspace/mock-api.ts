@@ -13,6 +13,7 @@ import { LayersResponseSchema, type Preferences } from "@/shared/contracts/prefe
 import { SessionUserSchema, type Role } from "@/shared/contracts/me";
 import { MemberSchema } from "@/shared/contracts/organization";
 import { ApiError, type WorkspaceApi } from "./http";
+import { convertToSalesUnits, recipeNeeds } from "./helpers";
 
 const now = () => new Date().toISOString();
 export const defaultPreferences: Preferences = {
@@ -71,6 +72,9 @@ export const fixtureProducts = [
   product("salt", "Sea salt", "KG", 1),
   product("cream", "Lactose-free cooking cream", "L", null),
   product("oat", "Plant-based whipping alternative", "L", null),
+  product("salmon", "Salmon fillet, fresh", "KG", 1),
+  product("salmon-frozen", "Salmon fillet, frozen Nordic", "KG", 1),
+  product("potatoes", "Potatoes, peeled Finnish", "KG", 1),
 ];
 const unitPrices: Record<string, number> = {
   milk: 1.55,
@@ -82,6 +86,9 @@ const unitPrices: Record<string, number> = {
   salt: 0.8,
   cream: 3.4,
   oat: 3.6,
+  salmon: 14.5,
+  "salmon-frozen": 12.9,
+  potatoes: 1.65,
 };
 fixtureProducts[1] = ProductDetailSchema.parse({
   ...fixtureProducts[1],
@@ -181,6 +188,30 @@ const inventory = [
     linkedProductId: "butter",
     quantityInStock: 1,
     minParLevel: 4,
+    unit: "KG",
+  },
+  {
+    id: "stock-potatoes",
+    ingredientName: "Potatoes",
+    linkedProductId: "potatoes",
+    quantityInStock: 25,
+    minParLevel: 15,
+    unit: "KG",
+  },
+  {
+    id: "stock-cream",
+    ingredientName: "Lactose-free cooking cream",
+    linkedProductId: "cream",
+    quantityInStock: 2,
+    minParLevel: 5,
+    unit: "L",
+  },
+  {
+    id: "stock-salmon",
+    ingredientName: "Salmon fillet",
+    linkedProductId: "salmon",
+    quantityInStock: 0,
+    minParLevel: 5,
     unit: "KG",
   },
 ].map((i) =>
@@ -732,15 +763,444 @@ export function createMockApi(
     async createProposalFromPrompt() {
       throw new ApiError("Prompt ordering requires a connected backend.", 501, "MOCK_UNSUPPORTED");
     },
-    async createProposalFromRecipe() {
-      throw new ApiError(
-        "Automatic recipe ordering requires a connected backend.",
-        501,
-        "MOCK_UNSUPPORTED",
-      );
+    async createProposalFromRecipe(body) {
+      load();
+      current("buyer");
+      const recipeUsed = body.customRecipe
+        ? RecipeSchema.parse({
+            ...body.customRecipe,
+            id: idOf("recipe"),
+            organizationId: data.user.organization.id,
+            source: "customer",
+            description: null,
+            instructions: null,
+            tags: [],
+            updatedAt: now(),
+          })
+        : body.recipeId
+          ? data.recipes.find((r) => r.id === body.recipeId)
+          : body.dishQuery
+            ? data.recipes.find((r) =>
+                `${r.name} ${r.tags.join(" ")}`
+                  .toLowerCase()
+                  .includes(body.dishQuery!.toLowerCase()),
+              )
+            : undefined;
+      if (!recipeUsed) throw new ApiError("Recipe not found.", 404);
+      const requestedServings =
+        body.servings ??
+        (body.batchMultiplier
+          ? recipeUsed.baseServings * body.batchMultiplier
+          : recipeUsed.baseServings);
+      const scaleFactor = requestedServings / recipeUsed.baseServings;
+      const inventoryUsed = body.inventoryOverride
+        ? body.inventoryOverride.map((item, idx) =>
+            InventoryItemSchema.parse({
+              ...item,
+              id: `override-${idx}`,
+              organizationId: data.user.organization.id,
+              updatedAt: now(),
+            }),
+          )
+        : structuredClone(data.inventory);
+
+      const needs = recipeNeeds(recipeUsed, requestedServings, inventoryUsed);
+      const ingredientReconciliation = needs.map((row) => {
+        const totalNeededQuantity = Math.round(row.needed * 1000) / 1000;
+        const inventoryStockQuantity = Math.round(row.stock * 1000) / 1000;
+        const actuallyNeededQuantity = Math.round(row.shortage * 1000) / 1000;
+        return {
+          productName: row.ingredient.productName,
+          productType: row.ingredient.productType,
+          normalizedUnit: row.ingredient.unit.toUpperCase(),
+          aggregatedBaseQuantity: row.ingredient.quantity,
+          totalNeededQuantity,
+          inventoryStockQuantity,
+          actuallyNeededQuantity,
+          coveredByInventory: actuallyNeededQuantity === 0,
+          matchedInventoryItemIds: row.inventory.map((s) => s.id),
+        };
+      });
+
+      const lines: CreateProposalRequest["lines"] = [];
+      const pipeline: NonNullable<Proposal["selection"]>["pipeline"] = [];
+      const suggestedAlternatives: NonNullable<Proposal["selection"]>["suggestedAlternatives"] = [];
+      const extractedItems: NonNullable<Proposal["selection"]>["extractedItems"] = [];
+      const warnings: string[] = [];
+
+      for (const rec of ingredientReconciliation) {
+        if (rec.coveredByInventory) continue;
+        const extractedItem = {
+          productName: rec.productName,
+          productType: rec.productType,
+          productQuantity: `${rec.actuallyNeededQuantity} ${rec.normalizedUnit}`,
+        };
+        extractedItems.push(extractedItem);
+        const words = rec.productName
+          .toLowerCase()
+          .split(/\s+/)
+          .filter((w) => w.length > 2);
+        const matches = fixtureProducts
+          .map((p) => {
+            const hay = `${p.name} ${p.id}`.toLowerCase();
+            const hits = words.filter((w) => hay.includes(w)).length;
+            const exact = hay.includes(rec.productName.toLowerCase());
+            const score = exact ? 0.95 : words.length ? hits / words.length : 0;
+            return { p, score };
+          })
+          .filter((m) => m.score > 0)
+          .sort((a, b) => b.score - a.score || (unitPrices[a.p.id] ?? 999) - (unitPrices[b.p.id] ?? 999));
+
+        const sortedCandidates = matches.map(({ p, score }) => ({
+          id: p.id,
+          name: p.name,
+          productType: rec.productType,
+          category: p.category,
+          brand: p.brand,
+          vendorName: p.vendorName,
+          salesUnit: p.salesUnit,
+          unitPriceEur: unitPrices[p.id] ?? 0,
+          availableQuantity: p.id === "oat" ? null : p.id === "butter" ? 2 : 10000,
+          deliveryReliability: p.deliveryReliability,
+          co2PerKg: p.co2PerKg,
+          dietaryTags: [],
+          allergens: p.allergens,
+          nutrition: null,
+          nameMatchScore: Math.round(score * 100) / 100,
+          previouslyOrderedProduct: false,
+          previouslyOrderedBrand: false,
+          rankScore: Math.round(score * 100) / 100,
+          rankReasons: ["Best mock catalog match"],
+        }));
+        const selectedProduct = sortedCandidates[0] ?? null;
+        const selectedDetail = selectedProduct
+          ? fixtureProducts.find((p) => p.id === selectedProduct.id)
+          : undefined;
+        let orderedQuantity = rec.actuallyNeededQuantity;
+        let conversionNote: string | null = null;
+        if (selectedProduct && selectedDetail) {
+          const converted = convertToSalesUnits(
+            selectedDetail,
+            rec.actuallyNeededQuantity,
+            rec.normalizedUnit,
+          );
+          if (converted) {
+            orderedQuantity = converted.quantity;
+            if (converted.converted) {
+              conversionNote = `${rec.actuallyNeededQuantity} ${rec.normalizedUnit} → ${orderedQuantity} ${selectedDetail.salesUnit}`;
+            }
+          } else {
+            orderedQuantity = ["KI", "ST", "PAK"].includes(selectedDetail.salesUnit.toUpperCase())
+              ? Math.ceil(rec.actuallyNeededQuantity)
+              : rec.actuallyNeededQuantity;
+            conversionNote = `No unit conversion from ${rec.normalizedUnit} to ${selectedDetail.salesUnit}; using ${orderedQuantity} ${selectedDetail.salesUnit}.`;
+            warnings.push(
+              `${selectedDetail.name}: requested ${rec.actuallyNeededQuantity} ${rec.normalizedUnit}, but content per ${selectedDetail.salesUnit} is missing; ordered ${orderedQuantity} ${selectedDetail.salesUnit}.`,
+            );
+          }
+        }
+        pipeline.push({
+          extractedItem,
+          parsedQuantity: rec.actuallyNeededQuantity,
+          parsedUnit: rec.normalizedUnit,
+          orderedQuantity,
+          conversionNote,
+          matchedByTypeCount: sortedCandidates.length,
+          removedByPreferences: [],
+          sortedCandidates,
+          selectedProduct,
+        });
+        if (selectedProduct) {
+          const existing = lines.find((l) => l.productId === selectedProduct.id);
+          if (existing) existing.quantity += orderedQuantity;
+          else lines.push({ productId: selectedProduct.id, quantity: orderedQuantity });
+          if (sortedCandidates.length > 1) {
+            suggestedAlternatives.push({
+              forProductId: selectedProduct.id,
+              forProductName: selectedProduct.name,
+              alternatives: sortedCandidates.slice(1),
+            });
+          }
+        }
+      }
+
+      const selection: NonNullable<Proposal["selection"]> = {
+        prompt: `${recipeUsed.name} (${requestedServings} servings)`,
+        extractedItems,
+        pipeline,
+        suggestedAlternatives,
+        previousOrdersUsed: [],
+        warnings,
+      };
+
+      let proposal: Proposal | null = null;
+      if (lines.length > 0) {
+        const created = await api.createProposal({
+          lines,
+          date: body.deliveryDate ?? "2026-11-20",
+          note: `${recipeUsed.name}, ${requestedServings} portions`,
+        });
+        const stored = data.proposals.find((p) => p.id === created.id);
+        if (stored) {
+          stored.source = "recipe";
+          stored.selection = selection;
+          save();
+          proposal = structuredClone(stored);
+        } else {
+          proposal = created;
+        }
+      }
+
+      return {
+        recipeUsed: structuredClone(recipeUsed),
+        requestedServings,
+        scaleFactor,
+        inventoryUsed,
+        ingredientReconciliation,
+        proposal,
+        selection,
+        message: proposal
+          ? `Prepared purchase proposal for ${recipeUsed.name} (${requestedServings} portions).`
+          : `All ingredients for ${recipeUsed.name} (${requestedServings} portions) are covered by kitchen stock.`,
+      };
     },
-    async reviseProposal() {
-      throw new ApiError("Proposal revision requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    async reviseProposal(proposalId, body) {
+      load();
+      current("buyer");
+      const prev = find(proposalId);
+      if (prev.createdBy !== data.user.id)
+        throw new ApiError("Only the buyer who created this proposal can revise it.", 403, "FORBIDDEN");
+      if (!["READY", "PENDING_APPROVAL", "APPROVED"].includes(prev.status))
+        error("INVALID_STATE", "This purchase can no longer be revised.");
+      if (
+        body.prompt &&
+        !body.replacements?.length &&
+        !body.quantityUpdates?.length &&
+        !body.removeProductIds?.length &&
+        !body.addItems?.length &&
+        !body.date
+      ) {
+        throw new ApiError(
+          "Natural-language proposal revision requires a connected AI model.",
+          503,
+          "AGENT_NOT_CONFIGURED",
+        );
+      }
+
+      const appliedChanges: string[] = [];
+      let nextLines = prev.lines.map((l) => ({
+        productId: l.productId,
+        quantity: l.quantity,
+        ...(l.substituteFor ? { substituteFor: l.substituteFor } : {}),
+      }));
+
+      for (const rep of body.replacements ?? []) {
+        if (!nextLines.some((l) => l.productId === rep.fromProductId))
+          throw new ApiError(
+            `Product ${rep.fromProductId} is not in this proposal.`,
+            400,
+            "INVALID_CHANGE",
+          );
+        if (!fixtureProducts.some((p) => p.id === rep.toProductId) || unitPrices[rep.toProductId] == null)
+          throw new ApiError(`Unknown product ${rep.toProductId}.`, 404, "PRODUCT_NOT_FOUND");
+        nextLines = nextLines.map((l) =>
+          l.productId === rep.fromProductId
+            ? {
+                productId: rep.toProductId,
+                quantity: rep.quantity ?? l.quantity,
+                substituteFor: { requested: rep.fromProductId, reason: "swap" as const },
+              }
+            : l,
+        );
+        appliedChanges.push(`Swapped ${rep.fromProductId} to ${rep.toProductId}`);
+      }
+
+      for (const upd of body.quantityUpdates ?? []) {
+        if (!nextLines.some((l) => l.productId === upd.productId))
+          throw new ApiError(
+            `Product ${upd.productId} is not in this proposal.`,
+            400,
+            "INVALID_CHANGE",
+          );
+        nextLines = nextLines.map((l) =>
+          l.productId === upd.productId ? { ...l, quantity: upd.quantity } : l,
+        );
+        appliedChanges.push(`Set ${upd.productId} quantity to ${upd.quantity}`);
+      }
+
+      if (body.removeProductIds?.length) {
+        for (const remId of body.removeProductIds) {
+          if (!nextLines.some((l) => l.productId === remId))
+            throw new ApiError(`Product ${remId} is not in this proposal.`, 400, "INVALID_CHANGE");
+        }
+        nextLines = nextLines.filter((l) => !body.removeProductIds!.includes(l.productId));
+        appliedChanges.push(`Removed ${body.removeProductIds.join(", ")}`);
+      }
+
+      for (const add of body.addItems ?? []) {
+        if (!fixtureProducts.some((p) => p.id === add.productId) || unitPrices[add.productId] == null)
+          throw new ApiError(`Unknown product ${add.productId}.`, 404, "PRODUCT_NOT_FOUND");
+        const existing = nextLines.find((l) => l.productId === add.productId);
+        if (existing) {
+          existing.quantity += add.quantity;
+        } else {
+          nextLines.push({ productId: add.productId, quantity: add.quantity });
+        }
+        appliedChanges.push(`Added ${add.quantity} × ${add.productId}`);
+      }
+
+      // Deduplicate any lines that now share a productId (e.g. swap onto an existing line)
+      const mergedLines: typeof nextLines = [];
+      for (const line of nextLines) {
+        const existing = mergedLines.find((l) => l.productId === line.productId);
+        if (existing) {
+          existing.quantity = Math.round((existing.quantity + line.quantity) * 100) / 100;
+          if (!existing.substituteFor && line.substituteFor) {
+            existing.substituteFor = line.substituteFor;
+          }
+        } else {
+          mergedLines.push({ ...line });
+        }
+      }
+      nextLines = mergedLines;
+
+      if (!nextLines.length)
+        throw new ApiError("A proposal must contain at least one line.", 400, "INVALID_CHANGE");
+
+      const created = await api.createProposal({
+        lines: nextLines,
+        date: body.date ?? prev.pricingDate,
+        note: prev.note ?? undefined,
+      });
+      if (prev.selection) {
+        const stored = data.proposals.find((p) => p.id === created.id);
+        if (stored) {
+          stored.source = prev.source;
+          const nextSelection = structuredClone(prev.selection);
+          const toCandidate = (productId: string) => {
+            const p = fixtureProducts.find((item) => item.id === productId);
+            if (!p) return null;
+            return {
+              id: p.id,
+              name: p.name,
+              productType: p.category ?? "Food",
+              category: p.category,
+              brand: p.brand,
+              vendorName: p.vendorName,
+              salesUnit: p.salesUnit,
+              unitPriceEur: unitPrices[p.id] ?? 0,
+              availableQuantity: p.id === "oat" ? null : p.id === "butter" ? 2 : 10000,
+              deliveryReliability: p.deliveryReliability,
+              co2PerKg: p.co2PerKg,
+              dietaryTags: [],
+              allergens: p.allergens,
+              nutrition: null,
+              nameMatchScore: 1,
+              previouslyOrderedProduct: false,
+              previouslyOrderedBrand: false,
+              rankScore: 1,
+              rankReasons: ["Selected by user"],
+            };
+          };
+
+          for (const rep of body.replacements ?? []) {
+            const newQty =
+              created.lines.find((l) => l.productId === rep.toProductId)?.quantity ?? rep.quantity;
+            for (const step of nextSelection.pipeline) {
+              if (step.selectedProduct?.id === rep.fromProductId) {
+                const nextCand =
+                  step.sortedCandidates.find((c) => c.id === rep.toProductId) ??
+                  toCandidate(rep.toProductId);
+                if (nextCand) {
+                  step.selectedProduct = nextCand;
+                  if (newQty !== undefined) step.orderedQuantity = newQty;
+                  if (!step.sortedCandidates.some((c) => c.id === nextCand.id)) {
+                    step.sortedCandidates.unshift(nextCand);
+                  }
+                }
+              }
+            }
+          }
+
+          for (const upd of body.quantityUpdates ?? []) {
+            for (const step of nextSelection.pipeline) {
+              if (step.selectedProduct?.id === upd.productId) {
+                step.orderedQuantity = upd.quantity;
+              }
+            }
+          }
+
+          const remainingIds = new Set(created.lines.map((l) => l.productId));
+          const removedSet = new Set(body.removeProductIds ?? []);
+          nextSelection.pipeline = nextSelection.pipeline.filter((step) => {
+            const id = step.selectedProduct?.id;
+            if (!id) return true;
+            if (removedSet.has(id) && !remainingIds.has(id)) return false;
+            return remainingIds.has(id);
+          });
+
+          for (const add of body.addItems ?? []) {
+            const newQty =
+              created.lines.find((l) => l.productId === add.productId)?.quantity ?? add.quantity;
+            const existingStep = nextSelection.pipeline.find(
+              (s) => s.selectedProduct?.id === add.productId,
+            );
+            if (existingStep) {
+              existingStep.orderedQuantity = newQty;
+            } else {
+              const cand = toCandidate(add.productId);
+              if (cand) {
+                nextSelection.pipeline.push({
+                  extractedItem: {
+                    productName: cand.name,
+                    productType: cand.productType,
+                    productQuantity: `${newQty} ${cand.salesUnit}`.trim(),
+                  },
+                  parsedQuantity: newQty,
+                  parsedUnit: cand.salesUnit,
+                  orderedQuantity: newQty,
+                  conversionNote: null,
+                  matchedByTypeCount: 1,
+                  removedByPreferences: [],
+                  sortedCandidates: [cand],
+                  selectedProduct: cand,
+                });
+              }
+            }
+          }
+
+          const seenAlt = new Set<string>();
+          nextSelection.suggestedAlternatives = [];
+          for (const step of nextSelection.pipeline) {
+            const sel = step.selectedProduct;
+            if (!sel || seenAlt.has(sel.id)) continue;
+            seenAlt.add(sel.id);
+            nextSelection.suggestedAlternatives.push({
+              forProductId: sel.id,
+              forProductName: sel.name,
+              alternatives: step.sortedCandidates.filter((c) => c.id !== sel.id),
+            });
+          }
+
+          if (appliedChanges.length > 0) {
+            nextSelection.warnings = [
+              ...nextSelection.warnings,
+              `Revised by user: ${appliedChanges.join("; ")}`,
+            ];
+          }
+          stored.selection = nextSelection;
+          save();
+        }
+      }
+      if (created.status !== "BLOCKED") {
+        await api.cancelProposal(prev.id);
+      }
+      const latest = find(created.id);
+      return {
+        previousProposalId: prev.id,
+        appliedChanges,
+        proposal: structuredClone(latest),
+      };
     },
     async getPendingApprovalCount() {
       load();
@@ -763,8 +1223,28 @@ export function createMockApi(
         "MOCK_UNSUPPORTED",
       );
     },
-    async getOrderReceipt() {
-      throw new ApiError("Order receipt requires a connected backend.", 501, "MOCK_UNSUPPORTED");
+    async getOrderReceipt(orderId) {
+      load();
+      const order = data.orders.find((o) => o.id === orderId);
+      if (!order) throw new ApiError("Order not found.", 404);
+      const proposal = data.proposals.find((p) => p.id === order.proposalId);
+      return {
+        orderId: order.id,
+        proposalId: order.proposalId,
+        issuedAt: order.createdAt,
+        organizationName: data.user.organization.name,
+        orderedByName: order.createdByName,
+        approvedByName: proposal?.approval?.decidedByName ?? null,
+        deliveryDate: proposal?.pricingDate ?? order.createdAt.slice(0, 10),
+        lines: order.lines,
+        totalExclVat: order.totalExclVat,
+        currency: order.currency,
+        status: order.status,
+        source: order.source,
+        proposalHash: order.proposalHash,
+        proposalSignature: proposal?.signature ?? null,
+        signatureKeyId: proposal?.signatureKeyId ?? null,
+      };
     },
     async listAudit() {
       return { items: [] };

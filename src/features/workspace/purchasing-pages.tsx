@@ -20,6 +20,7 @@ import {
   OrderSummary,
   PriceDisplay,
   EvidenceDisclosure,
+  eur,
   inputClass,
   displayDate,
   store,
@@ -188,7 +189,7 @@ export function ReviewDetail({ id }: { id: string }) {
       <ErrorMessage error={s.error} />
       {proposal ? (
         <>
-          <ApprovalCard proposal={proposal} threadId={thread?.id} />
+          <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} />
           {thread ? (
             <Link
               href={`/buyer/conversations/${thread.id}`}
@@ -219,7 +220,8 @@ export function ReviewDetail({ id }: { id: string }) {
   );
 }
 export function PurchaseDetail({ id }: { id: string }) {
-  const s = useWorkspace(),
+  const router = useRouter(),
+    s = useWorkspace(),
     error = useLoad(() => store.loadProposal(id), `proposal:${id}`);
   const p = s.proposals.find((p) => p.id === id),
     thread = s.local.threads.find((t) => t.proposals.includes(id));
@@ -231,7 +233,16 @@ export function PurchaseDetail({ id }: { id: string }) {
       <ErrorMessage error={error || s.error} />
       {p ? (
         <>
-          <ApprovalCard proposal={p} threadId={thread?.id} />
+          <ApprovalCard
+            key={p.id}
+            proposal={p}
+            threadId={thread?.id}
+            onRevised={(next) => {
+              if (next.status !== "BLOCKED" && next.id !== p.id) {
+                router.replace(`/proposals/${next.id}`);
+              }
+            }}
+          />
           <ActivityTimeline resourceId={p.id} proposalId={p.id} />
         </>
       ) : (
@@ -336,6 +347,70 @@ export function Orders() {
     </Page>
   );
 }
+function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
+  return (
+    <Panel className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="section-title">Order receipt</h2>
+          <p className="mt-1 text-caption text-muted-foreground">
+            Order {receipt.orderId} · Issued {displayDate(receipt.issuedAt)}
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => window.print()}>
+          Print receipt
+        </Button>
+      </div>
+      <dl className="grid gap-4 text-sm sm:grid-cols-2 md:grid-cols-4">
+        <div>
+          <dt className="text-muted-foreground">Organization</dt>
+          <dd className="mt-1 font-medium">{receipt.organizationName}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Ordered by</dt>
+          <dd className="mt-1 font-medium">{receipt.orderedByName ?? "Buyer"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Approved by</dt>
+          <dd className="mt-1 font-medium">
+            {receipt.approvedByName ?? "Explicit purchasing policy"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Delivery date</dt>
+          <dd className="mt-1 font-medium">{displayDate(receipt.deliveryDate)}</dd>
+        </div>
+      </dl>
+      <div className="divide-y border-t pt-2 text-sm">
+        {receipt.lines.map((line) => (
+          <div key={line.productId} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+            <div>
+              <p className="font-medium">{line.name}</p>
+              <p className="text-caption text-muted-foreground">
+                {line.quantity} {line.salesUnit ?? "units"} ×{" "}
+                {eur(line.unitPriceExclVat, receipt.currency)} · {line.vendorName}
+              </p>
+            </div>
+            <span className="font-medium tabular-nums">
+              {eur(line.lineTotalExclVat, receipt.currency)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between border-t pt-3">
+        <span className="font-medium">Total (excl. VAT)</span>
+        <PriceDisplay value={receipt.totalExclVat} currency={receipt.currency} />
+      </div>
+      <p className="break-all text-caption text-muted-foreground">
+        Proposal {receipt.proposalId} · Hash {receipt.proposalHash}
+        {receipt.proposalSignature
+          ? ` · Signed (${receipt.signatureKeyId ?? "server"})`
+          : ""}
+      </p>
+    </Panel>
+  );
+}
+
 export function OrderDetail({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadOrder(id), `order:${id}`);
@@ -347,10 +422,10 @@ export function OrderDetail({ id }: { id: string }) {
   const proposalId = order?.proposalId;
   useEffect(() => {
     let active = true;
-    if (store.mock || !order) return;
+    if (!order) return;
     void Promise.allSettled([
       store.api.getOrderReceipt(id),
-      proposalId ? store.api.verifyProposal(proposalId) : Promise.resolve(null),
+      !store.mock && proposalId ? store.api.verifyProposal(proposalId) : Promise.resolve(null),
     ]).then(([receiptRes, verifyRes]) => {
       if (!active) return;
       if (receiptRes.status === "fulfilled") setReceipt(receiptRes.value);
@@ -376,6 +451,7 @@ export function OrderDetail({ id }: { id: string }) {
       {order ? (
         <>
           <OrderSummary order={order} />
+          {receipt && <ReceiptPanel receipt={receipt} />}
           <Panel>
             <dl className="grid gap-5 text-sm sm:grid-cols-3">
               <div>
@@ -467,12 +543,29 @@ export function Checkout({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadOrder(id), `checkout:${id}`),
     order = s.orders.find((o) => o.id === id);
+  const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
+  useEffect(() => {
+    let active = true;
+    if (!order) return;
+    void store.api
+      .getOrderReceipt(id)
+      .then((res) => {
+        if (active) setReceipt(res);
+      })
+      .catch(() => {
+        /* Receipt remains optional if unavailable. */
+      });
+    return () => {
+      active = false;
+    };
+  }, [id, order]);
   return (
-    <Page title="Checkout" description="Review your recorded purchase and payment availability.">
+    <Page title="Checkout" description="Review your recorded purchase, receipt and payment availability.">
       <ErrorMessage error={error} />
       {order && (
         <>
           <OrderSummary order={order} />
+          {receipt && <ReceiptPanel receipt={receipt} />}
           <Panel>
             <StatusBadge status="PENDING" label="Payment unavailable" />
             <h2 className="section-title mt-4">Online payment is not connected</h2>

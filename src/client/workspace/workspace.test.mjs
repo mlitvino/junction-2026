@@ -12,7 +12,7 @@ for (const file of [
   ...readdirSync(join(root, "src/shared/contracts"))
     .filter((f) => f.endsWith(".ts"))
     .map((f) => `src/shared/contracts/${f}`),
-  ...["http", "model", "mock-api", "service"].map((f) => `src/client/workspace/${f}.ts`),
+  ...["http", "model", "helpers", "mock-api", "service"].map((f) => `src/client/workspace/${f}.ts`),
 ]) {
   const destination = join(output, file.replace(/\.ts$/, ".js"));
   mkdirSync(dirname(destination), { recursive: true });
@@ -31,7 +31,14 @@ for (const file of [
 const require = createRequire(import.meta.url);
 const { createMockApi } = require(join(output, "src/client/workspace/mock-api.js"));
 const { createHttpApi, ApiError } = require(join(output, "src/client/workspace/http.js"));
-const { createWorkspaceService, compatibleQuantity, recipeNeeds } = require(
+const {
+  createWorkspaceService,
+  compatibleQuantity,
+  recipeNeeds,
+  buildSwapChipText,
+  parseSwapCommand,
+  resolveActiveProposal,
+} = require(
   join(output, "src/client/workspace/service.js"),
 );
 const { ProposalSchema, OrderSchema } = require(join(output, "src/shared/contracts/purchasing.js"));
@@ -475,4 +482,562 @@ test("connected sendMessage uses /api/agent/run, structured /revise, and ranks o
   await fallbackService.sendMessage(fbThread, "Order 20 kg of cheese");
   assert.equal(fallbackCalls[0][0], "rankProducts");
   assert.equal(state(fallbackService).local.threads[0].query, "cheese");
+});
+
+test("mock createProposalFromRecipe reconciles salmon soup inventory and builds selection pipeline", async () => {
+  const { api } = createMockApi(() => memory());
+  const res = await api.createProposalFromRecipe({
+    recipeId: "salmon-soup",
+    servings: 100,
+    deliveryDate: "2026-11-20",
+  });
+  assert.equal(res.recipeUsed.id, "salmon-soup");
+  assert.equal(res.requestedServings, 100);
+  assert.equal(res.ingredientReconciliation.length, 3);
+  const potatoes = res.ingredientReconciliation.find((r) => r.productName === "Potatoes");
+  assert.equal(potatoes.coveredByInventory, true);
+  assert.equal(potatoes.actuallyNeededQuantity, 0);
+  const salmon = res.ingredientReconciliation.find((r) => r.productName === "Salmon fillet");
+  assert.equal(salmon.actuallyNeededQuantity, 12);
+  const cream = res.ingredientReconciliation.find(
+    (r) => r.productName === "Lactose-free cooking cream",
+  );
+  assert.equal(cream.actuallyNeededQuantity, 2);
+  assert.ok(res.proposal);
+  assert.equal(res.proposal.source, "recipe");
+  assert.equal(res.proposal.lines.length, 2);
+  assert.equal(res.selection.pipeline.length, 2);
+});
+
+test("mock reviseProposal validates targets before cancelling, merges addItems, and rejects prompt-only", async () => {
+  const { api } = createMockApi(() => memory());
+  const p = await api.createProposal({
+    lines: [{ productId: "milk", quantity: 10 }],
+    date: "2026-11-20",
+  });
+
+  await assert.rejects(
+    () =>
+      api.reviseProposal(p.id, {
+        replacements: [{ fromProductId: "nonexistent", toProductId: "milk-alternative" }],
+      }),
+    (err) => err.code === "INVALID_CHANGE",
+  );
+  await assert.rejects(
+    () => api.reviseProposal(p.id, { quantityUpdates: [{ productId: "nonexistent", quantity: 5 }] }),
+    (err) => err.code === "INVALID_CHANGE",
+  );
+  await assert.rejects(
+    () => api.reviseProposal(p.id, { prompt: "Change milk to oat" }),
+    (err) => err.code === "AGENT_NOT_CONFIGURED",
+  );
+  // Original proposal must remain READY when validation fails
+  const stillReady = await api.getProposal(p.id);
+  assert.equal(stillReady.status, "READY");
+
+  // addItems merges quantities for existing productId
+  const revised = await api.reviseProposal(p.id, {
+    addItems: [{ productId: "milk", quantity: 5 }],
+  });
+  assert.equal(revised.proposal.lines.length, 1);
+  assert.equal(revised.proposal.lines[0].quantity, 15);
+  const prevAfter = await api.getProposal(p.id);
+  assert.equal(prevAfter.status, "CANCELLED");
+});
+
+test("connected runAgent populates recipeReconciliation for recipe proposals and clears it on later non-recipe orders", async () => {
+  const storage = memory();
+  const { api: baseApi } = createMockApi(() => memory());
+  const recipeProposal = (
+    await baseApi.createProposalFromRecipe({ recipeId: "salmon-soup", servings: 100 })
+  ).proposal;
+  const nonRecipeProposal = await baseApi.createProposal({
+    lines: [{ productId: "milk", quantity: 20 }],
+    date: "2026-11-20",
+  });
+  let turn = 0;
+  const connectedApi = {
+    ...baseApi,
+    async runAgent() {
+      turn += 1;
+      if (turn === 1) {
+        return {
+          reply: "Prepared salmon soup order.",
+          mode: "deterministic",
+          toolCalls: [
+            {
+              toolName: "createProposalFromRecipe",
+              args: { recipeId: "salmon-soup", servings: 100 },
+              summary: "Created recipe proposal.",
+            },
+          ],
+          activeProposal: recipeProposal,
+        };
+      }
+      return {
+        reply: "Prepared milk order.",
+        mode: "deterministic",
+        toolCalls: [],
+        activeProposal: nonRecipeProposal,
+      };
+    },
+  };
+  const service = createWorkspaceService(connectedApi, { mock: false, storage: () => storage });
+  await service.initialize();
+  const threadId = service.newThread("Recipe then milk");
+
+  await service.sendMessage(threadId, "Order salmon soup for 100 portions");
+  const afterRecipe = state(service).local.threads.find((t) => t.id === threadId);
+  assert.ok(afterRecipe.recipeReconciliation);
+  assert.equal(afterRecipe.recipeReconciliation.recipeId, "salmon-soup");
+  assert.equal(afterRecipe.recipeReconciliation.requestedServings, 100);
+
+  await service.sendMessage(threadId, "Order 20 L of milk");
+  const afterMilk = state(service).local.threads.find((t) => t.id === threadId);
+  assert.equal(afterMilk.recipeReconciliation, undefined);
+});
+
+test("F1: swap chip round-trip handles commas and 'for' in product names, 503 fallback, and unresolvable swaps", async () => {
+  // Pure helper test with commas and 'for' in product names
+  const syntheticProposal = {
+    id: "p-1",
+    status: "READY",
+    lines: [
+      {
+        productId: "butter-cook",
+        name: "Butter for cooking, 500 g",
+        quantity: 2,
+        salesUnit: "ST",
+        unitPriceExclVat: 3,
+        lineTotalExclVat: 6,
+      },
+    ],
+    selection: {
+      prompt: "test",
+      extractedItems: [],
+      pipeline: [
+        {
+          extractedItem: { productName: "Butter", productType: "Dairy", productQuantity: "2 ST" },
+          parsedQuantity: 2,
+          parsedUnit: "ST",
+          orderedQuantity: 2,
+          conversionNote: null,
+          matchedByTypeCount: 2,
+          removedByPreferences: [],
+          sortedCandidates: [
+            { id: "butter-cook", name: "Butter for cooking, 500 g" },
+            { id: "milk-cheese", name: "6 x Milk for cheese, 1 L" },
+          ],
+          selectedProduct: { id: "butter-cook", name: "Butter for cooking, 500 g" },
+        },
+      ],
+      suggestedAlternatives: [],
+      previousOrdersUsed: [],
+      warnings: [],
+    },
+  };
+  const chip = buildSwapChipText(syntheticProposal);
+  assert.equal(chip, "Change Butter for cooking, 500 g to 6 x Milk for cheese, 1 L");
+  const parsedChip = parseSwapCommand(chip, syntheticProposal);
+  assert.deepEqual(parsedChip, {
+    recognized: true,
+    swap: { fromProductId: "butter-cook", toProductId: "milk-cheese" },
+  });
+
+  // Mock mode round-trip with salmon-soup proposal
+  const { api } = createMockApi(() => memory());
+  const service = createWorkspaceService(api, { mock: true, storage: () => memory() });
+  await service.initialize();
+  const threadId = service.newThread("Salmon swap");
+  await service.sendMessage(threadId, "Order salmon soup for 100 servings");
+  const firstThread = state(service).local.threads.find((t) => t.id === threadId);
+  const firstProposal = resolveActiveProposal(firstThread, state(service).proposals);
+  assert.ok(firstProposal);
+  const realChip = buildSwapChipText(firstProposal);
+  assert.equal(realChip, "Change Salmon fillet, frozen Nordic to Salmon fillet, fresh");
+
+  await service.sendMessage(threadId, realChip);
+  const afterSwapThread = state(service).local.threads.find((t) => t.id === threadId);
+  const afterSwap = resolveActiveProposal(afterSwapThread, state(service).proposals);
+  assert.notEqual(afterSwap.id, firstProposal.id);
+  assert.ok(afterSwap.lines.some((l) => l.productId === "salmon"));
+  assert.ok(!afterSwap.lines.some((l) => l.productId === "salmon-frozen"));
+  assert.equal(afterSwap.lines.length, firstProposal.lines.length);
+  // Nit 2: selection pipeline & warnings updated consistently
+  const salmonStep = afterSwap.selection.pipeline.find((s) => s.selectedProduct?.id === "salmon");
+  assert.ok(salmonStep);
+  assert.ok(afterSwap.selection.warnings.some((w) => w.startsWith("Revised by user:")));
+
+  // Unresolvable swap must not fall through to quantity heuristics
+  await service.sendMessage(threadId, "Change Salmon fillet, fresh to 6 x Unknown cheese");
+  const afterBadSwapThread = state(service).local.threads.find((t) => t.id === threadId);
+  const activeAfterBad = resolveActiveProposal(afterBadSwapThread, state(service).proposals);
+  assert.equal(activeAfterBad.id, afterSwap.id);
+  assert.match(afterBadSwapThread.messages.at(-1).text, /Could not find alternative/i);
+
+  // Connected 503 fallback still executes structured reviseProposal for swap
+  const { api: baseApi } = createMockApi(() => memory());
+  let reviseCalled = 0;
+  let expectedProposalId = "";
+  const connected503Api = {
+    ...baseApi,
+    async runAgent() {
+      throw new ApiError("Agent key missing", 503, "AGENT_NOT_CONFIGURED");
+    },
+    async createProposalFromRecipe(body) {
+      const res = await baseApi.createProposalFromRecipe(body);
+      expectedProposalId = res.proposal.id;
+      return res;
+    },
+    async reviseProposal(id, body) {
+      reviseCalled += 1;
+      assert.equal(id, expectedProposalId);
+      assert.deepEqual(body, {
+        replacements: [{ fromProductId: "salmon-frozen", toProductId: "salmon" }],
+      });
+      return baseApi.reviseProposal(id, body);
+    },
+  };
+  const connService = createWorkspaceService(connected503Api, {
+    mock: false,
+    storage: () => memory(),
+  });
+  await connService.initialize();
+  const connThread = connService.newThread("Connected swap");
+  // Seed the thread with the recipe proposal via 503 fallback first
+  await connService.sendMessage(connThread, "Order salmon soup for 100 servings");
+  await connService.sendMessage(
+    connThread,
+    "Change Salmon fillet, frozen Nordic to Salmon fillet, fresh",
+  );
+  assert.equal(reviseCalled, 1);
+  const connAfterSwap = resolveActiveProposal(
+    state(connService).local.threads.find((t) => t.id === connThread),
+    state(connService).proposals,
+  );
+  assert.ok(connAfterSwap.lines.some((l) => l.productId === "salmon"));
+});
+
+test("F2: BLOCKED revision keeps original proposal active and allows follow-up revisions", async () => {
+  const { api } = createMockApi(() => memory());
+  const layers = await api.getLayers();
+  await api.saveLayer("base", {
+    values: { ...layers.base.values, maxOrderValue: 200 },
+    locked: layers.base.locked,
+  });
+
+  const service = createWorkspaceService(api, { mock: true, storage: () => memory() });
+  await service.initialize();
+  const threadId = service.newThread("Budget cap");
+
+  await service.sendMessage(threadId, "Order 10 litres of milk");
+  const t1 = state(service).local.threads.find((t) => t.id === threadId);
+  const p1 = resolveActiveProposal(t1, state(service).proposals);
+  assert.ok(p1);
+  assert.ok(p1.status === "READY" || p1.status === "PENDING_APPROVAL");
+
+  // Revise to 200 litres (310 EUR > 200 EUR maxOrderValue) -> BLOCKED
+  await service.sendMessage(threadId, "Make it 200 litres");
+  const t2 = state(service).local.threads.find((t) => t.id === threadId);
+  assert.equal(t2.proposals.length, 2);
+  const p2 = state(service).proposals.find((p) => p.id === t2.proposals[1]);
+  assert.equal(p2.status, "BLOCKED");
+
+  // Original proposal must NOT be cancelled and must remain the active proposal
+  const p1Reloaded = await api.getProposal(p1.id);
+  assert.notEqual(p1Reloaded.status, "CANCELLED");
+  const activeAfterBlock = resolveActiveProposal(t2, state(service).proposals);
+  assert.equal(activeAfterBlock.id, p1.id);
+
+  // Follow-up revision against the active original proposal succeeds
+  await service.sendMessage(threadId, "Make it 20 litres");
+  const t3 = state(service).local.threads.find((t) => t.id === threadId);
+  const activeAfterFollowUp = resolveActiveProposal(t3, state(service).proposals);
+  assert.notEqual(activeAfterFollowUp.id, p1.id);
+  assert.notEqual(activeAfterFollowUp.id, p2.id);
+  assert.equal(activeAfterFollowUp.lines[0].quantity, 20);
+});
+
+test("F3: recipe mock normalizes units, aggregates duplicates, converts to sales units, and detects salmon soup in chat", async () => {
+  const { api } = createMockApi(() => memory());
+  // 1) Duplicate butter lines (150 G + 50 G) + 500 G butter vs 1 KG stock -> covered by stock (0 needed),
+  //    and 8 KG Lighter pizza cheese (0 stock, 4 KG/KI) -> 2 KI (not 8 KI)
+  const res = await api.createProposalFromRecipe({
+    customRecipe: {
+      name: "Butter & cheese test",
+      baseServings: 10,
+      ingredients: [
+        { productName: "Lactose-free kitchen butter", productType: "Butter", quantity: 150, unit: "G" },
+        { productName: "Lactose-free kitchen butter", productType: "Butter", quantity: 50, unit: "G" },
+        { productName: "Lighter pizza cheese", productType: "Cheese", quantity: 8, unit: "KG" },
+      ],
+    },
+    servings: 10,
+    inventoryOverride: [
+      {
+        ingredientName: "Lactose-free kitchen butter",
+        productType: "Butter",
+        linkedProductId: "butter",
+        quantityInStock: 1,
+        minParLevel: 0,
+        unit: "KG",
+        location: "Kitchen",
+      },
+    ],
+  });
+  const butterRec = res.ingredientReconciliation.find(
+    (r) => r.productName === "Lactose-free kitchen butter",
+  );
+  assert.ok(butterRec);
+  assert.equal(butterRec.totalNeededQuantity, 200);
+  assert.equal(butterRec.inventoryStockQuantity, 1000);
+  assert.equal(butterRec.actuallyNeededQuantity, 0);
+  assert.equal(butterRec.coveredByInventory, true);
+
+  assert.ok(res.proposal);
+  assert.equal(res.proposal.lines.length, 1);
+  assert.equal(res.proposal.lines[0].productId, "cheese");
+  assert.equal(res.proposal.lines[0].quantity, 2);
+  assert.equal(res.proposal.lines[0].salesUnit, "KI");
+
+  // 2) Mock sendMessage detects "Order salmon soup for 100 servings"
+  const service = createWorkspaceService(api, { mock: true, storage: () => memory() });
+  await service.initialize();
+  const threadId = service.newThread("Salmon soup chat");
+  await service.sendMessage(threadId, "Order salmon soup for 100 servings");
+  const t = state(service).local.threads.find((x) => x.id === threadId);
+  assert.ok(t.recipeReconciliation);
+  assert.equal(t.recipeReconciliation.recipeId, "salmon-soup");
+  assert.equal(t.recipeReconciliation.requestedServings, 100);
+  const p = resolveActiveProposal(t, state(service).proposals);
+  assert.ok(p);
+  assert.equal(p.source, "recipe");
+});
+
+test("FE1: parseSwapCommand ignores quantity changes and per-line quantity revision works in mock and 503 fallback", async () => {
+  const butterAndMilkProposal = {
+    id: "p-fe1",
+    status: "READY",
+    lines: [
+      {
+        productId: "butter",
+        name: "Lactose-free kitchen butter",
+        quantity: 2,
+        salesUnit: "ST",
+        unitPriceExclVat: 3.1,
+        lineTotalExclVat: 6.2,
+      },
+      {
+        productId: "milk",
+        name: "Lactose-free low-fat milk",
+        quantity: 10,
+        salesUnit: "L",
+        unitPriceExclVat: 1.55,
+        lineTotalExclVat: 15.5,
+      },
+    ],
+    selection: {
+      prompt: "test",
+      extractedItems: [],
+      pipeline: [
+        {
+          extractedItem: { productName: "Salmon", productType: "Fish", productQuantity: "10 kg" },
+          parsedQuantity: 10,
+          parsedUnit: "KG",
+          orderedQuantity: 10,
+          conversionNote: null,
+          matchedByTypeCount: 2,
+          removedByPreferences: [],
+          sortedCandidates: [
+            { id: "salmon", name: "Salmon fillet, fresh" },
+            { id: "salmon-frozen", name: "Salmon fillet, frozen Nordic" },
+          ],
+          selectedProduct: { id: "salmon", name: "Salmon fillet, fresh" },
+        },
+      ],
+      suggestedAlternatives: [],
+      previousOrdersUsed: [],
+      warnings: [],
+    },
+  };
+
+  assert.deepEqual(parseSwapCommand("Change it to 150 litres", butterAndMilkProposal), {
+    recognized: false,
+  });
+  assert.deepEqual(parseSwapCommand("Change the quantity to 200 litres", butterAndMilkProposal), {
+    recognized: false,
+  });
+  assert.deepEqual(
+    parseSwapCommand("Change Lactose-free low-fat milk to 200 litres", butterAndMilkProposal),
+    { recognized: false },
+  );
+  // Word-boundary check: 'it' must not match inside 'kitchen'
+  assert.deepEqual(parseSwapCommand("Change it to Oat drink", butterAndMilkProposal), {
+    recognized: false,
+  });
+  // Round-trip swap still works
+  const salmonProposal = {
+    ...butterAndMilkProposal,
+    lines: [
+      {
+        productId: "salmon",
+        name: "Salmon fillet, fresh",
+        quantity: 2,
+        salesUnit: "KI",
+        unitPriceExclVat: 10,
+        lineTotalExclVat: 20,
+      },
+    ],
+  };
+  assert.deepEqual(
+    parseSwapCommand("Change Salmon fillet, fresh to Salmon fillet, frozen Nordic", salmonProposal),
+    {
+      recognized: true,
+      swap: { fromProductId: "salmon", toProductId: "salmon-frozen" },
+    },
+  );
+
+  // Mock mode: all three quantity commands update quantities without swap errors
+  const { api } = createMockApi(() => memory());
+  const service = createWorkspaceService(api, { mock: true, storage: () => memory() });
+  await service.initialize();
+  const threadId = service.newThread("FE1 mock");
+  await service.createPurchase(
+    {
+      lines: [
+        { productId: "butter", quantity: 2 },
+        { productId: "milk", quantity: 10 },
+      ],
+      date: "2026-11-20",
+    },
+    threadId,
+    "Assistant",
+  );
+
+  await service.sendMessage(threadId, "Change it to 150 litres");
+  const afterIt = resolveActiveProposal(
+    state(service).local.threads.find((t) => t.id === threadId),
+    state(service).proposals,
+  );
+  assert.equal(afterIt.lines[0].quantity, 2); // butter can't convert 150 L -> ST, so stays 2 and asks confirmation
+  assert.doesNotMatch(
+    state(service).local.threads.find((t) => t.id === threadId).messages.at(-1).text,
+    /Could not find alternative/i,
+  );
+
+  await service.sendMessage(threadId, "Change Nordic lactose-free milk, 1 L to 200 litres");
+  const afterMilk = resolveActiveProposal(
+    state(service).local.threads.find((t) => t.id === threadId),
+    state(service).proposals,
+  );
+  assert.equal(afterMilk.lines.find((l) => l.productId === "milk").quantity, 200);
+  assert.equal(afterMilk.lines.find((l) => l.productId === "butter").quantity, 2);
+
+  // Single-line milk proposal: 'Change it to 150 litres' and 'Change the quantity to 200 litres'
+  const singleThread = service.newThread("FE1 single line");
+  await service.sendMessage(singleThread, "Order 10 litres of milk");
+  await service.sendMessage(singleThread, "Change it to 150 litres");
+  const pAfter150 = resolveActiveProposal(
+    state(service).local.threads.find((t) => t.id === singleThread),
+    state(service).proposals,
+  );
+  assert.equal(pAfter150.lines[0].quantity, 150);
+
+  await service.sendMessage(singleThread, "Change the quantity to 200 litres");
+  const pAfter200 = resolveActiveProposal(
+    state(service).local.threads.find((t) => t.id === singleThread),
+    state(service).proposals,
+  );
+  assert.equal(pAfter200.lines[0].quantity, 200);
+
+  // Connected 503 fallback: 'Change Lactose-free low-fat milk to 200 litres' calls structured reviseProposal
+  const { api: baseApi } = createMockApi(() => memory());
+  const reviseBodies = [];
+  const connected503Api = {
+    ...baseApi,
+    async runAgent() {
+      throw new ApiError("Agent key missing", 503, "AGENT_NOT_CONFIGURED");
+    },
+    async reviseProposal(id, body) {
+      reviseBodies.push(body);
+      return baseApi.reviseProposal(id, body);
+    },
+  };
+  const connService = createWorkspaceService(connected503Api, {
+    mock: false,
+    storage: () => memory(),
+  });
+  await connService.initialize();
+  const connThread = connService.newThread("FE1 503 fallback");
+  await connService.createPurchase(
+    {
+      lines: [
+        { productId: "butter", quantity: 2 },
+        { productId: "milk", quantity: 10 },
+      ],
+      date: "2026-11-20",
+    },
+    connThread,
+    "Assistant",
+  );
+  await connService.sendMessage(connThread, "Change Nordic lactose-free milk, 1 L to 200 litres");
+  assert.deepEqual(reviseBodies[0], {
+    quantityUpdates: [{ productId: "milk", quantity: 200 }],
+  });
+  const connActive = resolveActiveProposal(
+    state(connService).local.threads.find((t) => t.id === connThread),
+    state(connService).proposals,
+  );
+  assert.equal(connActive.lines.find((l) => l.productId === "milk").quantity, 200);
+  assert.equal(connActive.lines.find((l) => l.productId === "butter").quantity, 2);
+});
+
+test("FE2: createPurchase with replaceId keeps old proposal active when replacement is BLOCKED", async () => {
+  const { api } = createMockApi(() => memory());
+  const layers = await api.getLayers();
+  await api.saveLayer("base", {
+    values: { ...layers.base.values, maxOrderValue: 200 },
+    locked: layers.base.locked,
+  });
+
+  const service = createWorkspaceService(api, { mock: true, storage: () => memory() });
+  await service.initialize();
+  const threadId = service.newThread("FE2 createPurchase replace");
+
+  await service.sendMessage(threadId, "Order 10 litres of milk");
+  const t1 = state(service).local.threads.find((t) => t.id === threadId);
+  const p1 = resolveActiveProposal(t1, state(service).proposals);
+  assert.ok(p1);
+  assert.notEqual(p1.status, "CANCELLED");
+
+  // Follow-up order over maxOrderValue (5000 L = 7750 EUR > 200 EUR) -> BLOCKED
+  await service.sendMessage(threadId, "Order 5000 litres of milk");
+  const t2 = state(service).local.threads.find((t) => t.id === threadId);
+  assert.equal(t2.proposals.length, 2);
+  const p2 = state(service).proposals.find((p) => p.id === t2.proposals[1]);
+  assert.equal(p2.status, "BLOCKED");
+
+  // Original proposal must NOT be cancelled and must remain active
+  const p1Reloaded = await api.getProposal(p1.id);
+  assert.notEqual(p1Reloaded.status, "CANCELLED");
+  assert.equal(resolveActiveProposal(t2, state(service).proposals).id, p1.id);
+});
+
+test("Nit 1: mock reviseProposal dedup preserves substituteFor from swapped line when target line precedes it", async () => {
+  const { api } = createMockApi(() => memory());
+  const p = await api.createProposal({
+    lines: [
+      { productId: "salmon", quantity: 1 },
+      { productId: "salmon-frozen", quantity: 2 },
+    ],
+    date: "2026-11-20",
+  });
+  const revised = await api.reviseProposal(p.id, {
+    replacements: [{ fromProductId: "salmon-frozen", toProductId: "salmon" }],
+  });
+  assert.equal(revised.proposal.lines.length, 1);
+  assert.equal(revised.proposal.lines[0].productId, "salmon");
+  assert.equal(revised.proposal.lines[0].quantity, 3);
+  assert.ok(revised.proposal.lines[0].substituteFor);
+  assert.equal(revised.proposal.lines[0].substituteFor.requested, "salmon-frozen");
 });

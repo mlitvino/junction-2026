@@ -44,6 +44,7 @@ export type UnifiedCatalogRecord = {
   /** Packaging label ids (shared/contracts/labels.ts). */
   labels?: string[];
   sustainabilityCertificates?: string[];
+  vatCode?: string | null;
   leadTimeDays?: number;
   isSeasonal?: boolean;
   isNewArrival?: boolean;

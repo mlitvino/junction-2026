@@ -5,7 +5,7 @@ import { inArray } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { valioProduct } from "@/server/db/schema";
-import { evaluatePolicy, lineTotal, type PolicyLineFacts } from "@/server/policy/evaluate";
+import { evaluatePolicy, lineTotal, mergeDraftLines, type PolicyLineFacts } from "@/server/policy/evaluate";
 import type { PolicyDecision, PolicyEvaluateRequest } from "@/shared/contracts/policy";
 
 import { getAvailability, getPrices, today } from "./catalog";
@@ -22,7 +22,8 @@ export async function evaluateDraft(
   request: PolicyEvaluateRequest,
 ): Promise<PolicyDecision> {
   const date = request.date ?? today();
-  const ids = [...new Set(request.lines.map((l) => l.productId))];
+  const mergedRequestLines = mergeDraftLines(request.lines);
+  const ids = [...new Set(mergedRequestLines.map((l) => l.productId))];
 
   await ensureDatabase();
   const [effective, products, prices, availability] = await Promise.all([
@@ -46,7 +47,7 @@ export async function evaluateDraft(
   const quoteById = new Map(prices.quotes.map((q) => [q.productId, q]));
   const availabilityById = new Map(availability.items.map((a) => [a.productId, a]));
 
-  const facts: PolicyLineFacts[] = request.lines.map((line) => {
+  const facts: PolicyLineFacts[] = mergedRequestLines.map((line) => {
     const quote = quoteById.get(line.productId);
     return {
       productId: line.productId,

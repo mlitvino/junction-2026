@@ -96,7 +96,10 @@ export function RecipeIngredientRow({ ingredient }: { ingredient: RecipeIngredie
   return (
     <div className="flex flex-wrap justify-between gap-3 border-b py-4">
       <div>
-        <h3 className="text-sm font-medium">{ingredient.productName}</h3>
+        <h3 className="text-sm font-medium">
+          {ingredient.productName}{" "}
+          <span className="font-normal text-muted-foreground">— {ingredient.productType}</span>
+        </h3>
         {ingredient.notes && (
           <p className="mt-1 text-caption text-muted-foreground">{ingredient.notes}</p>
         )}
@@ -573,10 +576,16 @@ export function MealPlan({ id }: { id: string }) {
                 <Panel key={`${row.ingredient.productName}:${index}`}>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <h3 className="font-semibold">{row.ingredient.productName}</h3>
+                      <h3 className="font-semibold">
+                        {row.ingredient.productName}{" "}
+                        <span className="text-sm font-normal text-muted-foreground">
+                          — {row.ingredient.productType}
+                        </span>
+                      </h3>
                       <p className="mt-2 text-sm text-muted-foreground">
-                        Need {Number(row.needed.toFixed(3))} {row.ingredient.unit} · Kitchen stock{" "}
-                        {row.stock} {row.ingredient.unit}
+                        Total needed {Number(row.needed.toFixed(3))} {row.ingredient.unit} ·
+                        Inventory stock {Number(row.stock.toFixed(3))} {row.ingredient.unit} ·
+                        Actually needed {Number(row.shortage.toFixed(3))} {row.ingredient.unit}
                       </p>
                     </div>
                     <StatusBadge
@@ -735,7 +744,7 @@ export function MealPlan({ id }: { id: string }) {
               >
                 Review purchase proposal
               </Button>
-              {!store.mock && s.user?.roles.includes("buyer") && (
+              {s.user?.roles.includes("buyer") && (
                 <Button
                   variant="outline"
                   className="w-full sm:w-auto"

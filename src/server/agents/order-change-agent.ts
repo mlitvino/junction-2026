@@ -54,78 +54,160 @@ export const orderChangeAgent = new Agent({
   model: () => resolveAgentModel(mockModel),
 });
 
+export type KnownOrderLine = {
+  productId?: string;
+  name: string;
+  requestedName?: string;
+};
+
+function stripOuterQuotes(s: string): string {
+  const trimmed = s.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function splitSwapBody(
+  body: string,
+  knownLines?: readonly KnownOrderLine[],
+): { fromTarget: string; rawTo: string } | null {
+  if (knownLines && knownLines.length > 0) {
+    const candidates = [
+      ...new Set(
+        knownLines
+          .flatMap((l) => [l.name, l.productId ?? "", l.requestedName ?? ""])
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
+    ].sort((a, b) => b.length - a.length);
+
+    for (const cand of candidates) {
+      const re = new RegExp(
+        `^["']?(${escapeRegExp(cand)})["']?\\s+(?:to|with|into|for|on)\\s+(?:product\\s+)?(.+)$`,
+        "i",
+      );
+      const m = re.exec(body);
+      if (m) {
+        return { fromTarget: m[1]!.trim(), rawTo: m[2]!.trim() };
+      }
+    }
+  }
+
+  // Prefer "to" / "with" / "into" before falling back to "for" / "on"
+  // so product names containing "for" (e.g. "butter for laminating") do not split prematurely.
+  const preferred = /^["']?(.+?)["']?\s+(?:to|with|into)\s+(?:product\s+)?(.+)$/i.exec(body);
+  if (preferred) {
+    return { fromTarget: stripOuterQuotes(preferred[1]!), rawTo: preferred[2]!.trim() };
+  }
+
+  const fallback = /^["']?(.+?)["']?\s+(?:for|on)\s+(?:product\s+)?(.+)$/i.exec(body);
+  if (fallback) {
+    return { fromTarget: stripOuterQuotes(fallback[1]!), rawTo: fallback[2]!.trim() };
+  }
+
+  return null;
+}
+
 /**
  * Deterministic fallback parser for natural-language order change prompts when TEST_MODE=TRUE.
  */
-export function parseOrderChangeDeterministically(prompt: string): ParsedOrderChange {
+export function parseOrderChangeDeterministically(
+  prompt: string,
+  knownLines?: readonly KnownOrderLine[],
+): ParsedOrderChange {
   const replacements: ParsedOrderChange["replacements"] = [];
   const quantityUpdates: ParsedOrderChange["quantityUpdates"] = [];
   const removeTargets: string[] = [];
 
   const cleaned = prompt.trim();
+  if (!cleaned) return { replacements, quantityUpdates, removeTargets };
 
-  // Pattern 1: "change/swap/replace [product] X on/to/with/for [product] Y [and set quantity to N]"
-  const swapRegex =
-    /(?:change|swap|replace|switch)\s+(?:product\s+)?["']?([^"']+?)["']?\s+(?:on|to|with|for|into)\s+(?:product\s+)?["']?([^"',.;]+?)["']?(?:\s+(?:and\s+)?(?:with\s+|at\s+|set\s+quantity\s+to\s+|quantity\s+)(\d+(?:[.,]\d+)?))?(?:[.,;]|$)/gi;
+  // Split into clauses on semicolons, non-decimal periods, or commas before a command verb.
+  const clauses = cleaned
+    .split(/\s*(?:;|(?<!\d)\.(?=\s|$)|,\s+(?=(?:please\s+)?(?:change|swap|replace|switch|remove|delete|drop|set|update|reduce|increase)\b))\s*/i)
+    .map((c) => c.replace(/[.;]+$/, "").trim())
+    .filter(Boolean);
 
-  let match: RegExpExecArray | null;
-  while ((match = swapRegex.exec(cleaned)) !== null) {
-    const fromTarget = match[1]!.trim();
-    let toTarget = match[2]!.trim();
-    let qty = match[3] ? Number.parseFloat(match[3].replace(",", ".")) : undefined;
+  for (const clause of clauses) {
+    const swapMatch = /^(?:please\s+)?(?:change|swap|replace|switch)\s+(?:product\s+)?(.+)$/i.exec(clause);
+    if (swapMatch) {
+      const body = swapMatch[1]!.trim();
 
-    // Handle trailing quantity inside toTarget like "460301 300 kg" if explicit
-    const trailingQty = /^(.+?)\s+(?:quantity|qty)\s+(\d+(?:[.,]\d+)?)/i.exec(toTarget);
-    if (trailingQty) {
-      toTarget = trailingQty[1]!.trim();
-      qty = Number.parseFloat(trailingQty[2]!.replace(",", "."));
-    }
-
-    // Avoid misclassifying "change quantity of X to 300" as a product swap
-    if (/^(?:the\s+)?(?:quantity|amount|volume)\b/i.test(fromTarget)) {
-      const targetMatch = /(?:of|for)\s+(.+)$/i.exec(fromTarget);
-      const parsedNum = Number.parseFloat(toTarget.replace(",", "."));
-      if (targetMatch && Number.isFinite(parsedNum) && parsedNum > 0) {
-        quantityUpdates.push({
-          target: targetMatch[1]!.trim(),
-          quantity: parsedNum,
-        });
+      // Avoid misclassifying "change quantity of X to 300" as a product swap
+      if (/^(?:the\s+)?(?:quantity|amount|volume)\b/i.test(body)) {
+        const qtyBody =
+          /^(?:the\s+)?(?:quantity|amount|volume)\s+(?:of|for)\s+["']?(.+?)["']?\s+to\s+(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
+            body,
+          );
+        if (qtyBody) {
+          const parsedNum = Number.parseFloat(qtyBody[2]!.replace(",", "."));
+          if (Number.isFinite(parsedNum) && parsedNum > 0) {
+            quantityUpdates.push({
+              target: stripOuterQuotes(qtyBody[1]!),
+              quantity: parsedNum,
+            });
+          }
+        }
+        continue;
       }
-      continue;
+
+      const split = splitSwapBody(body, knownLines);
+      if (split) {
+        let toTarget = split.rawTo.replace(/[.;]+$/, "").trim();
+        let qty: number | undefined;
+
+        const trailingQty =
+          /^(.+?)\s+(?:and\s+)?(?:with\s+|at\s+|set\s+quantity\s+to\s+|quantity\s+|qty\s+)(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
+            toTarget,
+          );
+        if (trailingQty) {
+          toTarget = trailingQty[1]!.trim();
+          qty = Number.parseFloat(trailingQty[2]!.replace(",", "."));
+        }
+
+        toTarget = stripOuterQuotes(toTarget);
+        if (split.fromTarget && toTarget) {
+          replacements.push({
+            fromTarget: split.fromTarget,
+            toTarget,
+            quantity: qty && Number.isFinite(qty) && qty > 0 ? qty : undefined,
+          });
+          continue;
+        }
+      }
     }
 
-    replacements.push({
-      fromTarget,
-      toTarget,
-      quantity: qty && Number.isFinite(qty) && qty > 0 ? qty : undefined,
-    });
-  }
-
-  // Pattern 2: "set/update/change quantity [of X] to N" or "reduce/increase [X] to N"
-  const qtyRegex =
-    /(?:set|update|change|reduce|increase)\s+(?:the\s+)?(?:quantity|amount)?\s*(?:of|for)?\s*["']?([^"']+?)["']?\s+to\s+(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?/gi;
-  while ((match = qtyRegex.exec(cleaned)) !== null) {
-    const rawTarget = match[1]!.trim();
-    const num = Number.parseFloat(match[2]!.replace(",", "."));
-    if (Number.isFinite(num) && num > 0) {
-      // Skip if already captured as a product swap
-      const isAlreadySwap = replacements.some(
-        (r) => r.fromTarget.toLowerCase() === rawTarget.toLowerCase(),
+    // Pattern 2: "set/update/change quantity [of X] to N" or "reduce/increase [X] to N"
+    const qtyMatch =
+      /^(?:please\s+)?(?:set|update|change|reduce|increase)\s+(?:the\s+)?(?:quantity|amount)?\s*(?:of|for)?\s*["']?(.*?)["']?\s+to\s+(\d+(?:[.,]\d+)?)\s*(?:kg|l|st|ki|units?)?$/i.exec(
+        clause,
       );
-      if (!isAlreadySwap) {
+    if (qtyMatch) {
+      const rawTarget = stripOuterQuotes(qtyMatch[1]!);
+      const num = Number.parseFloat(qtyMatch[2]!.replace(",", "."));
+      if (Number.isFinite(num) && num > 0) {
         quantityUpdates.push({
           target: rawTarget || "*",
           quantity: num,
         });
       }
+      continue;
     }
-  }
 
-  // Pattern 3: "remove/delete [product] X"
-  const removeRegex = /(?:remove|delete|drop)\s+(?:product\s+)?["']?([^"',.;]+?)["']?(?:[.,;]|$)/gi;
-  while ((match = removeRegex.exec(cleaned)) !== null) {
-    const target = match[1]!.trim();
-    if (target) removeTargets.push(target);
+    // Pattern 3: "remove/delete [product] X"
+    const removeMatch = /^(?:please\s+)?(?:remove|delete|drop)\s+(?:product\s+)?["']?(.+?)["']?$/i.exec(clause);
+    if (removeMatch) {
+      const target = stripOuterQuotes(removeMatch[1]!);
+      if (target) removeTargets.push(target);
+    }
   }
 
   return { replacements, quantityUpdates, removeTargets };
