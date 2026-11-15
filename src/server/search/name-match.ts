@@ -390,6 +390,13 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
     rawScore *= 0.2;
   }
 
+  // "<word> free" means without it: "Milk free margarine" is not milk, unless "milk free" was asked.
+  const freeOf = (tokens: string[], word: string) =>
+    tokens.some((t, i) => t === word && (tokens[i + 1] === "free" || tokens[i + 1] === "vapaa"));
+  if (coreReqTokens.some((rt) => freeOf(candTokens, rt) && !freeOf(reqTokens, rt))) {
+    rawScore *= 0.2;
+  }
+
   if (coreReqTokens.length > 0 && matchedCoreIndices.length > 0) {
     // Words that only complete the requested product's name ("Cheddar" + "cheese") are not penalized.
     const sameProductExtras = new Set(reqTokens.flatMap((t) => [...(SAME_PRODUCT_EXTRA_WORDS.get(t) ?? [])]));
