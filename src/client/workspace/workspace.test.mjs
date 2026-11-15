@@ -64,6 +64,60 @@ async function setup(options = {}) {
 }
 const state = (service) => service.getSnapshot();
 
+test("submitted affectionate messages trigger hearts locally in mock and connected mode", async () => {
+  for (const mockMode of [true, false]) {
+    let hearts = 0;
+    const { service, mock } = await setup({ mock: mockMode, onChatAffection: () => hearts++ });
+    mock.api.runAgent = async () => {
+      throw new Error("Affection must not invoke purchasing AI");
+    };
+    mock.api.createProposal = async () => {
+      throw new Error("Affection must not create purchases");
+    };
+    const id = service.newThread("Hello mascot");
+    for (const text of [
+      "i love you",
+      "i like you",
+      "love you",
+      "you are cute",
+      "  I LOVE YOU!!!  ",
+      "You   are cute.",
+    ]) {
+      await service.sendMessage(id, text);
+    }
+    assert.equal(hearts, 6);
+    assert.equal(state(service).proposals.length, 0);
+    const thread = state(service).local.threads.find((t) => t.id === id);
+    assert.equal(thread.messages.filter((m) => m.role === "user").length, 6);
+    assert.equal(thread.working, false);
+    assert.equal(thread.error, undefined);
+    await service.sendMessage(id, " ");
+    assert.equal(hearts, 6, "blank submissions do not trigger hearts");
+  }
+});
+
+test("hearts require a complete matching phrase and keep the current selection open", async () => {
+  let hearts = 0;
+  const { service } = await setup({ onChatAffection: () => hearts++ });
+  const id = service.newThread("Product selection");
+  await service.sendMessage(id, "Find milk");
+  await service.sendMessage(id, "you are cute");
+  const thread = () => state(service).local.threads.find((t) => t.id === id);
+  assert.equal(thread().timeline.find((entry) => entry.kind === "products").closed, undefined);
+  assert.equal(hearts, 1);
+  await service.setRoles(["approver"]);
+  for (const text of [
+    "I love yogurt",
+    "I don't love you",
+    "you are cute but order milk",
+    "please say i love you",
+  ]) {
+    await service.sendMessage(id, text);
+  }
+  assert.equal(hearts, 1, "other messages do not trigger the mascot reaction");
+  assert.equal(state(service).proposals.length, 0);
+});
+
 async function setupCatalogRestockScenario() {
   const storage = memory(),
     mock = createMockApi(() => storage);

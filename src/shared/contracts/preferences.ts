@@ -11,28 +11,41 @@ import { z } from "zod";
 export const PreferencesSchema = z.object({
   // ----- Product criteria -----
   maxCo2PerKg: z.number().positive().nullable().meta({
-    description: "Maximum kg CO2-eq per kg of product. Null = no limit. Products without CO2 data are not excluded.",
+    description:
+      "Maximum kg CO2-eq per kg of product. Null = no limit. Products without CO2 data are not excluded.",
     example: 5,
   }),
   minDeliveryReliability: z.number().min(0).max(1).nullable().meta({
-    description: "Minimum delivery reliability (0–1). Null = no minimum. Products without data are not excluded.",
+    description:
+      "Minimum delivery reliability (0–1). Null = no minimum. Products without data are not excluded.",
     example: 0.95,
   }),
-  preferredOriginCountries: z.array(z.string().regex(/^[a-z]{2}$/)).max(200).meta({
-    description: "Countries of origin to prefer (ISO alpha-2, lowercase).",
-    example: ["fi", "se"],
-  }),
-  excludedAllergens: z.array(z.string().min(1)).max(200).meta({
-    description:
-      "Allergens to avoid: GS1 codes as in the catalog (`AM`, `AW`) or names (`milk`, `gluten`); a name covers all its codes (shared/contracts/allergens.ts).",
-    example: ["milk", "AY"],
-  }),
-  dietaryRestrictions: z.array(z.string().min(1)).max(50).meta({
-    description: "Required dietary tags for products the agent picks (e.g. `vegetarian`, `lactose-free`, `gluten-free`).",
-    example: ["lactose-free"],
-  }),
+  preferredOriginCountries: z
+    .array(z.string().regex(/^[a-z]{2}$/))
+    .max(200)
+    .meta({
+      description: "Countries of origin to prefer (ISO alpha-2, lowercase).",
+      example: ["fi", "se"],
+    }),
+  excludedAllergens: z
+    .array(z.string().min(1))
+    .max(200)
+    .meta({
+      description:
+        "Allergens to avoid: GS1 codes as in the catalog (`AM`, `AW`) or names (`milk`, `gluten`); a name covers all its codes (shared/contracts/allergens.ts).",
+      example: ["milk", "AY"],
+    }),
+  dietaryRestrictions: z
+    .array(z.string().min(1))
+    .max(50)
+    .meta({
+      description:
+        "Required dietary tags for products the agent picks (e.g. `vegetarian`, `lactose-free`, `gluten-free`).",
+      example: ["lactose-free"],
+    }),
   maxCaloriesPer100g: z.number().positive().nullable().optional().meta({
-    description: "Maximum kcal per 100 g/ml; the agent drops products above it. Null/absent = no limit. Products without nutrition data are not excluded.",
+    description:
+      "Maximum kcal per 100 g/ml; the agent drops products above it. Null/absent = no limit. Products without nutrition data are not excluded.",
     example: 450,
   }),
   maxFatPer100g: z.number().positive().nullable().optional().meta({
@@ -53,21 +66,28 @@ export const PreferencesSchema = z.object({
   }),
 
   // ----- Vendors and brands -----
-  preferredVendors: z.array(z.string().min(1)).max(500).meta({
-    description: "Vendors to prefer, spelled exactly as in the catalog.",
-    example: ["VALIO OY TUORE"],
-  }),
+  preferredVendors: z
+    .array(z.string().min(1))
+    .max(500)
+    .meta({
+      description: "Vendors to prefer, spelled exactly as in the catalog.",
+      example: ["VALIO OY TUORE"],
+    }),
   blockedVendors: z.array(z.string().min(1)).max(500).meta({
     description: "Vendors never to order from, spelled exactly as in the catalog.",
   }),
-  preferredBrands: z.array(z.string().min(1)).max(500).meta({
-    description: "Brands to prefer, spelled as in the catalog.",
-    example: ["Valio", "Fazer"],
-  }),
+  preferredBrands: z
+    .array(z.string().min(1))
+    .max(500)
+    .meta({
+      description: "Brands to prefer, spelled as in the catalog.",
+      example: ["Valio", "Fazer"],
+    }),
 
   // ----- Products and categories (outside these → approval) -----
   allowedCategories: z.array(z.string().min(1)).max(500).meta({
-    description: "Valio category codes the agent may order without approval. Empty = all (except blocked).",
+    description:
+      "Valio category codes the agent may order without approval. Empty = all (except blocked).",
     example: [],
   }),
   blockedCategories: z.array(z.string().min(1)).max(500).meta({
@@ -75,7 +95,8 @@ export const PreferencesSchema = z.object({
     example: [],
   }),
   allowedProductIds: z.array(z.string().min(1)).max(2000).meta({
-    description: "Product codes the agent may order without approval. Empty = all (except blocked).",
+    description:
+      "Product codes the agent may order without approval. Empty = all (except blocked).",
     example: [],
   }),
   blockedProductIds: z.array(z.string().min(1)).max(2000).meta({
@@ -84,16 +105,35 @@ export const PreferencesSchema = z.object({
   }),
 
   // ----- Spending and approval -----
+  dailySpendingCap: z.number().positive().nullable().optional().meta({
+    description:
+      "Organization spending cap over the preceding rolling 24 hours, EUR excluding VAT. Null/absent = no cap. Enforced again atomically when ordering.",
+    example: 1500,
+  }),
+  exactMatchOnly: z.boolean().optional().meta({
+    description:
+      "Automatic purchases require a previously ordered product with the same verified brand and vendor. New or changed items need approval.",
+  }),
+  preferenceOnlySubstitutions: z.boolean().optional().meta({
+    description:
+      "Substitutions may be automatic only when their brand is on the organization's preferred brands list. Safety rules always apply.",
+  }),
+  softBudgetTolerance: z.boolean().optional().meta({
+    description:
+      "For recurring products, allow unit prices up to 5% above the last ordered price. Without tolerance any increase needs approval. The order cap and approval threshold still apply; frozen quotes never change.",
+  }),
   maxOrderValue: z.number().positive().nullable().meta({
     description: "Highest allowed total of one order, EUR excluding VAT. Null = no limit.",
     example: 500,
   }),
   maxUnitPrice: z.number().positive().nullable().meta({
-    description: "Unit price (EUR excl. VAT, per sales unit) above which a line needs approval. Null = no cap.",
+    description:
+      "Unit price (EUR excl. VAT, per sales unit) above which a line needs approval. Null = no cap.",
     example: 50,
   }),
   maxLineQuantity: z.number().positive().nullable().meta({
-    description: "Quantity (in sales units) above which a single line needs approval. Null = no cap.",
+    description:
+      "Quantity (in sales units) above which a single line needs approval. Null = no cap.",
     example: 1000,
   }),
   autoApproveBelow: z.number().min(0).nullable().meta({
@@ -104,9 +144,14 @@ export const PreferencesSchema = z.object({
 
   // ----- AI behavior -----
   autonomy: z.enum(["suggest_only", "order_within_limits"]).meta({
-    description: "`suggest_only`: the agent only proposes. `order_within_limits`: it may place orders within the limits above.",
+    description:
+      "`suggest_only`: the agent only proposes. `order_within_limits`: it may place orders within the limits above.",
   }),
-  allowSubstitutes: z.boolean().meta({ description: "May the agent offer or order a substitute when a product is unavailable?" }),
+  allowSubstitutes: z
+    .boolean()
+    .meta({
+      description: "May the agent offer or order a substitute when a product is unavailable?",
+    }),
   language: z.enum(["en", "fi", "sv"]).meta({ description: "Language of the agent's answers." }),
 });
 
@@ -116,12 +161,16 @@ export const PreferencesLayerValuesSchema = PreferencesSchema.partial().strict()
 export const SettingKeySchema = PreferencesSchema.keyof();
 
 export const LayerScopeSchema = z.enum(["base", "buyer", "approver"]).meta({
-  description: "`base` applies to everyone in the organization; `buyer` and `approver` apply per role on top of it.",
+  description:
+    "`base` applies to everyone in the organization; `buyer` and `approver` apply per role on top of it.",
 });
 
-export const PreferenceSourceSchema = z.enum(["default", "organization", "buyer", "approver"]).meta({
-  description: "Where an effective value comes from: the system default, the organization base, or the role layer.",
-});
+export const PreferenceSourceSchema = z
+  .enum(["default", "organization", "buyer", "approver"])
+  .meta({
+    description:
+      "Where an effective value comes from: the system default, the organization base, or the role layer.",
+  });
 
 // ---------- Layers (approvers only) ----------
 
@@ -129,19 +178,28 @@ export const LayerSchema = z.object({
   scope: LayerScopeSchema,
   values: PreferencesLayerValuesSchema,
   locked: z.array(SettingKeySchema).meta({
-    description: "Settings locked by the organization: role layers can't override them. Only the `base` layer has any.",
+    description:
+      "Settings locked by the organization: role layers can't override them. Only the `base` layer has any.",
   }),
-  updatedAt: z.iso.datetime().nullable().meta({ description: "Null until the layer is first saved." }),
+  updatedAt: z.iso
+    .datetime()
+    .nullable()
+    .meta({ description: "Null until the layer is first saved." }),
 });
 
 /** GET /api/preferences/layers — response */
-export const LayersResponseSchema = z.object({ base: LayerSchema, buyer: LayerSchema, approver: LayerSchema });
+export const LayersResponseSchema = z.object({
+  base: LayerSchema,
+  buyer: LayerSchema,
+  approver: LayerSchema,
+});
 
 /** PUT /api/preferences/layers/{scope} — replaces the layer's settings (and, on `base`, its locks). */
 export const UpdateLayerRequestSchema = z.object({
   values: PreferencesLayerValuesSchema,
   locked: z.array(SettingKeySchema).optional().meta({
-    description: "Only allowed on `base`. Omit to leave the current locks unchanged; `[]` clears them.",
+    description:
+      "Only allowed on `base`. Omit to leave the current locks unchanged; `[]` clears them.",
   }),
 });
 

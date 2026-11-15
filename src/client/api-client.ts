@@ -16,6 +16,7 @@ export const apiClient = {
     mock: USE_MOCKS,
     capabilities: local ?? undefined,
     onPurchaseConfirmed: announceTrustAgentFeedback,
+    onChatAffection: () => announceTrustAgentFeedback("loved"),
   }),
   // Compatibility for the archived Task 2 components/tests. Never used for connected purchasing.
   procurement: USE_MOCKS
