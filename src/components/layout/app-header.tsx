@@ -6,7 +6,6 @@ import { MobileNavigation } from "./mobile-navigation";
 import { navigationItems, matchesRoute, type ShellViewer } from "./navigation";
 import { NotificationsPopover } from "./notifications-popover";
 import { ThemeToggle } from "./theme-toggle";
-import { DemoEnvironmentIndicator } from "./demo-environment-indicator";
 
 export function AppHeader({ viewer }: { viewer?: ShellViewer }) {
   const pathname = usePathname();
@@ -22,7 +21,6 @@ export function AppHeader({ viewer }: { viewer?: ShellViewer }) {
         <span className="truncate text-label font-medium" title={context}>
           {context}
         </span>
-        <DemoEnvironmentIndicator />
       </div>
       <div
         className="flex shrink-0 items-center gap-0 md:gap-1"
@@ -30,6 +28,7 @@ export function AppHeader({ viewer }: { viewer?: ShellViewer }) {
       >
         <NotificationsPopover />
         <ThemeToggle />
+        <span aria-hidden="true" className="mx-1 h-6 w-px shrink-0 bg-border md:mx-3" />
         <AccountMenu viewer={viewer} />
       </div>
     </header>

@@ -515,6 +515,23 @@ export function createMockApi(
       save();
       return structuredClone(p);
     },
+    async getPendingApprovalCount() {
+      load();
+      current("approver");
+      const pending = data.proposals.filter(
+        (p) =>
+          p.approval?.status === "PENDING" &&
+          (!p.quoteExpiresAt || Date.parse(p.quoteExpiresAt) > Date.now()),
+      );
+      return {
+        count: pending.length,
+        nextExpiresAt:
+          pending
+            .map((p) => p.quoteExpiresAt)
+            .filter((at) => at != null)
+            .sort()[0] ?? null,
+      };
+    },
     async listApprovals() {
       load();
       current("approver");
@@ -1201,17 +1218,6 @@ export function createMockApi(
         appliedChanges,
         proposal: structuredClone(latest),
       };
-    },
-    async getPendingApprovalCount() {
-      load();
-      const pending = data.proposals
-        .filter((p) => p.approval?.status === "PENDING")
-        .map((p) => p.approval!);
-      const expires = pending
-        .map((a) => a.expiresAt)
-        .filter((v): v is string => !!v)
-        .sort();
-      return { count: pending.length, nextExpiresAt: expires[0] ?? null };
     },
     async getProposalAudit() {
       return { items: [] };

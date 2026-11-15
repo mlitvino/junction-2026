@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon } from "@/components/ui/icon";
 import { navigationItems, matchesRoute } from "./navigation";
+import { PendingReviewBadge } from "./pending-review-badge";
 export function MobileTabs() {
   const pathname = usePathname();
   return (
@@ -20,7 +21,10 @@ export function MobileTabs() {
             className={`flex min-h-18 min-w-0 flex-1 flex-col items-center justify-center gap-2 px-1 text-[11px] ${matchesRoute(pathname, item.href) ? "text-primary" : "text-muted-foreground"}`}
           >
             <Icon name={item.icon} className="size-5" />
-            <span>{item.label}</span>
+            <span className="flex items-center gap-1">
+              {item.label}
+              {item.href === "/approvals" && <PendingReviewBadge />}
+            </span>
           </Link>
         ))}
     </nav>

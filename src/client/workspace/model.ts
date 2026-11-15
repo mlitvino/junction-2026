@@ -9,6 +9,19 @@ import type { LayersResponse, EffectiveResponse } from "@/shared/contracts/prefe
 import type { Member } from "@/shared/contracts/organization";
 
 // Browser-local presentation records. Canonical purchasing objects always come from its adapter.
+const ConversationEntrySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("message"), index: z.number().int().nonnegative() }),
+  z.object({
+    kind: z.literal("products"),
+    id: z.string(),
+    query: z.string(),
+    replacementId: z.string().optional(),
+    proposalId: z.string().optional(),
+    closed: z.boolean().optional(),
+  }),
+  z.object({ kind: z.literal("proposal"), proposalId: z.string() }),
+]);
+export type ConversationEntry = z.infer<typeof ConversationEntrySchema>;
 export const ThreadSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -16,6 +29,7 @@ export const ThreadSchema = z.object({
     z.object({ role: z.enum(["user", "assistant"]), text: z.string(), at: z.string() }),
   ),
   proposals: z.array(z.string()),
+  timeline: z.array(ConversationEntrySchema).optional(),
   working: z.boolean(),
   stage: z.string(),
   query: z.string(),
@@ -36,6 +50,36 @@ export const ThreadSchema = z.object({
   requirement: z.enum(["gluten-free", "milk-protein-free"]).optional(),
 });
 export type Thread = z.infer<typeof ThreadSchema>;
+
+// Old browser-local conversations predate the timeline. Recover a stable, read-only history.
+export function getConversationTimeline(
+  thread: Thread,
+  proposals: Proposal[],
+): ConversationEntry[] {
+  if (thread.timeline) return thread.timeline;
+  const entries: { at: string; entry: ConversationEntry }[] = thread.messages.map(
+    (message, index) => ({
+      at: message.at,
+      entry: { kind: "message", index },
+    }),
+  );
+  for (const proposalId of thread.proposals) {
+    const proposal = proposals.find((p) => p.id === proposalId);
+    entries.push({ at: proposal?.createdAt ?? "9999", entry: { kind: "proposal", proposalId } });
+  }
+  entries.sort((a, b) => a.at.localeCompare(b.at));
+  const result = entries.map(({ entry }) => entry);
+  if (thread.query && thread.query !== "restocking" && !thread.safetyBlocked) {
+    const firstProposal = result.findIndex((entry) => entry.kind === "proposal");
+    result.splice(firstProposal < 0 ? result.length : firstProposal, 0, {
+      kind: "products",
+      id: `legacy-${thread.id}`,
+      query: thread.query,
+      proposalId: thread.proposals[0],
+    });
+  }
+  return result;
+}
 export const PlanSchema = z.object({
   id: z.string(),
   name: z.string().min(1),
@@ -137,3 +181,38 @@ export const emptySnapshot = (): WorkspaceSnapshot => ({
   members: [],
   local: emptyLocal(""),
 });
+
+// Derived presentation only: use this conversation's latest canonical purchase, never another thread's order.
+export function getConversationStatus(
+  thread: Thread,
+  snapshot: Pick<WorkspaceSnapshot, "proposals" | "orders" | "local">,
+  now = Date.now(),
+): { status: string; label?: string } {
+  if (thread.working) return { status: "PENDING", label: "Preparing" };
+  const latestId = thread.proposals.at(-1);
+  const proposal = snapshot.proposals.find((record) => record.id === latestId);
+  const recorded =
+    proposal?.status === "ORDERED" ||
+    snapshot.orders.some((order) => order.proposalId === latestId);
+  if (thread.safetyBlocked)
+    return { status: "BLOCKED", label: recorded ? "New request blocked" : "Needs attention" };
+  if (recorded) return { status: "ORDERED" };
+  if (proposal) {
+    if (
+      ["READY", "PENDING_APPROVAL", "APPROVED"].includes(proposal.status) &&
+      (snapshot.local.stale.includes(proposal.id) ||
+        (proposal.quoteExpiresAt !== null && Date.parse(proposal.quoteExpiresAt) <= now))
+    )
+      return { status: "READY", label: "Refresh prices" };
+    return { status: proposal.status };
+  }
+  if (thread.error) return { status: "BLOCKED", label: "Needs attention" };
+  if (latestId) return { status: "UNKNOWN", label: "Status unavailable" };
+  if (thread.recipeChoice) return { status: "PENDING", label: "Choose a recipe" };
+  if (thread.query)
+    return {
+      status: "PENDING",
+      label: thread.query === "restocking" ? "Configure restocking" : "Choose products",
+    };
+  return { status: "DRAFT", label: "No purchase yet" };
+}

@@ -1,46 +1,31 @@
 "use client";
 
-import { useId } from "react";
-import { useTheme, type Theme } from "@/components/theme/theme-provider";
-import { Popover } from "@/components/ui/popover";
-import { Icon, type IconName } from "@/components/ui/icon";
-
-const choices: { value: Theme; label: string; icon: IconName }[] = [
-  { value: "light", label: "Light", icon: "sun" },
-  { value: "dark", label: "Dark", icon: "moon" },
-  { value: "system", label: "System", icon: "monitor" },
-];
+import { useTheme } from "@/components/theme/theme-provider";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  const group = useId();
+  const { setTheme } = useTheme();
   return (
-    <Popover label="Choose theme" icon="sun" title="Appearance">
-      <fieldset>
-        <legend className="sr-only">Theme preference</legend>
-        <div className="space-y-1">
-          {choices.map((choice) => (
-            <label
-              key={choice.value}
-              className="flex min-h-11 cursor-pointer items-center gap-3 rounded-md px-3 hover:bg-accent has-checked:bg-accent has-checked:text-accent-foreground"
-            >
-              <Icon name={choice.icon} />
-              <span className="flex-1">{choice.label}</span>
-              <input
-                type="radio"
-                name={group}
-                value={choice.value}
-                checked={theme === choice.value}
-                onChange={() => setTheme(choice.value)}
-                className="size-4 accent-primary"
-              />
-            </label>
-          ))}
-        </div>
-      </fieldset>
-      <p className="mt-4 text-caption text-muted-foreground">
-        System follows your device’s appearance.
-      </p>
-    </Popover>
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label="Toggle color theme"
+      title="Switch between light and dark themes"
+      onClick={() =>
+        setTheme(document.documentElement.classList.contains("dark") ? "light" : "dark")
+      }
+    >
+      <span className="relative block size-5" aria-hidden="true">
+        <Icon
+          name="sun"
+          className="absolute inset-0 rotate-0 scale-100 opacity-100 transition-[transform,rotate,scale,opacity] duration-200 ease-out dark:-rotate-90 dark:scale-50 dark:opacity-0 motion-reduce:transition-none"
+        />
+        <Icon
+          name="moon"
+          className="absolute inset-0 rotate-90 scale-50 opacity-0 transition-[transform,rotate,scale,opacity] duration-200 ease-out dark:rotate-0 dark:scale-100 dark:opacity-100 motion-reduce:transition-none"
+        />
+      </span>
+    </Button>
   );
 }

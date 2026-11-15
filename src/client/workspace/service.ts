@@ -17,6 +17,7 @@ import {
   PlanSchema,
   emptySnapshot,
   emptyLocal,
+  getConversationTimeline,
   type WorkspaceSnapshot,
   type RestockPlan,
   type Thread,
@@ -217,11 +218,31 @@ export function createWorkspaceService(
   function editThread(id: string, apply: (t: Thread) => void) {
     local((l) => {
       const t = l.threads.find((t) => t.id === id);
-      if (t) apply(t);
+      if (t) {
+        t.timeline ??= getConversationTimeline(t, snapshot.proposals);
+        apply(t);
+      }
     });
   }
   function answer(id: string, text: string) {
-    editThread(id, (t) => t.messages.push({ role: "assistant", text, at: stamp() }));
+    editThread(id, (t) => {
+      t.timeline!.push({ kind: "message", index: t.messages.length });
+      t.messages.push({ role: "assistant", text, at: stamp() });
+    });
+  }
+  function openProducts(id: string, query: string, replacementId?: string) {
+    editThread(id, (t) => {
+      for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
+      t.query = query;
+      t.timeline!.push({ kind: "products", id: uid("selection"), query, replacementId });
+    });
+  }
+  function appendProposalTimeline(id: string, proposalId: string) {
+    editThread(id, (t) => {
+      if (!t.timeline!.some((entry) => entry.kind === "proposal" && entry.proposalId === proposalId)) {
+        t.timeline!.push({ kind: "proposal", proposalId });
+      }
+    });
   }
   function newThread(title: string, source: Thread["source"] = "Assistant") {
     const id = uid("conversation");
@@ -276,8 +297,19 @@ export function createWorkspaceService(
     threadId?: string,
     source: Thread["source"] = "Assistant",
     replaceId?: string,
+    pickerId?: string,
   ) {
     return single(`create:${threadId ?? JSON.stringify(body)}`, async () => {
+      if (threadId && pickerId) {
+        editThread(threadId, () => {});
+        const picker = thread(threadId).timeline?.find(
+          (entry) => entry.kind === "products" && entry.id === pickerId,
+        );
+        if (!picker || picker.kind !== "products" || picker.closed || picker.proposalId)
+          throw new Error(
+            "This product selection is closed. Send a new message to change the purchase.",
+          );
+      }
       body = CreateProposalRequestSchema.parse(body);
       if (!snapshot.user?.roles.includes("buyer"))
         throw new Error("A Buyer is required to prepare this purchase.");
@@ -314,6 +346,25 @@ export function createWorkspaceService(
         }
       }
       const created = await api.createProposal(body);
+      putProposal(created);
+      editThread(id, (t) => {
+        if (!t.proposals.includes(created.id)) t.proposals.push(created.id);
+        if (pickerId) {
+          const picker = t.timeline!.find(
+            (entry) => entry.kind === "products" && entry.id === pickerId,
+          );
+          if (picker?.kind === "products") {
+            picker.proposalId = created.id;
+            picker.closed = true;
+          }
+        }
+        t.diff = replaceId
+          ? created.status === "BLOCKED"
+            ? "Change blocked by policy; previous proposal remains active."
+            : "A new purchase proposal replaces the previous quantity, products or delivery requirements."
+          : undefined;
+        t.safetyBlocked = false;
+      });
       record(
         "Purchase proposal prepared",
         created.id,
@@ -349,6 +400,7 @@ export function createWorkspaceService(
           ? "This purchase does not meet the purchasing requirements. You can change the request or review the reasons below."
           : "I’ve prepared a purchase proposal. Please review the products, quantity and conditions before continuing.",
       );
+      appendProposalTimeline(id, created.id);
       return { threadId: id, proposal: current };
     });
   }
@@ -391,6 +443,7 @@ export function createWorkspaceService(
         id,
         `${result.message} Inventory check: ${covered} covered by kitchen stock, ${ordered} need ordering.`,
       );
+      if (current) appendProposalTimeline(id, current.id);
       return { threadId: id, response: { ...result, proposal: current } };
     });
   }
@@ -480,6 +533,7 @@ export function createWorkspaceService(
         ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
         : `Updated the proposal (${revised.appliedChanges.join(", ") || "swapped product"}). Please review before continuing.`,
     );
+    appendProposalTimeline(id, updated.id);
   }
   async function executeQuantityRevision(
     id: string,
@@ -493,9 +547,7 @@ export function createWorkspaceService(
         id,
         `I need a verified conversion from ${parsed.unit} to ${parsed.salesUnit ?? "sales units"}. Confirm the quantity below; the current proposal has not changed.`,
       );
-      editThread(id, (t) => {
-        t.query = parsed.lineName;
-      });
+      openProducts(id, parsed.lineName, isRevisableProposal(current) ? current.id : undefined);
       return;
     }
     const prevProposal: Proposal = current;
@@ -522,6 +574,7 @@ export function createWorkspaceService(
           ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
           : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${parsed.salesUnit ?? "units"}`}). Please review before continuing.`,
       );
+      appendProposalTimeline(id, updated.id);
       return;
     }
     await createPurchase(
@@ -643,6 +696,7 @@ export function createWorkspaceService(
             ? `${result.reply}\n\nNote: ${warnings.join(" ")}`
             : result.reply,
         );
+        appendProposalTimeline(id, synced.id);
         return;
       }
       answer(id, result.reply);
@@ -655,9 +709,7 @@ export function createWorkspaceService(
       }
       const parsed = parseQtyUnitQuery(text);
       await searchProducts(parsed.query);
-      editThread(id, (t) => {
-        t.query = parsed.query;
-      });
+      openProducts(id, parsed.query, isRevisableProposal(current) ? current.id : undefined);
     } catch (error) {
       const agentUnavailable =
         error instanceof ApiError &&
@@ -740,9 +792,7 @@ export function createWorkspaceService(
           "AI agent model is unavailable right now. Search and select products directly in the product picker below.",
         );
       }
-      editThread(id, (t) => {
-        t.query = query;
-      });
+      openProducts(id, query, isRevisableProposal(current) ? current.id : undefined);
     }
   }
   async function sendMessage(id: string, message: string) {
@@ -751,6 +801,8 @@ export function createWorkspaceService(
       if (!text) return;
       const runEpoch = epoch;
       editThread(id, (t) => {
+        for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
+        t.timeline!.push({ kind: "message", index: t.messages.length });
         t.messages.push({ role: "user", text, at: stamp() });
         t.working = true;
         t.error = undefined;
@@ -773,6 +825,12 @@ export function createWorkspaceService(
               ? `The recommendation uses ${current.lines.map((l) => l.name).join(", ")}, priced for ${current.pricingDate}. ${current.decision.reasons.map((r) => r.message).join(" ")}${warnings} Availability and units are shown in the item details. This explanation does not change your proposal.`
               : "Choose a product or prepare a purchase first, and I can explain its pricing, units and purchasing conditions.",
           );
+          if (current && /alternative|compare/i.test(text))
+            openProducts(
+              id,
+              thread(id).query,
+              current.status === "ORDERED" ? undefined : current.id,
+            );
           return;
         }
         if (!mandatory) {
@@ -883,6 +941,7 @@ export function createWorkspaceService(
             id,
             "Please confirm the updated product, sales-unit quantity and delivery date below. The previous pending purchase has been withdrawn so it cannot be approved with outdated requirements.",
           );
+          openProducts(id, thread(id).query, current.id);
           return;
         }
         editThread(id, (t) => {
@@ -921,14 +980,21 @@ export function createWorkspaceService(
             );
             return;
           }
+          answer(
+            id,
+            "Choose the product and confirm its sales-unit quantity below. I’ll prepare it for review.",
+          );
+          openProducts(id, query, current?.status === "ORDERED" ? undefined : current?.id);
+        } else {
+          const extracted = await api.extract(text);
+          const query = extracted.items[0]?.productName ?? text;
+          await searchProducts(query);
+          answer(
+            id,
+            "I found the purchasing requirements. Confirm the product, sales-unit quantity and delivery date below. Physical quantities need verified packaging information before they can be ordered.",
+          );
+          openProducts(id, query, current?.status === "ORDERED" ? undefined : current?.id);
         }
-        editThread(id, (t) => {
-          t.query = query;
-        });
-        answer(
-          id,
-          "Choose the product and confirm its sales-unit quantity below. I’ll prepare it for review.",
-        );
       } catch (error) {
         editThread(id, (t) => {
           t.error = error instanceof Error ? error.message : "Could not process this request.";
@@ -1137,6 +1203,7 @@ export function createWorkspaceService(
         id,
         "You can ask about this purchase and its conditions. Only its buyer can withdraw or revise the original request; a review decision applies to the exact proposal shown.",
       );
+      appendProposalTimeline(id, proposalId);
       return id;
     },
     sendMessage,
@@ -1162,6 +1229,7 @@ export function createWorkspaceService(
               ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
               : `Updated the proposal (${revised.appliedChanges.join(", ") || "revised items"}). Please review before continuing.`,
           );
+          appendProposalTimeline(threadId, updated.id);
         } else {
           putProposal(revised.proposal);
           record(
@@ -1238,7 +1306,10 @@ export function createWorkspaceService(
     async discussRecipe(recipeId: string, portions: number, question: string) {
       const recipe = await loadRecipe(recipeId),
         id = newThread(`${recipe.name} · ${portions} portions`, "Recipes");
-      editThread(id, (t) => t.messages.push({ role: "user", text: question, at: stamp() }));
+      editThread(id, (t) => {
+        t.timeline!.push({ kind: "message", index: t.messages.length });
+        t.messages.push({ role: "user", text: question, at: stamp() });
+      });
       const ingredients = recipeNeeds(recipe, portions, snapshot.inventory);
       answer(
         id,

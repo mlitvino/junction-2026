@@ -7,6 +7,7 @@ import {
   ProposalSchema,
   ProposalListSchema,
   ApprovalListSchema,
+  PendingApprovalCountSchema,
   OrderSchema,
   OrderListSchema,
   DecideApprovalRequestSchema,
@@ -18,7 +19,6 @@ import {
   ProposalVerificationSchema,
   AuditListSchema,
   AuditQuerySchema,
-  PendingApprovalCountSchema,
 } from "@/shared/contracts/purchasing";
 import {
   ProductSearchResponseSchema,
@@ -165,6 +165,7 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
     requestApproval: (id: string) =>
       request(`/proposals/${encodeURIComponent(id)}/approval`, ProposalSchema, "POST"),
     listApprovals: () => request("/approvals", ApprovalListSchema),
+    getPendingApprovalCount: () => request("/approvals/pending-count", PendingApprovalCountSchema),
     decideApproval: (id: string, body: z.input<typeof DecideApprovalRequestSchema>) =>
       request(
         `/approvals/${encodeURIComponent(id)}/decision`,
@@ -258,7 +259,6 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
         "POST",
         ReviseProposalRequestSchema.parse(body),
       ),
-    getPendingApprovalCount: () => request("/approvals/pending-count", PendingApprovalCountSchema),
     getProposalAudit: (id: string) =>
       request(`/proposals/${encodeURIComponent(id)}/audit`, AuditListSchema),
     verifyProposal: (id: string) =>

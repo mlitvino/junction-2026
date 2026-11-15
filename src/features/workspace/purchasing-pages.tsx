@@ -5,11 +5,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
-import type {
-  AuditEvent,
-  OrderReceipt,
-  ProposalVerification,
-} from "@/shared/contracts/purchasing";
+import { Icon } from "@/components/ui/icon";
+import type { AuditEvent, OrderReceipt } from "@/shared/contracts/purchasing";
 import {
   Page,
   Panel,
@@ -18,9 +15,8 @@ import {
   ApprovalCard,
   StatusBadge,
   OrderSummary,
+  ReceiptPanel,
   PriceDisplay,
-  EvidenceDisclosure,
-  eur,
   inputClass,
   displayDate,
   store,
@@ -88,126 +84,34 @@ export function ActivityTimeline({
     </section>
   );
 }
-export function ToReview() {
-  const s = useWorkspace(),
-    [history, setHistory] = useState(false);
-  useLoad(() => store.refresh(), "to-review");
-  const canReview = s.user?.roles.includes("approver");
-  const pending = s.approvals.filter((a) => a.status === "PENDING");
-  const rows = canReview
-    ? s.approvals
-        .filter((a) => (history ? a.status !== "PENDING" : a.status === "PENDING"))
-        .map((a) => a.proposal)
-    : s.proposals.filter((p) => p.createdBy === s.user?.id && p.approval);
-  return (
-    <Page
-      title="To review"
-      description={
-        canReview
-          ? "Review purchasing requests and the conditions that need your decision."
-          : "Follow the purchasing requests you have sent for review."
-      }
-      wide
-      action={
-        <Button variant="outline" onClick={() => void store.refresh()}>
-          Refresh
-        </Button>
-      }
-    >
-      <ErrorMessage error={s.error} />
-      {canReview && (
-        <div className="flex gap-3">
-          <Button
-            variant={!history ? "secondary" : "ghost"}
-            aria-pressed={!history}
-            onClick={() => setHistory(false)}
-          >
-            Needs action ({pending.length})
-          </Button>
-          <Button
-            variant={history ? "secondary" : "ghost"}
-            aria-pressed={history}
-            onClick={() => setHistory(true)}
-          >
-            History
-          </Button>
-        </div>
-      )}
-      {!rows.length && !s.error ? (
-        <EmptyState title={history ? "No completed reviews yet" : "You’re all caught up"}>
-          Purchases needing a decision will appear here.
-        </EmptyState>
-      ) : (
-        <div className="space-y-4">
-          {rows.map((p) => (
-            <Panel key={p.id}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <StatusBadge status={p.status} />
-                  <h2 className="mt-3 font-semibold">{p.lines[0]?.name ?? "Purchase request"}</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {p.lines.map((l) => `${l.quantity} ${l.salesUnit ?? "units"}`).join(" · ")} ·{" "}
-                    {p.approval?.id}
-                  </p>
-                  <p className="mt-2 text-sm">
-                    {p.decision.reasons.map((r) => r.message).join(" ")}
-                  </p>
-                </div>
-                <div className="space-y-4">
-                  <PriceDisplay value={p.totalExclVat} />
-                  <Link
-                    href={`/approvals/${p.approval!.id}`}
-                    className={`${buttonVariants({ variant: "outline" })} block`}
-                  >
-                    {p.approval?.status === "PENDING" ? "Review purchase" : "View details"}
-                  </Link>
-                </div>
-              </div>
-            </Panel>
-          ))}
-        </div>
-      )}
-    </Page>
-  );
-}
+export { ToReview } from "./to-review";
+
 export function ReviewDetail({ id }: { id: string }) {
   const s = useWorkspace();
-  const router = useRouter();
   useLoad(() => store.refresh(), `review:${id}`);
   const proposal = s.proposals.find((p) => p.approval?.id === id);
   const thread = s.local.threads.find((t) => t.proposals.includes(proposal?.id ?? ""));
   return (
-    <Page
-      title="Review purchase"
-      description="Your decision applies to the exact purchase shown below."
-      action={
-        <Link href="/approvals" className={buttonVariants({ variant: "ghost" })}>
-          Back to review
-        </Link>
-      }
-    >
+    <div className="mx-auto w-full max-w-[860px] space-y-4">
+      <Link
+        href="/approvals"
+        className="mb-2 inline-flex min-h-9 items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <Icon name="arrow-left" className="size-3.5" />
+        Back to review list
+      </Link>
       <ErrorMessage error={s.error} />
       {proposal ? (
         <>
-          <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} />
-          {thread ? (
-            <Link
-              href={`/buyer/conversations/${thread.id}`}
-              className={buttonVariants({ variant: "outline" })}
-            >
-              Ask assistant for changes
-            </Link>
-          ) : (
-            <Button
-              variant="outline"
-              onClick={() =>
-                router.push(`/buyer/conversations/${store.discussPurchase(proposal.id)}`)
-              }
-            >
-              Discuss in assistant
-            </Button>
-          )}
-          <ActivityTimeline resourceId={proposal.id} proposalId={proposal.id} />
+          <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} reviewLayout />
+          <details className="rounded-xl border bg-card px-6 py-2">
+            <summary className="cursor-pointer py-3 text-xs text-muted-foreground">
+              Activity &amp; lifecycle
+            </summary>
+            <div className="pb-4 pt-2">
+              <ActivityTimeline resourceId={proposal.id} proposalId={proposal.id} />
+            </div>
+          </details>
         </>
       ) : (
         !s.error && (
@@ -216,9 +120,10 @@ export function ReviewDetail({ id }: { id: string }) {
           </EmptyState>
         )
       )}
-    </Page>
+    </div>
   );
 }
+
 export function PurchaseDetail({ id }: { id: string }) {
   const router = useRouter(),
     s = useWorkspace(),
@@ -347,198 +252,7 @@ export function Orders() {
     </Page>
   );
 }
-function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
-  return (
-    <Panel className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 className="section-title">Order receipt</h2>
-          <p className="mt-1 text-caption text-muted-foreground">
-            Order {receipt.orderId} · Issued {displayDate(receipt.issuedAt)}
-          </p>
-        </div>
-        <Button variant="outline" onClick={() => window.print()}>
-          Print receipt
-        </Button>
-      </div>
-      <dl className="grid gap-4 text-sm sm:grid-cols-2 md:grid-cols-4">
-        <div>
-          <dt className="text-muted-foreground">Organization</dt>
-          <dd className="mt-1 font-medium">{receipt.organizationName}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Ordered by</dt>
-          <dd className="mt-1 font-medium">{receipt.orderedByName ?? "Buyer"}</dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Approved by</dt>
-          <dd className="mt-1 font-medium">
-            {receipt.approvedByName ?? "Explicit purchasing policy"}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-muted-foreground">Delivery date</dt>
-          <dd className="mt-1 font-medium">{displayDate(receipt.deliveryDate)}</dd>
-        </div>
-      </dl>
-      <div className="divide-y border-t pt-2 text-sm">
-        {receipt.lines.map((line) => (
-          <div key={line.productId} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
-            <div>
-              <p className="font-medium">{line.name}</p>
-              <p className="text-caption text-muted-foreground">
-                {line.quantity} {line.salesUnit ?? "units"} ×{" "}
-                {eur(line.unitPriceExclVat, receipt.currency)} · {line.vendorName}
-              </p>
-            </div>
-            <span className="font-medium tabular-nums">
-              {eur(line.lineTotalExclVat, receipt.currency)}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="flex items-center justify-between border-t pt-3">
-        <span className="font-medium">Total (excl. VAT)</span>
-        <PriceDisplay value={receipt.totalExclVat} currency={receipt.currency} />
-      </div>
-      <p className="break-all text-caption text-muted-foreground">
-        Proposal {receipt.proposalId} · Hash {receipt.proposalHash}
-        {receipt.proposalSignature
-          ? ` · Signed (${receipt.signatureKeyId ?? "server"})`
-          : ""}
-      </p>
-    </Panel>
-  );
-}
-
-export function OrderDetail({ id }: { id: string }) {
-  const s = useWorkspace(),
-    error = useLoad(() => store.loadOrder(id), `order:${id}`);
-  const order = s.orders.find((o) => o.id === id),
-    proposal = s.proposals.find((p) => p.id === order?.proposalId);
-  const thread = s.local.threads.find((t) => t.proposals.includes(order?.proposalId ?? ""));
-  const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
-  const [verification, setVerification] = useState<ProposalVerification | null>(null);
-  const proposalId = order?.proposalId;
-  useEffect(() => {
-    let active = true;
-    if (!order) return;
-    void Promise.allSettled([
-      store.api.getOrderReceipt(id),
-      !store.mock && proposalId ? store.api.verifyProposal(proposalId) : Promise.resolve(null),
-    ]).then(([receiptRes, verifyRes]) => {
-      if (!active) return;
-      if (receiptRes.status === "fulfilled") setReceipt(receiptRes.value);
-      if (verifyRes.status === "fulfilled" && verifyRes.value) setVerification(verifyRes.value);
-    });
-    return () => {
-      active = false;
-    };
-  }, [id, order, proposalId]);
-  return (
-    <Page
-      title="Order details"
-      description={id}
-      action={
-        order && (
-          <Link href={`/checkout/${id}`} className={buttonVariants()}>
-            Continue to checkout
-          </Link>
-        )
-      }
-    >
-      <ErrorMessage error={error} />
-      {order ? (
-        <>
-          <OrderSummary order={order} />
-          {receipt && <ReceiptPanel receipt={receipt} />}
-          <Panel>
-            <dl className="grid gap-5 text-sm sm:grid-cols-3">
-              <div>
-                <dt className="text-muted-foreground">Origin</dt>
-                <dd className="mt-2">
-                  {receipt
-                    ? `${receipt.organizationName} (${receipt.orderedByName ?? "buyer"})`
-                    : (thread?.source ?? "Purchasing service")}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Needed by</dt>
-                <dd className="mt-2">
-                  {displayDate(receipt?.deliveryDate ?? proposal?.pricingDate)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Approved by</dt>
-                <dd className="mt-2">
-                  {receipt?.approvedByName ??
-                    (proposal?.approval?.decidedBy === s.user?.id
-                      ? (s.user?.username ?? "Organization approver")
-                      : proposal?.approval?.decidedBy
-                        ? (proposal.approval.decidedByName ?? "Authorized organization approver")
-                        : "Explicit purchasing policy")}
-                </dd>
-              </div>
-            </dl>
-          </Panel>
-          <div className="flex flex-wrap gap-3">
-            <Link
-              href={`/proposals/${order.proposalId}`}
-              className={buttonVariants({ variant: "outline" })}
-            >
-              View purchase proposal
-            </Link>
-            {thread && (
-              <Link
-                href={`/buyer/conversations/${thread.id}`}
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Discuss in assistant
-              </Link>
-            )}
-          </div>
-          <ActivityTimeline resourceId={id} proposalId={order.proposalId} />
-          <EvidenceDisclosure title="View technical audit & snapshot evidence">
-            <p>
-              Order recorded by the purchasing service. Supplier dispatch, reserved delivery slots
-              and payment are not connected.
-            </p>
-            <p>
-              Content reference: <span className="break-all">{order.proposalHash}</span>
-            </p>
-            {receipt?.proposalSignature && (
-              <p className="break-all">
-                Ed25519 signature ({receipt.signatureKeyId ?? "server"}):{" "}
-                {receipt.proposalSignature}
-              </p>
-            )}
-            {verification ? (
-              <p>
-                Integrity check: hash {verification.hashValid ? "valid" : "mismatch"} · signature{" "}
-                {verification.signatureValid === null || verification.signatureValid === undefined
-                  ? "unsigned"
-                  : verification.signatureValid
-                    ? "valid"
-                    : "invalid"}{" "}
-                · snapshots verified {verification.lines.filter((l) => l.snapshotFound).length}/
-                {verification.lines.length}
-              </p>
-            ) : (
-              store.mock && (
-                <p>
-                  The global audit service is not connected. Activity shown here was observed in
-                  this browser.
-                </p>
-              )
-            )}
-          </EvidenceDisclosure>
-        </>
-      ) : (
-        !error && <p role="status">Loading order…</p>
-      )}
-    </Page>
-  );
-}
+export { OrderDetail } from "./order-detail";
 export function Checkout({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadOrder(id), `checkout:${id}`),

@@ -111,7 +111,7 @@ test("connected canonical purchasing across Buyer and Approver browser contexts"
   await page.reload();
   assert.equal((await (await buyer.request.get(base + "/api/orders")).json()).items.length, 1);
   await page.getByRole("link", { name: "View order", exact: true }).click();
-  await page.getByRole("heading", { name: "Order details", exact: true }).waitFor();
+  await page.getByRole("heading", { name: `Order ${order.id}`, exact: true }).waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("aimo:v32:records")), null);
   const presentation = await page.evaluate(() =>
     JSON.parse(sessionStorage.getItem("aimo:v32:connected:presentation")),
