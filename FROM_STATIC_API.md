@@ -233,6 +233,21 @@ This is a code review of the workspace changes merged in PRs #11–#13, re-check
 | 5 | `src/features/workspace/chat-checkout.tsx`, `canOrder` (new in #15) | For a READY + ALLOW proposal, ordering is offered only if every line has `availableQuantity !== null && availableQuantity >= quantity`. | Unknown stock (`null`) is normal: most Valio products report no stock figure ("stock not reported"), and the server allows ordering them. So **"order directly" practically never appears**, even when the organization's rules allow it. | Trust `decision.outcome === "ALLOW"` (plus not stale, buyer role). The server re-checks prices and availability at order time and answers 409 `PRICE_CHANGED` / `AVAILABILITY_CHANGED` if something changed. Show those errors instead of pre-blocking. |
 | 6 | `src/features/workspace/trade-airlock.tsx`, `checks` (new in #15) | Policy codes are grouped into Budget / Allergens / Substitutes / Delivery only. | A DENY or approval from `BLOCKED_VENDOR`, `CO2_TOO_HIGH`, `RELIABILITY_TOO_LOW`, `CATEGORY_BLOCKED`/`CATEGORY_NOT_ALLOWED`, `PRODUCT_BLOCKED`/`PRODUCT_NOT_ALLOWED`, `UNKNOWN_PRODUCT` or `PRICE_UNKNOWN` lands in **no group**, so every check shows as passed while the proposal is blocked. | Add an "Other rules" group for every code not listed, or group by `reason.setting`. The full list is `PolicyReasonCodeSchema` in `shared/contracts/policy.ts`. |
 
+### Backend changes after the backend audit (`docs/BACKEND-AUDIT.md`)
+
+All of these are additive; nothing existing breaks.
+- **Search understands how buyers type.** `GET /api/products?q=…`:
+  - ignores amounts and filler words ("100 litres of lactose-free milk");
+  - turns dietary words into the tag filter;
+  - matches plurals ("salmon fillets") and common Finnish food words ("voi", "maitoa");
+  - ranks with the agent's matcher, so coffee milk no longer comes first for "milk".
+  - **New optional response fields:** when nothing matched as typed, the results are for corrected words, with `matchedFuzzy: true` and `searchedFor: "milk"`. Show "Showing results for milk".
+- **New error codes to handle:**
+  - `422 DATE_IN_PAST`: a proposal (direct, from a prompt or from a recipe) whose delivery date is before today.
+  - `502 VALIO_UNAVAILABLE`: Valio is down. The agent and `from-prompt` now say so, instead of "no product matched". Show "Valio is unavailable, try again".
+- **`GET /api/health`** has `valio: "live" | "mock"` (optional). It's worth a small badge in dev and demo builds when it's `mock`.
+- **`UNKNOWN_PRODUCT`** now explains that the product isn't in the imported catalog.
+
 ### Backend changes after the 100 L milk flow check
 
 These are not breaking changes; some are worth knowing in the UI.
