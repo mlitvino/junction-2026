@@ -22,6 +22,11 @@ export const defaultPreferences: Preferences = {
   preferredOriginCountries: ["fi"],
   excludedAllergens: [],
   dietaryRestrictions: [],
+  maxCaloriesPer100g: null,
+  maxFatPer100g: null,
+  maxSugarPer100g: null,
+  maxSaltPer100g: null,
+  minProteinPer100g: null,
   allowedCategories: [],
   blockedCategories: [],
   allowedProductIds: [],
@@ -1215,6 +1220,7 @@ export function createMockApi(
       const latest = find(created.id);
       return {
         previousProposalId: prev.id,
+        previousCancelled: created.status !== "BLOCKED",
         appliedChanges,
         proposal: structuredClone(latest),
       };
