@@ -17,6 +17,10 @@ import { convertToSalesUnits, recipeNeeds } from "./helpers";
 
 const now = () => new Date().toISOString();
 export const defaultPreferences: Preferences = {
+  dailySpendingCap: null,
+  exactMatchOnly: false,
+  preferenceOnlySubstitutions: false,
+  softBudgetTolerance: false,
   maxCo2PerKg: null,
   minDeliveryReliability: null,
   preferredOriginCountries: ["fi"],
@@ -319,6 +323,74 @@ export function createMockApi(
     );
     return { values, sources, locked: data.layers.base.locked };
   }
+  function governance(
+    lines: {
+      productId: string;
+      unitPriceExclVat: number | null;
+      substituteFor?: { requested: string; reason: string } | null;
+    }[],
+    total: number | null,
+  ) {
+    const prefs = effective("buyer").values;
+    const spent = data.orders
+      .filter((o) => Date.parse(o.createdAt) > Date.now() - 86400000)
+      .reduce((sum, o) => sum + (o.totalExclVat ?? 0), 0);
+    if (
+      prefs.dailySpendingCap != null &&
+      total !== null &&
+      Math.round((spent + total) * 100) > Math.round(prefs.dailySpendingCap * 100)
+    )
+      return {
+        code: "DAILY_SPENDING_CAP" as const,
+        outcome: "DENY" as const,
+        message: "This purchase exceeds the rolling 24-hour organization spending cap.",
+      };
+    for (const line of lines) {
+      const product = fixtureProducts.find((p) => p.id === line.productId);
+      const previous = data.orders
+        .flatMap((o) => o.lines)
+        .find((l) => l.productId === line.productId);
+      const exact =
+        previous &&
+        product?.brand &&
+        previous.brand === product.brand &&
+        previous.vendorName === product.vendorName &&
+        !line.substituteFor;
+      const preferred =
+        line.substituteFor &&
+        ["fallback", "split"].includes(line.substituteFor.reason) &&
+        prefs.allowSubstitutes &&
+        prefs.preferenceOnlySubstitutions &&
+        product?.brand &&
+        prefs.preferredBrands.includes(product.brand);
+      if (prefs.exactMatchOnly && !exact && !preferred)
+        return {
+          code: "EXACT_MATCH_REQUIRED" as const,
+          outcome: "REQUIRE_APPROVAL" as const,
+          message: "A recurring item with verified brand and supplier is required.",
+        };
+      if (line.substituteFor && prefs.preferenceOnlySubstitutions && !preferred)
+        return {
+          code: "SUBSTITUTION_PREFERENCE_REQUIRED" as const,
+          outcome: "REQUIRE_APPROVAL" as const,
+          message: "This substitute needs an approved preferred brand.",
+        };
+      if (
+        prefs.exactMatchOnly &&
+        exact &&
+        previous.unitPriceExclVat !== null &&
+        line.unitPriceExclVat !== null &&
+        Math.round(line.unitPriceExclVat * 10000) >
+          Math.round(previous.unitPriceExclVat * (prefs.softBudgetTolerance ? 1.05 : 1) * 10000)
+      )
+        return {
+          code: "RECURRING_PRICE_INCREASE" as const,
+          outcome: "REQUIRE_APPROVAL" as const,
+          message: "The price increase exceeds the configured tolerance.",
+        };
+    }
+    return null;
+  }
   const api: WorkspaceApi = {
     async getMe() {
       load();
@@ -401,10 +473,13 @@ export function createMockApi(
         };
       });
       const total = lines.reduce((sum, l) => sum + (l.lineTotalExclVat ?? 0), 0);
+      const guardrail = governance(lines, total);
       const blocked =
+        guardrail?.outcome === "DENY" ||
         lines.some((l) => l.unitPriceExclVat === null) ||
         (values.maxOrderValue !== null && total > values.maxOrderValue);
       const allowed =
+        !guardrail &&
         !blocked &&
         values.autonomy === "order_within_limits" &&
         values.autoApproveBelow !== null &&
@@ -427,17 +502,23 @@ export function createMockApi(
           autoApproveBelow: values.autoApproveBelow,
           autonomy: values.autonomy,
         },
-        reasons: [
-          {
-            code: blocked ? "ORDER_VALUE_TOO_HIGH" : allowed ? "WITHIN_LIMITS" : "NO_AUTO_APPROVAL",
-            outcome,
-            message: blocked
-              ? "The purchase exceeds the configured limit or has no price."
-              : allowed
-                ? "Explicit autonomous limits allow this purchase."
-                : "Human approval is required for this purchase.",
-          },
-        ],
+        reasons: guardrail
+          ? [guardrail]
+          : [
+              {
+                code: blocked
+                  ? "ORDER_VALUE_TOO_HIGH"
+                  : allowed
+                    ? "WITHIN_LIMITS"
+                    : "NO_AUTO_APPROVAL",
+                outcome,
+                message: blocked
+                  ? "The purchase exceeds the configured limit or has no price."
+                  : allowed
+                    ? "Explicit autonomous limits allow this purchase."
+                    : "Human approval is required for this purchase.",
+              },
+            ],
         evaluatedAt: now(),
       };
     },
@@ -465,6 +546,7 @@ export function createMockApi(
           ...l,
           name: fixtureProducts.find((p) => p.id === l.productId)?.name ?? l.productId,
           vendorName: "Kitchen supplier",
+          brand: fixtureProducts.find((p) => p.id === l.productId)?.brand ?? null,
         })),
         totalExclVat: decision.totalExclVat,
         currency: "EUR",
@@ -588,6 +670,9 @@ export function createMockApi(
         error("QUOTE_EXPIRED", "The quote expired. Prepare an updated purchase proposal.");
       if (p.status !== "APPROVED" && !(p.status === "READY" && p.decision.outcome === "ALLOW"))
         error("APPROVAL_REQUIRED", "This purchase still needs approval.");
+      const guardrail = governance(p.lines, p.totalExclVat);
+      if (guardrail && (guardrail.outcome === "DENY" || p.status !== "APPROVED"))
+        error(guardrail.code, guardrail.message);
       const order = OrderSchema.parse({
         id: idOf("ORD"),
         proposalId: p.id,
@@ -871,7 +956,10 @@ export function createMockApi(
             return { p, score };
           })
           .filter((m) => m.score > 0)
-          .sort((a, b) => b.score - a.score || (unitPrices[a.p.id] ?? 999) - (unitPrices[b.p.id] ?? 999));
+          .sort(
+            (a, b) =>
+              b.score - a.score || (unitPrices[a.p.id] ?? 999) - (unitPrices[b.p.id] ?? 999),
+          );
 
         const sortedCandidates = matches.map(({ p, score }) => ({
           id: p.id,
@@ -991,7 +1079,11 @@ export function createMockApi(
       current("buyer");
       const prev = find(proposalId);
       if (prev.createdBy !== data.user.id)
-        throw new ApiError("Only the buyer who created this proposal can revise it.", 403, "FORBIDDEN");
+        throw new ApiError(
+          "Only the buyer who created this proposal can revise it.",
+          403,
+          "FORBIDDEN",
+        );
       if (!["READY", "PENDING_APPROVAL", "APPROVED"].includes(prev.status))
         error("INVALID_STATE", "This purchase can no longer be revised.");
       if (
@@ -1023,7 +1115,10 @@ export function createMockApi(
             400,
             "INVALID_CHANGE",
           );
-        if (!fixtureProducts.some((p) => p.id === rep.toProductId) || unitPrices[rep.toProductId] == null)
+        if (
+          !fixtureProducts.some((p) => p.id === rep.toProductId) ||
+          unitPrices[rep.toProductId] == null
+        )
           throw new ApiError(`Unknown product ${rep.toProductId}.`, 404, "PRODUCT_NOT_FOUND");
         nextLines = nextLines.map((l) =>
           l.productId === rep.fromProductId
@@ -1060,7 +1155,10 @@ export function createMockApi(
       }
 
       for (const add of body.addItems ?? []) {
-        if (!fixtureProducts.some((p) => p.id === add.productId) || unitPrices[add.productId] == null)
+        if (
+          !fixtureProducts.some((p) => p.id === add.productId) ||
+          unitPrices[add.productId] == null
+        )
           throw new ApiError(`Unknown product ${add.productId}.`, 404, "PRODUCT_NOT_FOUND");
         const existing = nextLines.find((l) => l.productId === add.productId);
         if (existing) {

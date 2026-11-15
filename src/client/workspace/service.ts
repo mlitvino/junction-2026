@@ -124,6 +124,7 @@ export function createWorkspaceService(
     mock: boolean;
     storage?: () => Storage | null;
     onPurchaseConfirmed?: (feedback: "approved" | "purchased") => void;
+    onChatAffection?: () => void;
     capabilities?: {
       initialPlans?(): RestockPlan[];
       setRoles(roles: Role[]): void;
@@ -1011,9 +1012,13 @@ export function createWorkspaceService(
     return single(`message:${id}`, async () => {
       const text = message.trim();
       if (!text) return;
+      const affectionate = /^(?:i love you|i like you|love you|you are cute)[.!?]*$/i.test(
+        text.replace(/\s+/g, " "),
+      );
       const runEpoch = epoch;
       editThread(id, (t) => {
-        for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
+        if (!affectionate)
+          for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
         t.timeline!.push({ kind: "message", index: t.messages.length });
         t.messages.push({ role: "user", text, at: stamp() });
         t.working = true;
@@ -1021,6 +1026,11 @@ export function createWorkspaceService(
         t.stage = "Understanding your request";
       });
       try {
+        if (affectionate) {
+          options.onChatAffection?.();
+          answer(id, "Aw, thank you! Happy to help your kitchen.");
+          return;
+        }
         const current = resolveActiveProposal(thread(id), snapshot.proposals);
         const mandatory = /milk.protein.free|gluten.free|no.*allergen/i.test(text);
         if (!mandatory && /^(why|what|explain|compare|show.*alternative)/i.test(text)) {

@@ -5,11 +5,17 @@ import { inArray } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { valioProduct } from "@/server/db/schema";
-import { evaluatePolicy, lineTotal, mergeDraftLines, type PolicyLineFacts } from "@/server/policy/evaluate";
+import {
+  evaluatePolicy,
+  lineTotal,
+  mergeDraftLines,
+  type PolicyLineFacts,
+} from "@/server/policy/evaluate";
 import type { PolicyDecision, PolicyEvaluateRequest } from "@/shared/contracts/policy";
 
 import { getAvailability, getPrices, today } from "./catalog";
 import { getEffectiveFor } from "./preferences";
+import { checkPurchasingGovernance } from "./purchasing-governance";
 
 /**
  * Policy check for a draft order in an organization. Uses the buyer's effective preferences
@@ -62,6 +68,21 @@ export async function evaluateDraft(
 
   const prefs = effective.values;
   const result = evaluatePolicy(prefs, facts, { requestedDate: date });
+  const governance = await checkPurchasingGovernance(
+    getDb(),
+    organizationId,
+    facts,
+    result.totalExclVat,
+  );
+  if (governance.length) {
+    result.reasons = [
+      ...result.reasons.filter((reason) => reason.code !== "WITHIN_LIMITS"),
+      ...governance,
+    ];
+    result.outcome = result.reasons.some((reason) => reason.outcome === "DENY")
+      ? "DENY"
+      : "REQUIRE_APPROVAL";
+  }
   return {
     ...result,
     lines: facts.map((f) => ({
@@ -73,7 +94,8 @@ export async function evaluateDraft(
       orderable: f.availability?.orderable ?? null,
       availableDate: f.availability?.availableDate ?? null,
       availableQuantity: f.availability?.availableQuantity ?? null,
-      priceSnapshotId: f.unitPriceExclVat === null ? null : (quoteById.get(f.productId)?.snapshotId ?? null),
+      priceSnapshotId:
+        f.unitPriceExclVat === null ? null : (quoteById.get(f.productId)?.snapshotId ?? null),
       availabilitySnapshotId: availabilityById.get(f.productId)?.snapshotId ?? null,
     })),
     currency: prices.currency,

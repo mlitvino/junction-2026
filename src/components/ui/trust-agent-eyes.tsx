@@ -33,6 +33,7 @@ export function TrustAgentEyes({ state = "idle", size = 40, className }: TrustAg
   const brackets = useRef<SVGGElement>(null);
   const checks = useRef<SVGGElement>(null);
   const coins = useRef<SVGGElement>(null);
+  const hearts = useRef<SVGGElement>(null);
   const motion = useRef({
     frame: 0,
     pointerX: 0,
@@ -78,13 +79,16 @@ export function TrustAgentEyes({ state = "idle", size = 40, className }: TrustAg
       left!.style.opacity = right!.style.opacity = m.feedback ? "0" : "1";
       if (checks.current) checks.current.style.opacity = m.feedback === "approved" ? "1" : "0";
       if (coins.current) coins.current.style.opacity = m.feedback === "purchased" ? "1" : "0";
+      if (hearts.current) hearts.current.style.opacity = m.feedback === "loved" ? "1" : "0";
       if (brackets.current) {
         brackets.current.style.stroke =
           m.feedback === "approved"
             ? "#10B981"
             : m.feedback === "purchased"
               ? "#F59E0B"
-              : colors[state][1];
+              : m.feedback === "loved"
+                ? "#F472B6"
+                : colors[state][1];
       }
       // Use a timer as well as RAF so the mark resets with reduced motion enabled.
       m.feedbackTimer = m.feedback ? setTimeout(nextFeedback, 1300) : null;
@@ -167,8 +171,8 @@ export function TrustAgentEyes({ state = "idle", size = 40, className }: TrustAg
         reduced || !m.feedback
           ? 1
           : 1 + Math.sin(Math.min(1, feedbackElapsed / 280) * Math.PI) * 0.12;
-      // Keep both marks at the eyes' position even while hidden, ready for the next reaction.
-      for (const mark of [checks.current, coins.current]) {
+      // Keep all marks at the eyes' position even while hidden, ready for the next reaction.
+      for (const mark of [checks.current, coins.current, hearts.current]) {
         if (mark) mark.style.transform = `translate(${eyeX}px, ${eyeY}px) scale(${feedbackPop})`;
       }
     }
@@ -334,6 +338,16 @@ export function TrustAgentEyes({ state = "idle", size = 40, className }: TrustAg
                   strokeLinecap="round"
                 />
               </g>
+            ))}
+          </g>
+        </g>
+        <g ref={hearts} fill="#FB7185" style={{ opacity: 0, transformOrigin: "32px 22px" }}>
+          <g transform="translate(32 22) scale(0.75) translate(-32 -22)">
+            {[24, 40].map((x) => (
+              <path
+                key={x}
+                d={`M ${x} 28 C ${x - 2} 26 ${x - 6.5} 23 ${x - 6.5} 19.5 C ${x - 6.5} 15.5 ${x - 2} 14.5 ${x} 18 C ${x + 2} 14.5 ${x + 6.5} 15.5 ${x + 6.5} 19.5 C ${x + 6.5} 23 ${x + 2} 26 ${x} 28 Z`}
+              />
             ))}
           </g>
         </g>

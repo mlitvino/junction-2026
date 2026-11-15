@@ -20,13 +20,19 @@ export const PolicyEvaluateRequestSchema = z.object({
         }),
         substituteFor: z
           .object({
-            requested: z.string().meta({ description: "What was asked for (requested name or product)." }),
+            requested: z
+              .string()
+              .meta({ description: "What was asked for (requested name or product)." }),
             reason: z.enum(["split", "swap", "fallback"]).meta({
-              description: "`split`: part of a short-stock split; `swap`: replaced on request; `fallback`: the best match can't be delivered.",
+              description:
+                "`split`: part of a short-stock split; `swap`: replaced on request; `fallback`: the best match can't be delivered.",
             }),
           })
           .optional()
-          .meta({ description: "Set when this line stands in for what was requested. Needs approval unless `allowSubstitutes`." }),
+          .meta({
+            description:
+              "Set when this line stands in for what was requested. Needs approval unless `allowSubstitutes`.",
+          }),
       }),
     )
     .min(1)
@@ -44,6 +50,10 @@ export const PolicyOutcomeSchema = z.enum(["ALLOW", "REQUIRE_APPROVAL", "DENY"])
 });
 
 export const PolicyReasonCodeSchema = z.enum([
+  "DAILY_SPENDING_CAP",
+  "EXACT_MATCH_REQUIRED",
+  "SUBSTITUTION_PREFERENCE_REQUIRED",
+  "RECURRING_PRICE_INCREASE",
   "UNKNOWN_PRODUCT",
   "PRICE_UNKNOWN",
   "BLOCKED_VENDOR",
@@ -84,26 +94,47 @@ export const PolicyLineSchema = z.object({
   salesUnit: z.string().nullable(),
   unitPriceExclVat: z.number().nullable().meta({ description: "Null when Valio has no price." }),
   lineTotalExclVat: z.number().nullable(),
-  orderable: z.boolean().nullable().meta({ description: "Null when Valio gave no availability answer." }),
-  availableDate: z.string().nullable().meta({ description: "Earliest delivery date; may be later than requested." }),
-  availableQuantity: z.number().nullable().meta({ description: "In salesUnit. Null when unknown (terminal products)." }),
-  priceSnapshotId: z.string().nullable().optional().meta({ description: "Id of the recorded Valio price answer used; null without a price." }),
-  availabilitySnapshotId: z.string().nullable().optional().meta({ description: "Id of the recorded Valio availability answer used." }),
+  orderable: z
+    .boolean()
+    .nullable()
+    .meta({ description: "Null when Valio gave no availability answer." }),
+  availableDate: z
+    .string()
+    .nullable()
+    .meta({ description: "Earliest delivery date; may be later than requested." }),
+  availableQuantity: z
+    .number()
+    .nullable()
+    .meta({ description: "In salesUnit. Null when unknown (terminal products)." }),
+  priceSnapshotId: z
+    .string()
+    .nullable()
+    .optional()
+    .meta({ description: "Id of the recorded Valio price answer used; null without a price." }),
+  availabilitySnapshotId: z
+    .string()
+    .nullable()
+    .optional()
+    .meta({ description: "Id of the recorded Valio availability answer used." }),
 });
 
 export const PolicyDecisionSchema = z.object({
   outcome: PolicyOutcomeSchema,
-  reasons: z.array(PolicyReasonSchema).meta({ description: "Every rule that applied; the strictest decides." }),
+  reasons: z
+    .array(PolicyReasonSchema)
+    .meta({ description: "Every rule that applied; the strictest decides." }),
   lines: z.array(PolicyLineSchema),
   totalExclVat: z.number().nullable().meta({ description: "Null when a line has no price." }),
   currency: z.string().meta({ example: "EUR" }),
   pricingDate: z.iso.date(),
   source: DataSourceSchema,
-  limits: z.object({
-    maxOrderValue: z.number().nullable(),
-    autoApproveBelow: z.number().nullable(),
-    autonomy: z.enum(["suggest_only", "order_within_limits"]),
-  }).meta({ description: "The buyer's effective limits the decision used." }),
+  limits: z
+    .object({
+      maxOrderValue: z.number().nullable(),
+      autoApproveBelow: z.number().nullable(),
+      autonomy: z.enum(["suggest_only", "order_within_limits"]),
+    })
+    .meta({ description: "The buyer's effective limits the decision used." }),
   evaluatedAt: z.iso.datetime(),
 });
 

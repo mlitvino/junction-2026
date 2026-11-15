@@ -59,6 +59,7 @@ import type {
 import { recordAudit, type AuditActor, type AuditEntry } from "./audit";
 import { getAvailability, getPrices, today } from "./catalog";
 import { evaluateDraft } from "./policy";
+import { checkPurchasingGovernance } from "./purchasing-governance";
 import { checkProposalSignature, signProposalContent } from "./trust";
 
 // The one purchasing flow: proposals, approvals, orders. Every function takes the caller (their
@@ -82,7 +83,10 @@ export class PurchasingError extends Error {
 /** The signed-in user (or the agent acting for them) the call is made for. */
 export type Actor = AuditActor & { userId: string };
 
-export function actorFor(user: { id: string; username: string; organization: { id: string } }, agent = false): Actor {
+export function actorFor(
+  user: { id: string; username: string; organization: { id: string } },
+  agent = false,
+): Actor {
   return { organizationId: user.organization.id, userId: user.id, userName: user.username, agent };
 }
 
@@ -107,11 +111,18 @@ const eur = (n: number | null) => (n === null ? "unknown total" : `€${n.toFixe
 async function usernames(d: Db, ids: (string | null)[]): Promise<Map<string, string>> {
   const unique = [...new Set(ids.filter((v): v is string => !!v))];
   if (!unique.length) return new Map();
-  const rows = await d.select({ id: user.id, username: user.username }).from(user).where(inArray(user.id, unique));
+  const rows = await d
+    .select({ id: user.id, username: user.username })
+    .from(user)
+    .where(inArray(user.id, unique));
   return new Map(rows.map((r) => [r.id, r.username ?? r.id]));
 }
 
-function toApproval(row: ApprovalRow, names: Map<string, string>, quoteExpiresAt: Date | null): Approval {
+function toApproval(
+  row: ApprovalRow,
+  names: Map<string, string>,
+  quoteExpiresAt: Date | null,
+): Approval {
   return {
     id: row.id,
     proposalId: row.proposalId,
@@ -204,11 +215,16 @@ async function withRelations(d: Db, rows: ProposalRow[]): Promise<Proposal[]> {
   ]);
   const approvalBy = new Map(approvals.map((a) => [a.proposalId, a]));
   const orderBy = new Map(orders.map((o) => [o.proposalId, o.id]));
-  return rows.map((r) => toProposal(r, approvalBy.get(r.id) ?? null, orderBy.get(r.id) ?? null, names));
+  return rows.map((r) =>
+    toProposal(r, approvalBy.get(r.id) ?? null, orderBy.get(r.id) ?? null, names),
+  );
 }
 
 async function ordersWithNames(d: Db, rows: PurchaseOrderRow[]): Promise<Order[]> {
-  const names = await usernames(d, rows.map((r) => r.createdBy));
+  const names = await usernames(
+    d,
+    rows.map((r) => r.createdBy),
+  );
   return rows.map((r) => toOrder(r, names));
 }
 
@@ -260,16 +276,25 @@ export async function createProposal(
   if (request.date && request.date < today())
     throw new PurchasingError(422, "DATE_IN_PAST", `The delivery date ${request.date} is in the past. Pick today or a later date.`);
   const mergedRequestLines = mergeDraftLines(request.lines);
-  const decision = await evaluateDraft(actor.organizationId, { ...request, lines: mergedRequestLines });
+  const decision = await evaluateDraft(actor.organizationId, {
+    ...request,
+    lines: mergedRequestLines,
+  });
   const d = await db();
   const ids = [...new Set(mergedRequestLines.map((l) => l.productId))];
   const products = await d
-    .select({ id: valioProduct.id, name: valioProduct.name, vendorName: valioProduct.vendorName })
+    .select({
+      id: valioProduct.id,
+      name: valioProduct.name,
+      vendorName: valioProduct.vendorName,
+      brand: valioProduct.brand,
+    })
     .from(valioProduct)
     .where(inArray(valioProduct.id, ids));
   const productBy = new Map(products.map((p) => [p.id, p]));
 
   const lines: StoredProposalLine[] = decision.lines.map((l) => ({
+    brand: productBy.get(l.productId)?.brand ?? null,
     productId: l.productId,
     name: productBy.get(l.productId)?.name ?? "Unknown product",
     vendorName: productBy.get(l.productId)?.vendorName ?? "",
@@ -280,7 +305,8 @@ export async function createProposal(
     orderable: l.orderable,
     availableDate: l.availableDate,
     availableQuantity: l.availableQuantity,
-    substituteFor: mergedRequestLines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
+    substituteFor:
+      mergedRequestLines.find((r) => r.productId === l.productId)?.substituteFor ?? null,
     priceSnapshotId: l.priceSnapshotId,
     availabilitySnapshotId: l.availabilitySnapshotId,
   }));
@@ -315,7 +341,8 @@ export async function createProposal(
     pricingDate: decision.pricingDate,
     decision,
   });
-  const selection = priced?.selection !== undefined ? priced.selection : (options.selection ?? null);
+  const selection =
+    priced?.selection !== undefined ? priced.selection : (options.selection ?? null);
   const preparation = [...(options.preparation ?? []), ...(priced?.preparation ?? [])];
 
   return d.transaction(async (tx) => {
@@ -340,13 +367,22 @@ export async function createProposal(
       .returning();
     const created = row!;
     await recordAudit(tx, actor, [
-      ...preparation.map((p) => ({ ...p, resourceType: "proposal" as const, resourceId: created.id })),
+      ...preparation.map((p) => ({
+        ...p,
+        resourceType: "proposal" as const,
+        resourceId: created.id,
+      })),
       {
         action: "proposal.created",
         resourceType: "proposal",
         resourceId: created.id,
         summary: `Created a proposal with ${lines.length} line(s), ${eur(decision.totalExclVat)} excl. VAT for ${decision.pricingDate}; policy: ${decision.outcome}.`,
-        details: { source, outcome: decision.outcome, reasons: decision.reasons, totalExclVat: decision.totalExclVat },
+        details: {
+          source,
+          outcome: decision.outcome,
+          reasons: decision.reasons,
+          totalExclVat: decision.totalExclVat,
+        },
       },
     ]);
     return (await withRelations(tx, [created]))[0]!;
@@ -359,7 +395,12 @@ export async function listProposals(actor: Actor, query: ListProposalsQuery): Pr
   const where: SQL[] = [eq(proposal.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(proposal.status, query.status));
   if (query.mine === "true") where.push(eq(proposal.createdBy, actor.userId));
-  const rows = await d.select().from(proposal).where(and(...where)).orderBy(desc(proposal.createdAt)).limit(200);
+  const rows = await d
+    .select()
+    .from(proposal)
+    .where(and(...where))
+    .orderBy(desc(proposal.createdAt))
+    .limit(200);
   return withRelations(d, rows);
 }
 
@@ -376,7 +417,11 @@ export async function getProposal(actor: Actor, id: string): Promise<Proposal> {
 
 function requireCreator(row: ProposalRow, actor: Actor) {
   if (row.createdBy !== actor.userId)
-    throw new PurchasingError(403, "NOT_CREATOR", "Only the buyer who created this proposal can do this.");
+    throw new PurchasingError(
+      403,
+      "NOT_CREATOR",
+      "Only the buyer who created this proposal can do this.",
+    );
 }
 
 async function cancelLocked(tx: Tx, actor: Actor, row: ProposalRow, why: string) {
@@ -386,7 +431,12 @@ async function cancelLocked(tx: Tx, actor: Actor, row: ProposalRow, why: string)
     .update(approval)
     .set({ status: "CANCELLED" })
     .where(and(eq(approval.proposalId, row.id), eq(approval.status, "PENDING")));
-  await recordAudit(tx, actor, { action: "proposal.cancelled", resourceType: "proposal", resourceId: row.id, summary: why });
+  await recordAudit(tx, actor, {
+    action: "proposal.cancelled",
+    resourceType: "proposal",
+    resourceId: row.id,
+    summary: why,
+  });
 }
 
 export async function cancelProposal(actor: Actor, id: string): Promise<Proposal> {
@@ -408,7 +458,11 @@ export async function reviseProposal(
   actor: Actor,
   id: string,
   next: {
-    lines: { productId: string; quantity: number; substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null }[];
+    lines: {
+      productId: string;
+      quantity: number;
+      substituteFor?: { requested: string; reason: "split" | "swap" | "fallback" } | null;
+    }[];
     date?: string;
     appliedChanges: string[];
     selection?: ProposalSelection | null;
@@ -416,16 +470,29 @@ export async function reviseProposal(
 ): Promise<ReviseProposalResponse> {
   const old = await getProposal(actor, id);
   if (old.createdBy !== actor.userId)
-    throw new PurchasingError(403, "NOT_CREATOR", "Only the buyer who created this proposal can revise it.");
+    throw new PurchasingError(
+      403,
+      "NOT_CREATOR",
+      "Only the buyer who created this proposal can revise it.",
+    );
   enforce(canCancel(old.status));
-  if (!next.lines.length) throw new PurchasingError(400, "EMPTY_PROPOSAL", "The revision removes every line; cancel the proposal instead.");
+  if (!next.lines.length)
+    throw new PurchasingError(
+      400,
+      "EMPTY_PROPOSAL",
+      "The revision removes every line; cancel the proposal instead.",
+    );
 
   const baseSelection = next.selection !== undefined ? next.selection : old.selection;
   const story = old.source === "recipe" ? "recipe_order" : "simple_buy";
   const revised = await createProposal(
     actor,
     {
-      lines: next.lines.map((l) => ({ productId: l.productId, quantity: l.quantity, ...(l.substituteFor ? { substituteFor: l.substituteFor } : {}) })),
+      lines: next.lines.map((l) => ({
+        productId: l.productId,
+        quantity: l.quantity,
+        ...(l.substituteFor ? { substituteFor: l.substituteFor } : {}),
+      })),
       date: next.date ?? old.pricingDate,
       note: old.note ?? undefined,
     },
@@ -456,12 +523,19 @@ export async function reviseProposal(
   // A BLOCKED revision doesn't replace a usable proposal: the old one stays as it was.
   const previousCancelled = revised.status !== "BLOCKED";
   if (previousCancelled) {
-    await (await db()).transaction(async (tx) => {
+    await (
+      await db()
+    ).transaction(async (tx) => {
       const row = await lockProposal(tx, actor.organizationId, old.id);
       await cancelLocked(tx, actor, row, `Replaced by revised proposal ${revised.id}.`);
     });
   }
-  return { previousProposalId: old.id, previousCancelled, appliedChanges: next.appliedChanges, proposal: revised };
+  return {
+    previousProposalId: old.id,
+    previousCancelled,
+    appliedChanges: next.appliedChanges,
+    proposal: revised,
+  };
 }
 
 // ---------- Approvals ----------
@@ -486,7 +560,9 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
       })
       .returning({ id: approval.id });
     await setProposalStatus(tx, row.id, "PENDING_APPROVAL");
-    const reasons = (row.decision.reasons ?? []).filter((r) => r.outcome !== "ALLOW").map((r) => r.message);
+    const reasons = (row.decision.reasons ?? [])
+      .filter((r) => r.outcome !== "ALLOW")
+      .map((r) => r.message);
     await recordAudit(tx, actor, {
       action: "approval.requested",
       resourceType: "proposal",
@@ -498,17 +574,36 @@ export async function requestApproval(actor: Actor, id: string): Promise<Proposa
   });
 }
 
-export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Promise<ApprovalWithProposal[]> {
+export async function listApprovals(
+  actor: Actor,
+  query: ListApprovalsQuery,
+): Promise<ApprovalWithProposal[]> {
   await expireStaleApprovals(actor);
   const d = await db();
   const where: SQL[] = [eq(approval.organizationId, actor.organizationId)];
   if (query.status) where.push(eq(approval.status, query.status));
-  const approvals = await d.select().from(approval).where(and(...where)).orderBy(desc(approval.requestedAt)).limit(200);
+  const approvals = await d
+    .select()
+    .from(approval)
+    .where(and(...where))
+    .orderBy(desc(approval.requestedAt))
+    .limit(200);
   if (!approvals.length) return [];
-  const rows = await d.select().from(proposal).where(inArray(proposal.id, approvals.map((a) => a.proposalId)));
+  const rows = await d
+    .select()
+    .from(proposal)
+    .where(
+      inArray(
+        proposal.id,
+        approvals.map((a) => a.proposalId),
+      ),
+    );
   const proposals = new Map((await withRelations(d, rows)).map((p) => [p.id, p]));
   const quoteExpiry = new Map(rows.map((r) => [r.id, r.quoteExpiresAt]));
-  const names = await usernames(d, approvals.flatMap((a) => [a.requestedBy, a.decidedBy]));
+  const names = await usernames(
+    d,
+    approvals.flatMap((a) => [a.requestedBy, a.decidedBy]),
+  );
   return approvals.map((a) => ({
     ...toApproval(a, names, quoteExpiry.get(a.proposalId) ?? null),
     proposal: proposals.get(a.proposalId)!,
@@ -518,10 +613,13 @@ export async function listApprovals(actor: Actor, query: ListApprovalsQuery): Pr
 /** For a badge: approvals waiting for a decision (expired ones are expired first) and the next expiry. */
 export async function pendingApprovalCount(actor: Actor): Promise<PendingApprovalCount> {
   await expireStaleApprovals(actor);
-  const expiry = sql<Date | null>`min(coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}))`.mapWith((v) =>
-    v === null ? null : new Date(v as string),
-  );
-  const [row] = await (await db())
+  const expiry =
+    sql<Date | null>`min(coalesce(${approval.expiresAt}, ${proposal.quoteExpiresAt}))`.mapWith(
+      (v) => (v === null ? null : new Date(v as string)),
+    );
+  const [row] = await (
+    await db()
+  )
     .select({ count: sql<number>`count(*)`.mapWith(Number), nextExpiresAt: expiry })
     .from(approval)
     .innerJoin(proposal, eq(proposal.id, approval.proposalId))
@@ -550,7 +648,11 @@ async function expireStaleApprovals(actor: Actor): Promise<void> {
   if (!any) return;
   await d.transaction(async (tx) => {
     const stale = await tx
-      .select({ id: approval.id, proposalId: approval.proposalId, totalExclVat: proposal.totalExclVat })
+      .select({
+        id: approval.id,
+        proposalId: approval.proposalId,
+        totalExclVat: proposal.totalExclVat,
+      })
       .from(approval)
       .innerJoin(proposal, eq(proposal.id, approval.proposalId))
       .where(due)
@@ -558,11 +660,27 @@ async function expireStaleApprovals(actor: Actor): Promise<void> {
       .for("update", { skipLocked: true });
     if (!stale.length) return;
     const now = new Date();
-    await tx.update(approval).set({ status: "EXPIRED" }).where(inArray(approval.id, stale.map((s) => s.id)));
+    await tx
+      .update(approval)
+      .set({ status: "EXPIRED" })
+      .where(
+        inArray(
+          approval.id,
+          stale.map((s) => s.id),
+        ),
+      );
     await tx
       .update(proposal)
       .set({ status: "EXPIRED", updatedAt: now })
-      .where(and(inArray(proposal.id, stale.map((s) => s.proposalId)), eq(proposal.status, "PENDING_APPROVAL")));
+      .where(
+        and(
+          inArray(
+            proposal.id,
+            stale.map((s) => s.proposalId),
+          ),
+          eq(proposal.status, "PENDING_APPROVAL"),
+        ),
+      );
     await recordAudit(
       tx,
       actor,
@@ -578,7 +696,11 @@ async function expireStaleApprovals(actor: Actor): Promise<void> {
   });
 }
 
-export async function decideApproval(actor: Actor, id: string, request: DecideApprovalRequest): Promise<Proposal> {
+export async function decideApproval(
+  actor: Actor,
+  id: string,
+  request: DecideApprovalRequest,
+): Promise<Proposal> {
   await expireStaleApprovals(actor);
   return (await db()).transaction(async (tx) => {
     const [found] = await tx
@@ -589,15 +711,26 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
     const row = await lockProposal(tx, actor.organizationId, found.proposalId);
     const [current] = await tx.select().from(approval).where(eq(approval.id, id));
     enforce(
-      canDecide(current!.status as ApprovalStatus, row.status as ProposalStatus, request.proposalHash, row.hash, {
-        expiresAt: approvalExpiry(current!.expiresAt, row.quoteExpiresAt),
-        now: new Date(),
-      }),
+      canDecide(
+        current!.status as ApprovalStatus,
+        row.status as ProposalStatus,
+        request.proposalHash,
+        row.hash,
+        {
+          expiresAt: approvalExpiry(current!.expiresAt, row.quoteExpiresAt),
+          now: new Date(),
+        },
+      ),
     );
     enforce(checkQuote(row.quoteExpiresAt, new Date()));
     await tx
       .update(approval)
-      .set({ status: request.decision, decidedBy: actor.userId, decidedAt: new Date(), comment: request.comment || null })
+      .set({
+        status: request.decision,
+        decidedBy: actor.userId,
+        decidedAt: new Date(),
+        comment: request.comment || null,
+      })
       .where(eq(approval.id, id));
     await setProposalStatus(tx, row.id, request.decision);
     await recordAudit(tx, actor, {
@@ -605,7 +738,12 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
       resourceType: "proposal",
       resourceId: row.id,
       summary: `${request.decision === "APPROVED" ? "Approved" : "Rejected"} the proposal (${eur(row.totalExclVat)})${request.comment ? `: ${request.comment}` : "."}`,
-      details: { approvalId: id, decision: request.decision, comment: request.comment ?? null, proposalHash: row.hash },
+      details: {
+        approvalId: id,
+        decision: request.decision,
+        comment: request.comment ?? null,
+        proposalHash: row.hash,
+      },
     });
     return reload(tx, row.id);
   });
@@ -615,21 +753,41 @@ export async function decideApproval(actor: Actor, id: string, request: DecideAp
 
 export type PlacedOrder = { order: Order; replayed: boolean };
 
-async function orderByKey(d: Db, actor: Actor, key: string, proposalId: string): Promise<PlacedOrder | null> {
+async function orderByKey(
+  d: Db,
+  actor: Actor,
+  key: string,
+  proposalId: string,
+): Promise<PlacedOrder | null> {
   const [existing] = await d
     .select()
     .from(purchaseOrder)
-    .where(and(eq(purchaseOrder.organizationId, actor.organizationId), eq(purchaseOrder.idempotencyKey, key)));
+    .where(
+      and(
+        eq(purchaseOrder.organizationId, actor.organizationId),
+        eq(purchaseOrder.idempotencyKey, key),
+      ),
+    );
   if (!existing) return null;
   if (existing.proposalId !== proposalId)
-    throw new PurchasingError(409, "IDEMPOTENCY_CONFLICT", "This idempotency key was already used for another proposal.");
+    throw new PurchasingError(
+      409,
+      "IDEMPOTENCY_CONFLICT",
+      "This idempotency key was already used for another proposal.",
+    );
   return { order: (await ordersWithNames(d, [existing]))[0]!, replayed: true };
 }
 
 /** Current Valio prices and availability for frozen lines (network: call outside transactions). */
-async function liveOffer(lines: readonly StoredProposalLine[], date: string): Promise<LiveLineCheck[]> {
+async function liveOffer(
+  lines: readonly StoredProposalLine[],
+  date: string,
+): Promise<LiveLineCheck[]> {
   const productIds = [...new Set(lines.map((l) => l.productId))];
-  const [prices, availability] = await Promise.all([getPrices({ productIds, date }), getAvailability({ productIds, date })]);
+  const [prices, availability] = await Promise.all([
+    getPrices({ productIds, date }),
+    getAvailability({ productIds, date }),
+  ]);
   const priceBy = new Map(prices.quotes.map((q) => [q.productId, q]));
   const availabilityBy = new Map(availability.items.map((a) => [a.productId, a]));
   return productIds.map((productId) => {
@@ -651,7 +809,11 @@ const ORDERABLE: readonly string[] = ["READY", "APPROVED"];
  * (5-minute cache) and availability still match the frozen ones. A replay of the same key returns
  * the existing order without any check.
  */
-export async function placeOrder(actor: Actor, proposalId: string, idempotencyKey: string): Promise<PlacedOrder> {
+export async function placeOrder(
+  actor: Actor,
+  proposalId: string,
+  idempotencyKey: string,
+): Promise<PlacedOrder> {
   const d = await db();
   const replay = await orderByKey(d, actor, idempotencyKey, proposalId);
   if (replay) return replay;
@@ -665,6 +827,8 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
 
   try {
     return await d.transaction(async (tx) => {
+      // Serialize organization spending with other orders and preference writes.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${actor.organizationId}))`);
       const row = await lockProposal(tx, actor.organizationId, proposalId);
       const replayed = await orderByKey(tx, actor, idempotencyKey, proposalId);
       if (replayed) return replayed;
@@ -673,11 +837,35 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
         canOrder(
           row.status as ProposalStatus,
           row.outcome as PolicyOutcome,
-          approvalRow ? { status: approvalRow.status as ApprovalStatus, proposalHash: approvalRow.proposalHash } : null,
+          approvalRow
+            ? {
+                status: approvalRow.status as ApprovalStatus,
+                proposalHash: approvalRow.proposalHash,
+              }
+            : null,
           row.hash,
         ),
       );
       enforce(checkQuote(row.quoteExpiresAt, new Date()));
+      const governance = await checkPurchasingGovernance(
+        tx,
+        actor.organizationId,
+        row.lines,
+        row.totalExclVat,
+      );
+      const refused = governance.find(
+        (reason) => reason.outcome === "DENY" || approvalRow?.status !== "APPROVED",
+      );
+      if (refused) {
+        await recordAudit(d, actor, {
+          action: "order.refused",
+          resourceType: "proposal",
+          resourceId: row.id,
+          summary: refused.message,
+          details: { code: refused.code },
+        });
+        throw new PurchasingError(422, refused.code, refused.message);
+      }
       const liveCheck = checkLiveOffer(row.lines, live);
       if (!liveCheck.ok) {
         // A refused order is part of the record too (outside the rolled-back transaction).
@@ -715,7 +903,10 @@ export async function placeOrder(actor: Actor, proposalId: string, idempotencyKe
     });
   } catch (err) {
     // The same key raced on another proposal (unique violation): answer like a replay would.
-    if ((err as { cause?: { code?: string } }).cause?.code === "23505" || (err as { code?: string }).code === "23505") {
+    if (
+      (err as { cause?: { code?: string } }).cause?.code === "23505" ||
+      (err as { code?: string }).code === "23505"
+    ) {
       const again = await orderByKey(d, actor, idempotencyKey, proposalId);
       if (again) return again;
     }
@@ -760,7 +951,10 @@ export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderRe
     .innerJoin(organization, eq(organization.id, purchaseOrder.organizationId))
     .where(and(eq(purchaseOrder.id, id), eq(purchaseOrder.organizationId, actor.organizationId)));
   if (!row) throw notFound("Order");
-  const [approvalRow] = await d.select().from(approval).where(eq(approval.proposalId, row.order.proposalId));
+  const [approvalRow] = await d
+    .select()
+    .from(approval)
+    .where(eq(approval.proposalId, row.order.proposalId));
   const names = await usernames(d, [row.order.createdBy, approvalRow?.decidedBy ?? null]);
   return {
     orderId: row.order.id,
@@ -768,7 +962,10 @@ export async function getOrderReceipt(actor: Actor, id: string): Promise<OrderRe
     issuedAt: row.order.createdAt.toISOString(),
     organizationName: row.orgName,
     orderedByName: names.get(row.order.createdBy) ?? null,
-    approvedByName: approvalRow?.status === "APPROVED" && approvalRow.decidedBy ? (names.get(approvalRow.decidedBy) ?? null) : null,
+    approvedByName:
+      approvalRow?.status === "APPROVED" && approvalRow.decidedBy
+        ? (names.get(approvalRow.decidedBy) ?? null)
+        : null,
     deliveryDate: row.pricingDate,
     lines: row.order.lines.map(withAvailability),
     totalExclVat: row.order.totalExclVat,
@@ -802,13 +999,20 @@ export async function verifyProposal(actor: Actor, id: string): Promise<Proposal
     priceSource: row.priceSource,
     decision: row.decision,
   };
-  const recomputed = contentHash(row.quoteExpiresAt ? { ...frozen, quoteExpiresAt: row.quoteExpiresAt.toISOString() } : frozen);
+  const recomputed = contentHash(
+    row.quoteExpiresAt ? { ...frozen, quoteExpiresAt: row.quoteExpiresAt.toISOString() } : frozen,
+  );
   const ids = [...new Set(row.lines.map((l) => l.productId))];
   const snapshots = ids.length
     ? await d
         .select()
         .from(valioPriceSnapshot)
-        .where(and(inArray(valioPriceSnapshot.productId, ids), eq(valioPriceSnapshot.pricingDate, row.pricingDate)))
+        .where(
+          and(
+            inArray(valioPriceSnapshot.productId, ids),
+            eq(valioPriceSnapshot.pricingDate, row.pricingDate),
+          ),
+        )
         .orderBy(desc(valioPriceSnapshot.fetchedAt))
     : [];
   return {
@@ -817,11 +1021,17 @@ export async function verifyProposal(actor: Actor, id: string): Promise<Proposal
     recomputedHash: recomputed,
     hashValid: recomputed === row.hash,
     // The signature covers the stored hash; a changed hash already shows in hashValid.
-    signatureValid: checkProposalSignature({ proposalId: row.id, hash: row.hash }, row.signature, row.signatureKeyId),
+    signatureValid: checkProposalSignature(
+      { proposalId: row.id, hash: row.hash },
+      row.signature,
+      row.signatureKeyId,
+    ),
     signatureKeyId: row.signatureKeyId,
     lines: row.lines.map((line) => {
       const samePrice = (s: (typeof snapshots)[number]) =>
-        s.productId === line.productId && line.unitPriceExclVat !== null && s.priceExclVat === line.unitPriceExclVat;
+        s.productId === line.productId &&
+        line.unitPriceExclVat !== null &&
+        s.priceExclVat === line.unitPriceExclVat;
       const match = line.priceSnapshotId
         ? snapshots.find((s) => String(s.id) === line.priceSnapshotId && samePrice(s))
         : snapshots.find(samePrice);
