@@ -413,13 +413,15 @@ export async function reviseProposal(
       ],
     },
   );
-  if (revised.status !== "BLOCKED") {
+  // A BLOCKED revision doesn't replace a usable proposal: the old one stays as it was.
+  const previousCancelled = revised.status !== "BLOCKED";
+  if (previousCancelled) {
     await (await db()).transaction(async (tx) => {
       const row = await lockProposal(tx, actor.organizationId, old.id);
       await cancelLocked(tx, actor, row, `Replaced by revised proposal ${revised.id}.`);
     });
   }
-  return { previousProposalId: old.id, appliedChanges: next.appliedChanges, proposal: revised };
+  return { previousProposalId: old.id, previousCancelled, appliedChanges: next.appliedChanges, proposal: revised };
 }
 
 // ---------- Approvals ----------

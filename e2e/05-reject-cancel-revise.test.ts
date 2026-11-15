@@ -11,7 +11,7 @@ import {
 
 import { expectError, expectStatus, ok } from "./lib/client.ts";
 import { cleanup } from "./lib/db.ts";
-import { deliveryDate, newOrg, orderableProducts, RUN, type Org, type Pick } from "./lib/fixtures.ts";
+import { deliveryDate, newOrg, orderableProducts, RUN, setLayer, type Org, type Pick } from "./lib/fixtures.ts";
 
 describe("reject, cancel, revise", () => {
   let org: Org;
@@ -82,6 +82,7 @@ describe("reject, cancel, revise", () => {
       "revise",
     );
     assert.equal(r.previousProposalId, original.id);
+    assert.equal(r.previousCancelled, true);
     assert.notEqual(r.proposal.id, original.id);
     assert.notEqual(r.proposal.hash, original.hash);
     const lines = new Map(r.proposal.lines.map((l) => [l.productId, l.quantity]));
@@ -98,5 +99,26 @@ describe("reject, cancel, revise", () => {
       403,
       "someone else revises",
     );
+  });
+
+  it("a revision the policy blocks leaves the old proposal usable", async () => {
+    const original = await create(1);
+    await setLayer(org.approver, "base", { maxOrderValue: 0.01 });
+    try {
+      const r = ok(
+        await org.buyer.post(`/api/proposals/${original.id}/revise`, {
+          quantityUpdates: [{ productId: products[0]!.id, quantity: 2 }],
+        }),
+        201,
+        ReviseProposalResponseSchema,
+        "revise into BLOCKED",
+      );
+      assert.equal(r.proposal.status, "BLOCKED");
+      assert.equal(r.previousCancelled, false);
+      const old = ok(await org.buyer.get(`/api/proposals/${original.id}`), 200, ProposalSchema, "old proposal");
+      assert.equal(old.status, "READY", "the old proposal is still usable");
+    } finally {
+      await setLayer(org.approver, "base", {});
+    }
   });
 });
