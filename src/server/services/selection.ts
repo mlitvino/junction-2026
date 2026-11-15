@@ -386,6 +386,32 @@ const DERIVED_OR_DIFFERENT_HEAD_NOUNS = new Set([
   "potatoes",
 ]);
 
+/**
+ * Extra words that still name the same product as the requested word: a variety plus its class noun
+ * ("Cheddar" → "Valio Cheddar cheese", "rapeseed" → "Rapeseed oil") or a product sold under a
+ * longer name ("milk" → "lactose free milk drink"). They skip the qualifier/head-noun penalty, which
+ * otherwise rejects "Potato salad" for "potato" or "Cocoa butter" for "butter".
+ */
+const SAME_PRODUCT_EXTRA_WORDS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  (
+    [
+      // Only unambiguous varieties: "cream" (cream cheese), "olive" (olives) and "sesame" (seeds) stay out.
+      [["cheddar", "emmental", "emmentaler", "edam", "gouda", "mozzarella", "brie", "camembert", "feta", "parmesan",
+        "halloumi", "mascarpone", "ricotta", "gruyere", "gruyère", "oltermanni"], ["cheese"]],
+      [["rapeseed", "sunflower", "canola", "rypsi"], ["oil"]],
+      [["milk"], ["drink"]],
+    ] as const
+  ).flatMap(([words, extras]) => words.map((w) => [w, new Set<string>(extras)] as const)),
+);
+
+/** Strips verb endings for inflection matching: "skimmed" → "skim", "whipping" / "whipped" → "whip". */
+function verbStem(word: string): string {
+  const m = /^(.{3,}?)(?:ing|ed)$/.exec(word);
+  if (!m) return word;
+  const stem = m[1]!;
+  return /([b-df-hj-np-tv-z])\1$/.test(stem) ? stem.slice(0, -1) : stem;
+}
+
 /** Returns a word and its singularized English stem (e.g. "potatoes" → "potato", "cheeses" → "cheese"). */
 export function wordStems(word: string): string[] {
   const lower = word.trim().toLowerCase();
@@ -437,10 +463,14 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
   let unmatchedCoreCount = 0;
   const matchedCoreIndices: number[] = [];
 
+  // Same word in another form: a short ending ("dice"/"diced") or a verb form ("skim"/"skimmed",
+  // "whipping"/"whipped"). Stems must keep 3+ letters, so "oat" never matches "oatmeal".
   const isInflectionPrefix = (a: string, b: string) =>
     a.length >= 3 &&
     b.length >= 3 &&
-    ((b.startsWith(a) && b.length - a.length <= 2) || (a.startsWith(b) && a.length - b.length <= 2));
+    ((b.startsWith(a) && b.length - a.length <= 2) ||
+      (a.startsWith(b) && a.length - b.length <= 2) ||
+      verbStem(a) === verbStem(b));
 
   for (const rt of reqTokens) {
     const rtStems = wordStems(rt);
@@ -512,11 +542,15 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
   }
 
   if (coreReqTokens.length > 0 && matchedCoreIndices.length > 0) {
+    // Words that only complete the requested product's name ("Cheddar" + "cheese") are not penalized.
+    const sameProductExtras = new Set(reqTokens.flatMap((t) => [...(SAME_PRODUCT_EXTRA_WORDS.get(t) ?? [])]));
+    const isSameProductExtra = (ct: string) => wordStems(ct).some((s) => sameProductExtras.has(s));
+
     // (a) Penalize unrequested ingredient-changing qualifiers anywhere in the candidate name
     // (e.g. "Smoked salmon fillet" for "Salmon fillet", "Cocoa butter" for "butter",
     // "smashed potatoes" for "Diced potatoes").
     const hasUnrequestedQualifier = candTokens.some((ct, idx) => {
-      if (matchedCoreIndices.includes(idx)) return false;
+      if (matchedCoreIndices.includes(idx) || isSameProductExtra(ct)) return false;
       const stems = wordStems(ct);
       if (stems.some((s) => reqStemSet.has(s))) return false;
       return INGREDIENT_CHANGING_QUALIFIERS.has(ct) || stems.some((s) => INGREDIENT_CHANGING_QUALIFIERS.has(s));
@@ -527,6 +561,7 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
     const hasDifferentHeadNoun = candTokens.some(
       (ct, idx) =>
         !matchedCoreIndices.includes(idx) &&
+        !isSameProductExtra(ct) &&
         DERIVED_OR_DIFFERENT_HEAD_NOUNS.has(ct) &&
         !reqStemSet.has(ct) &&
         !wordStems(ct).some((s) => reqStemSet.has(s)),

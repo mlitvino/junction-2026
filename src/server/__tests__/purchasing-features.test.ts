@@ -385,6 +385,28 @@ describe("Selection relevance, stemming, and modifier handling", () => {
     assert.ok(potatoMatches.includes("Potato 5 kg"));
     assert.ok(!potatoMatches.includes("Jenkki Fresh"));
 
+    // Varieties named with their class noun, products with a longer name, and verb forms still match.
+    for (const [requested, name] of [
+      ["Cheddar", "Valio Cheddar cheese 1kg"],
+      ["Emmental", "Valio Emmental cheese slices 1 kg"],
+      ["rapeseed", "Rapeseed oil 1 L"],
+      ["lactose-free milk", "Arla lactose free milk drink 1 L"],
+      ["skim milk", "Valio skimmed milk 1 L"],
+      ["whipping cream", "Valio whipped cream 2 dl"],
+    ] as const)
+      assert.ok(computeNameMatchScore(requested, name) >= 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
+    // …while different products stay below the floor.
+    for (const [requested, name] of [
+      ["potato", "Potato salad 1 kg"],
+      ["butter", "Cocoa butter 1 kg"],
+      ["salmon fillet", "Smoked salmon fillet 1 kg"],
+      ["milk", "Milk chocolate 100 g"],
+      ["Cheddar", "Cheddar crisps 100 g"],
+      ["cream", "Valio cream cheese 200 g"],
+      ["oat", "Oatmeal 1 kg"],
+    ] as const)
+      assert.ok(computeNameMatchScore(requested, name) < 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
+
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh parsley 100 g"]), ["Dill 100 g"]);
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh dill 50 g", "Fresh parsley 100 g"]), ["Fresh dill 50 g"]);
   });
