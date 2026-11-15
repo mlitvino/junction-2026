@@ -39,8 +39,16 @@ function config() {
   return { apiKey, baseUrl, customer };
 }
 
+let warnedMock = false;
+
 export function valioSource(): ValioSource {
-  return config().apiKey ? "valio" : "mock";
+  const source: ValioSource = config().apiKey ? "valio" : "mock";
+  // A production server without a key silently serves fake prices: say so once in the logs.
+  if (source === "mock" && !warnedMock && process.env.NODE_ENV === "production") {
+    warnedMock = true;
+    console.warn("VALIO_API_KEY is not set: prices and availability are MOCK data (see GET /api/health).");
+  }
+  return source;
 }
 
 /**
