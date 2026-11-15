@@ -47,6 +47,51 @@ sudo chown "$USER": ~/junction-2026/certs/*.pem && chmod 600 ~/junction-2026/cer
 - Certificates expire (Let's Encrypt: 90 days) and a copy does not renew itself. After the
   existing app renews, copy the files again and run `docker compose restart caddy`.
 
+## Catalog (manual)
+
+The production image has no import tooling and no Valio data, so the catalog (`valio_product`, `valio_product_unit`, `valio_product_substitute`) is copied from your local database. Do this:
+- after a database reset on the server;
+- after a deploy that changed the catalog import (`src/server/catalog/`) or added migrations to these tables;
+- when you want fresher Valio data.
+
+**1. On your machine** (in the repo): bring the local catalog up to date.
+
+```bash
+git pull                                   # same code and migrations as the server
+pnpm db:up && pnpm db:migrate
+pnpm data:fetch                            # optional: fresher Valio files
+pnpm data:import
+docker exec junction-2026-db-1 psql -U app -d app -tAc "select count(*) from valio_product"   # > 0
+```
+
+**2. On the server**: make sure the app has applied its migrations. The first request to the auth API does that.
+
+```bash
+cd ~/junction-2026
+docker compose exec -T app node -e "fetch('http://localhost:3000/api/auth/get-session').then(r => console.log(r.status))"
+```
+
+**3. On your machine**: replace the server's catalog in one transaction. Fill in `<user>@<server>`.
+
+```bash
+docker exec junction-2026-db-1 pg_dump -U app -d app --data-only --no-owner \
+  -t valio_product -t valio_product_unit -t valio_product_substitute \
+| { echo 'BEGIN;'; echo 'TRUNCATE valio_product_substitute, valio_product_unit, valio_product;'; cat; echo 'COMMIT;'; } \
+| ssh <user>@<server> 'cd ~/junction-2026 && docker compose exec -T db psql -U app -d app -v ON_ERROR_STOP=1 -q'
+```
+
+**4. On the server**: check the count. It should match step 1.
+
+```bash
+docker compose exec -T db psql -U app -d app -c "select count(*) from valio_product"
+```
+
+Notes:
+- Nothing needs a restart.
+- If step 3 fails on a column, local and server are on different migrations: pull, run `pnpm db:migrate`, and redo step 2.
+- The `TRUNCATE` has no CASCADE on purpose: it fails instead of touching anything else.
+- Because of the transaction, the old catalog stays if anything goes wrong.
+
 ## Rollback
 
 | Way       | Command                                                              | Time    |
