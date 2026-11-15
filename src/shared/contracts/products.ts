@@ -117,8 +117,10 @@ export const ProductSearchQuerySchema = z.object({
   vendor: z.string().trim().max(200).optional().meta({ description: "Vendor name contains this." }),
   brand: z.string().trim().max(200).optional().meta({ description: "Brand contains this." }),
   label: z.string().trim().optional().meta({ description: "Has this label id (see shared/contracts/labels.ts).", example: "EU_ORGANIC_FARMING" }),
-  sort: z.enum(["name", "co2", "reliability"]).default("name").meta({
-    description: "`co2`: lowest first; `reliability`: highest first (unknowns last). Price ranking: POST /api/products/rank.",
+  sort: z.enum(["relevance", "name", "co2", "reliability"]).optional().meta({
+    description:
+      "`relevance`: closest name match to `q` first (the default when `q` is given, else `name`). `co2`: lowest first; " +
+      "`reliability`: highest first (unknowns last). Price ranking: POST /api/products/rank.",
   }),
   limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).default(0),

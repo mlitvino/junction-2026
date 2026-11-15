@@ -1,7 +1,7 @@
 // No `import "server-only"` here: drizzle-kit loads the schema outside Next.js, where it throws.
 // Table definitions only, no secrets.
 import { sql } from "drizzle-orm";
-import { check, date, doublePrecision, index, jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { bigserial, check, date, doublePrecision, index, jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
 
 import { user } from "./auth.ts";
 import { organization } from "./organization.ts";
@@ -163,6 +163,11 @@ export const auditEvent = pgTable(
     summary: text("summary").notNull(),
     details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", tz).notNull().defaultNow(),
+    /**
+     * Insertion order. Entries written in one transaction share `created_at` (the transaction's
+     * start), so lists sort by time, then by this.
+     */
+    seq: bigserial("seq", { mode: "number" }).notNull(),
   },
   (t) => [
     index("audit_event_org_created_idx").on(t.organizationId, t.createdAt.desc()),

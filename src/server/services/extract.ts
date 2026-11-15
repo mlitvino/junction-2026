@@ -46,7 +46,8 @@ const KNOWN_TYPE_KEYWORDS: Array<{ keyword: string; productType: string }> = [
   { keyword: "rahka", productType: "Yogurt" },
 ];
 
-function inferProductType(name: string): string {
+/** Best-guess product type for a name ("lactose-free milk" → "Milk"), for the candidate search. */
+export function inferProductType(name: string): string {
   const lower = name.toLowerCase();
   // Match more specific keywords properly (e.g. "creamy cheese" -> "Cheese", not "Cream")
   for (const { keyword, productType } of KNOWN_TYPE_KEYWORDS) {

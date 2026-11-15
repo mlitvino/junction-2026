@@ -290,7 +290,7 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
       .replace(/\s+/g, " ")
       .trim();
 
-    const searchRes = await searchProducts({ q: cleanedQuery || undefined, limit: 5, offset: 0, sort: "name" });
+    const searchRes = await searchProducts({ q: cleanedQuery || undefined, limit: 5, offset: 0, sort: "relevance" });
     toolCalls.push({
       toolName: "searchProducts",
       args: { query: cleanedQuery },
