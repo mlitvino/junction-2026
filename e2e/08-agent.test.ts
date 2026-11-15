@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
 
 import { AgentRunResponseSchema } from "@/shared/contracts/agent";
-import { ProductDetailSchema } from "@/shared/contracts/products";
-import { ProposalFromPromptResponseSchema } from "@/shared/contracts/purchasing";
+import { ProductDetailSchema, RankProductsResponseSchema } from "@/shared/contracts/products";
+import { AuditListSchema, ProposalFromPromptResponseSchema } from "@/shared/contracts/purchasing";
 
 import { expectStatus, ok } from "./lib/client.ts";
 import { cleanup } from "./lib/db.ts";
@@ -60,6 +60,24 @@ describe("agent", () => {
       "REQUIRE_APPROVAL",
       `the agent's pick passes the same rules; reasons: ${res.proposal.decision.reasons.map((r) => `${r.code} (${r.message})`).join("; ")}`,
     );
+
+    // The audit trail tells the agent's work in the order it happened.
+    const trail = ok(await org.buyer.get(`/api/proposals/${res.proposal.id}/audit`), 200, AuditListSchema, "audit");
+    const auditActions = trail.items.map((e) => e.action);
+    assert.deepEqual(
+      auditActions.slice(0, 5),
+      ["agent.prompt_extracted", "agent.catalog_searched", "agent.preferences_filtered", "agent.candidates_ranked", "proposal.created"],
+      `audit order: ${auditActions.join(", ")}`,
+    );
+
+    // POST /api/products/rank recommends the same product for the same need.
+    const rank = ok(
+      await org.buyer.post("/api/products/rank", { q: "lactose-free milk", quantity: 1000, unit: "L", date }),
+      200,
+      RankProductsResponseSchema,
+      "rank",
+    );
+    assert.equal(rank.best?.product.id, line.productId, `rank's best (${rank.best?.product.name}) = the agent's pick (${line.name})`);
   });
 
   it("agent/run acts for the signed-in buyer and returns the proposal it worked on", async (t) => {

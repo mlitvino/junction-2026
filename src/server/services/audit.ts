@@ -78,7 +78,8 @@ export async function listAudit(organizationId: string, query: AuditQuery): Prom
     .select()
     .from(auditEvent)
     .where(and(...where))
-    .orderBy(desc(auditEvent.createdAt))
+    // Same-transaction entries share created_at; seq keeps the order they were written in.
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.seq))
     .limit(query.limit);
   return rows.map(toAuditEvent);
 }

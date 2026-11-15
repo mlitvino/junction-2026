@@ -122,6 +122,7 @@ export function createWorkspaceService(
   options: {
     mock: boolean;
     storage?: () => Storage | null;
+    onPurchaseConfirmed?: (feedback: "approved" | "purchased") => void;
     capabilities?: {
       initialPlans?(): RestockPlan[];
       setRoles(roles: Role[]): void;
@@ -1193,6 +1194,7 @@ export function createWorkspaceService(
           ...(comment ? { comment } : {}),
         });
         putProposal(updated);
+        if (decision === "APPROVED") options.onPurchaseConfirmed?.("approved");
         record(
           decision === "APPROVED" ? "Purchase approved" : "Purchase rejected",
           shown.id,
@@ -1225,6 +1227,7 @@ export function createWorkspaceService(
       }
       try {
         const order = await api.placeOrder(proposalId, attempt);
+        options.onPurchaseConfirmed?.("purchased");
         publish({ orders: [order, ...snapshot.orders.filter((o) => o.id !== order.id)] });
         putProposal(await api.getProposal(proposalId));
         record(

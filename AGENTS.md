@@ -121,8 +121,8 @@ The organization's single set of rules for the agent and the approval flow: prod
 
 ### Catalog: search, ranking, units
 
-- **One search:** `GET /api/products` (static data, no Valio calls) with filters: words, category, `excludeAllergens` (names or GS1 codes) + `excludeMayContain`, `dietary` (lactose-free, gluten-free, vegan, vegetarian), `origin`, `maxCo2PerKg`, `minReliability`, `vendor`, `brand`, `label`; `sort` name / co2 / reliability. Results carry allergens (contains and may contain), dietary tags, labels and content per sales unit (e.g. 5 L per case); details add nutrition per 100 g/ml and claims. All from the imported Valio data.
-- **Ranking:** `POST /api/products/rank` (`q` or `productIds`, `quantity` + `unit`, `date`) → best / better / good with reasons: price per litre/kg 35%, availability by the date 25%, relevance, reliability, CO2 and preferred origin/vendor/brand or sustainability labels 10% each; `excluded` lists what the organization's rules drop. The agent's selection uses the same ranking.
+- **One search:** `GET /api/products` (static data, no Valio calls) with filters: words, category, `excludeAllergens` (names or GS1 codes) + `excludeMayContain`, `dietary` (lactose-free, gluten-free, vegan, vegetarian), `origin`, `maxCo2PerKg`, `minReliability`, `vendor`, `brand`, `label`; `sort` relevance (default with `q`: closest name first) / name / co2 / reliability. Results carry allergens (contains and may contain), dietary tags, labels and content per sales unit (e.g. 5 L per case); details add nutrition per 100 g/ml and claims. All from the imported Valio data.
+- **Ranking:** `POST /api/products/rank` (`q` or `productIds`, `quantity` + `unit`, `date`) → best / better / good with reasons: price per litre/kg 35%, availability by the date 25%, relevance, reliability, CO2 and preferred origin/vendor/brand or sustainability labels 10% each; `excluded` lists what the organization's rules drop. With `q` it ranks the same candidates the agent's selection uses (name-first search, relevance filter), so both recommend the same product for the same need.
 - **Units:** requests in L, dl, ml, kg, g, cases or pieces are converted into each product's sales unit through the declared content (`server/valio/units.ts`): 1000 L of milk in 5 × 1 L cases → 200 cases. When the catalog has no content for a product, the amount is taken as sales units and the proposal carries a warning.
 - Substitutes: `POST /api/products/{id}/substitutes`.
 
@@ -182,4 +182,5 @@ The organization's single set of rules for the agent and the approval flow: prod
 Push to `main` → `.github/workflows/deploy.yml` runs the checks, builds the `Dockerfile` (Next.js `output: "standalone"`), pushes to ghcr.io and restarts the app on the Hetzner server over SSH. Server templates and rollback steps: `deploy/README.md`.
 
 - The server's `.env` lives only on the server.
+- The Valio catalog is copied to the server by hand (the image has no import tooling or data): after a database reset or a catalog/import change, follow "Catalog (manual)" in `deploy/README.md`.
 - DB migrations are additive only (new tables/columns, no drops), so a rollback to an older image keeps working. The image contains `drizzle/`; the app applies pending migrations on first use.

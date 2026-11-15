@@ -393,6 +393,7 @@ describe("Selection relevance, stemming, and modifier handling", () => {
       ["lactose-free milk", "Arla lactose free milk drink 1 L"],
       ["skim milk", "Valio skimmed milk 1 L"],
       ["whipping cream", "Valio whipped cream 2 dl"],
+      ["coffee milk", "Valio coffee milk 1 l lactose free UHT"],
     ] as const)
       assert.ok(computeNameMatchScore(requested, name) >= 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
     // …while different products stay below the floor.
@@ -404,6 +405,8 @@ describe("Selection relevance, stemming, and modifier handling", () => {
       ["Cheddar", "Cheddar crisps 100 g"],
       ["cream", "Valio cream cheese 200 g"],
       ["oat", "Oatmeal 1 kg"],
+      ["lactose-free milk", "Valio coffee milk 1 l lactose free UHT"],
+      ["lactose-free milk", "Valio coffee milk drink vanilla 1 l lactose free"],
     ] as const)
       assert.ok(computeNameMatchScore(requested, name) < 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
 

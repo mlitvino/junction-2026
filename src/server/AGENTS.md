@@ -46,7 +46,7 @@ Model and rules: root AGENTS.md, "Purchasing flow". Tables `proposal`, `approval
 
 ## Catalog data rules
 
-- Real products only carry real data: no invented prices or stock (candidates without a Valio price are skipped). Nutrition (`nutritionFact`), labels (`packagingMarkedLabel`, storage temperatures removed), claims (`nutritionalClaim`, `nonAllergen` FREE_FROM), content per base unit (`unitConversions[].volume`) and dietary tags (from claims) are imported by `server/catalog/valio-data.ts`; label names in `shared/contracts/labels.ts`.
+- Real products only carry real data: no invented prices or stock (candidates without a Valio price are skipped). Nutrition (`nutritionFact`), labels (`packagingMarkedLabel`, storage temperatures removed), claims (`nutritionalClaim`, `nonAllergen` FREE_FROM), content per base unit (`unitConversions[].volume`; when undeclared, read from the name only if it holds exactly one amount and no multipack marker, e.g. "1 l", and never for products sold by weight/volume; each one is listed by `pnpm data:analyze`) and dietary tags (from claims) are imported by `server/catalog/valio-data.ts`; label names in `shared/contracts/labels.ts`.
 - Synthetic products (`services/mock-catalog.ts`) have `SYN-` ids and are used only when the real catalog is empty (`syntheticCatalogEnabled()`), together with demo history and demo kitchen stock.
 - Allergens: GS1 codes in the data, imported with their qualifier: `allergens` = CONTAINS, `may_contain_allergens` = MAY_CONTAIN (UNDECLARED dropped). Names or codes in settings and filters, mapped by `shared/contracts/allergens.ts`. Policy: contains an excluded allergen → DENY, may contain → approval.
 

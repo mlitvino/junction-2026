@@ -21,7 +21,7 @@ import {
   getUnitFacts,
   searchProducts,
 } from "@/server/services/catalog";
-import { extractProductsFromPrompt } from "@/server/services/extract";
+import { extractProductsFromPrompt, inferProductType } from "@/server/services/extract";
 import {
   classifyStockStatus,
   resolveUnifiedCatalogRecord,
@@ -292,6 +292,16 @@ const INGREDIENT_CHANGING_QUALIFIERS = new Set([
   "caramelised",
   "evaporated",
   "saithe",
+  // Drinks and flavours that make a different product of the base ("coffee milk" is not milk).
+  "coffee",
+  "latte",
+  "cappuccino",
+  "mocha",
+  "vanilla",
+  "strawberry",
+  "banana",
+  "blueberry",
+  "raspberry",
 ]);
 
 const MODIFIER_SYNONYM_GROUPS: readonly (readonly string[])[] = [
@@ -1715,7 +1725,7 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
       if (score > (best?.score ?? 0.25)) best = { id: cand.id, score };
     }
   if (best) return best.id;
-  const search = await searchProducts({ q: toTarget, limit: 20, offset: 0, sort: "name" });
+  const search = await searchProducts({ q: toTarget, limit: 20, offset: 0, sort: "relevance" });
   let bestSearch: { id: string; score: number } | null = null;
   for (const item of search.items) {
     const score = computeNameMatchScore(toTarget, item.name);
@@ -2102,6 +2112,16 @@ export async function reviseProposalFromRequest(
 
 // ---------- Ranking (POST /api/products/rank) ----------
 
+/** The agent's candidates for a need, as product summaries, most relevant first. */
+async function rankCandidatesFor(q: string, date: string): Promise<ProductSummary[]> {
+  const records = await getCandidatesByProductType(inferProductType(q), date, q);
+  const scored = records.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode ?? null, nameMatchScore: computeNameMatchScore(q, r.name) }));
+  const ids = selectRelevantCandidates(scored)
+    .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
+    .map((c) => c.id);
+  return getProductSummaries(ids);
+}
+
 /**
  * Good / better / best for a need ("1000 L of lactose-free milk"): candidates from the catalog,
  * the organization's rules (excluded allergens, dietary tags, blocked vendors, max CO2, min
@@ -2111,16 +2131,11 @@ export async function reviseProposalFromRequest(
 export async function rankProducts(actor: Actor, req: RankProductsRequest): Promise<RankProductsResponse> {
   const date = req.date ?? todayIsoDate();
   const rules = (await getEffectiveFor(actor.organizationId, "buyer")).values;
+  // With `q`: the same candidates the agent's selection uses (name-first search, static narrowing,
+  // relevance gate), so the ranking and the agent recommend the same product for the same need.
   const found = req.productIds?.length
     ? await getProductSummaries(req.productIds)
-    : (await searchProducts({ q: req.q, limit: 60, offset: 0, sort: "name" })).items;
-  if (req.q && !req.productIds?.length) {
-    // Most relevant first, and only real matches (the same gate as the agent's selection).
-    const score = new Map(found.map((p) => [p.id, computeNameMatchScore(req.q!, p.name)]));
-    const top = Math.max(0, ...score.values());
-    found.sort((a, b) => score.get(b.id)! - score.get(a.id)!);
-    found.splice(0, found.length, ...found.filter((p) => score.get(p.id)! >= Math.max(0.35, top * 0.7)));
-  }
+    : await rankCandidatesFor(req.q!, date);
 
   const excluded: RankProductsResponse["excluded"] = [];
   const allowed: ProductSummary[] = [];
@@ -2129,7 +2144,8 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
     if (reasons.length) excluded.push({ product: p, reasons });
     else allowed.push(p);
   }
-  const candidates = allowed.slice(0, req.limit);
+  // Rank every relevant candidate (as the agent does); `limit` only cuts the returned list.
+  const candidates = allowed;
   const ids = candidates.map((p) => p.id);
   const [facts, prices, availability, history] = await Promise.all([
     getUnitFacts(ids),
@@ -2207,7 +2223,7 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
       reasons: r.reasons,
     };
   };
-  const list = ranked.map(toRanked);
+  const list = ranked.map(toRanked).slice(0, req.limit);
   return {
     date,
     source: prices?.source ?? availability?.source ?? "mock",

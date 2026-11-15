@@ -104,7 +104,7 @@ export function ReviewDetail({ id }: { id: string }) {
       {proposal ? (
         <>
           <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} reviewLayout />
-          <details className="rounded-xl border bg-card px-6 py-2">
+          <details className="luukku-audit rounded-md border px-6 py-2">
             <summary className="cursor-pointer py-3 text-xs text-muted-foreground">
               Activity &amp; lifecycle
             </summary>

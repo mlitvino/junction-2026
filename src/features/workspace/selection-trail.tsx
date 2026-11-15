@@ -89,11 +89,13 @@ export function SelectionTrail({
   threadId,
   canRevise,
   onRevised,
+  compact = false,
 }: {
   proposal: Proposal;
   threadId?: string;
   canRevise: boolean;
   onRevised?: (revised: Proposal) => void;
+  compact?: boolean;
 }) {
   const selection = proposal.selection;
   const action = useAction();
@@ -103,10 +105,24 @@ export function SelectionTrail({
   const proposalLineIds = new Set(proposal.lines.map((l) => l.productId));
 
   return (
-    <details className="rounded-md border bg-muted/30 px-4 py-2 text-sm" open>
-      <summary className="min-h-10 cursor-pointer py-2 font-medium">
-        Agent selection &amp; preference filtering ({selection.extractedItems.length} item
-        {selection.extractedItems.length === 1 ? "" : "s"})
+    <details
+      className={
+        compact
+          ? "group/selection rounded-lg text-sm"
+          : "group/selection rounded-md border bg-muted/30 px-4 py-2 text-sm"
+      }
+      open={!compact}
+    >
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2.5 rounded-lg px-2 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground">
+        <Icon name="agents" className="size-4 shrink-0 text-primary" />
+        <span className="flex-1">
+          Agent selection &amp; preference filtering ({selection.extractedItems.length} item
+          {selection.extractedItems.length === 1 ? "" : "s"})
+        </span>
+        <Icon
+          name="chevron"
+          className="size-3.5 shrink-0 transition-transform group-open/selection:rotate-90"
+        />
       </summary>
       <div className="space-y-4 border-t py-3">
         <ErrorMessage error={action.error} />
