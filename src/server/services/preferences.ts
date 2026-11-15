@@ -30,6 +30,10 @@ import {
 
 /** Used where no layer sets a value. Deliberately cautious: suggest only, every order needs approval. */
 export const DEFAULT_PREFERENCES: Preferences = {
+  dailySpendingCap: null,
+  exactMatchOnly: false,
+  preferenceOnlySubstitutions: false,
+  softBudgetTolerance: false,
   maxCo2PerKg: null,
   minDeliveryReliability: null,
   preferredOriginCountries: [],
@@ -82,7 +86,11 @@ const emptyLayer = (): StoredLayer => ({ values: {}, locked: [], updatedAt: null
  * Settings the base locked ignore the role layer, even if it has a stored value (e.g. set before
  * the lock). A key that is absent in a layer inherits; null (no limit) is a value.
  */
-export function resolvePreferences(role: Role, base: StoredLayer, roleLayer: StoredLayer): EffectivePreferences {
+export function resolvePreferences(
+  role: Role,
+  base: StoredLayer,
+  roleLayer: StoredLayer,
+): EffectivePreferences {
   const values: Record<string, unknown> = { ...DEFAULT_PREFERENCES };
   const sources: Record<string, PreferenceSource> = {};
   const locked = new Set(base.locked);
@@ -119,7 +127,10 @@ function crossFieldProblem(role: Role, { values }: EffectivePreferences): string
 type Executor = Pick<ReturnType<typeof getDb>, "select">;
 
 async function loadLayers(d: Executor, organizationId: string): Promise<StoredLayers> {
-  const rows = await d.select().from(preferenceLayer).where(eq(preferenceLayer.organizationId, organizationId));
+  const rows = await d
+    .select()
+    .from(preferenceLayer)
+    .where(eq(preferenceLayer.organizationId, organizationId));
   const layers: StoredLayers = { base: emptyLayer(), buyer: emptyLayer(), approver: emptyLayer() };
   for (const row of rows) {
     const scope = row.scope as LayerScope;
@@ -146,11 +157,18 @@ const toLayer = (scope: LayerScope, l: StoredLayer): Layer => ({
 export async function getLayers(organizationId: string): Promise<LayersResponse> {
   await ensureDatabase();
   const layers = await loadLayers(getDb(), organizationId);
-  return { base: toLayer("base", layers.base), buyer: toLayer("buyer", layers.buyer), approver: toLayer("approver", layers.approver) };
+  return {
+    base: toLayer("base", layers.base),
+    buyer: toLayer("buyer", layers.buyer),
+    approver: toLayer("approver", layers.approver),
+  };
 }
 
 /** Effective settings for each of `roles` (the roles the caller holds). */
-export async function getEffective(organizationId: string, roles: Role[]): Promise<EffectiveResponse> {
+export async function getEffective(
+  organizationId: string,
+  roles: Role[],
+): Promise<EffectiveResponse> {
   await ensureDatabase();
   const layers = await loadLayers(getDb(), organizationId);
   const result: EffectiveResponse = {};
@@ -161,10 +179,14 @@ export async function getEffective(organizationId: string, roles: Role[]): Promi
 }
 
 /** Effective settings for one role; for agent tools and the approval flow. */
-export async function getEffectiveFor(organizationId: string, role: Role): Promise<EffectivePreferences> {
-  const effective = (await getEffective(organizationId, [role]))[role];
-  if (!effective) throw new Error(`No preferences for role ${role}`);
-  return effective;
+export async function getEffectiveFor(
+  organizationId: string,
+  role: Role,
+  reader?: Executor,
+): Promise<EffectivePreferences> {
+  if (!reader) await ensureDatabase();
+  const layers = await loadLayers(reader ?? getDb(), organizationId);
+  return resolvePreferences(role, layers.base, layers[role]);
 }
 
 /**
@@ -191,15 +213,25 @@ export async function updateLayer(
     const layers = await loadLayers(tx, organizationId);
 
     if (scope !== "base") {
-      const lockedKeys = Object.keys(values).filter((k) => layers.base.locked.includes(k as SettingKey));
+      const lockedKeys = Object.keys(values).filter((k) =>
+        layers.base.locked.includes(k as SettingKey),
+      );
       if (lockedKeys.length > 0) {
-        throw new PreferencesError(409, `Locked by the organization, can't be set here: ${lockedKeys.join(", ")}`);
+        throw new PreferencesError(
+          409,
+          `Locked by the organization, can't be set here: ${lockedKeys.join(", ")}`,
+        );
       }
     }
 
     const next: StoredLayer = {
       values,
-      locked: scope === "base" ? (request.locked !== undefined ? [...new Set(request.locked)] : layers.base.locked) : [],
+      locked:
+        scope === "base"
+          ? request.locked !== undefined
+            ? [...new Set(request.locked)]
+            : layers.base.locked
+          : [],
       updatedAt: new Date(),
     };
     const after: StoredLayers = { ...layers, [scope]: next };
@@ -210,10 +242,22 @@ export async function updateLayer(
 
     await tx
       .insert(preferenceLayer)
-      .values({ organizationId, scope, settings: values, locked: next.locked, updatedAt: next.updatedAt!, updatedBy: userId })
+      .values({
+        organizationId,
+        scope,
+        settings: values,
+        locked: next.locked,
+        updatedAt: next.updatedAt!,
+        updatedBy: userId,
+      })
       .onConflictDoUpdate({
         target: [preferenceLayer.organizationId, preferenceLayer.scope],
-        set: { settings: values, locked: next.locked, updatedAt: next.updatedAt!, updatedBy: userId },
+        set: {
+          settings: values,
+          locked: next.locked,
+          updatedAt: next.updatedAt!,
+          updatedBy: userId,
+        },
       });
     return toLayer(scope, next);
   });

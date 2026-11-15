@@ -45,6 +45,13 @@ Without the secrets, the job is skipped with a notice. If the job fails, its las
 
 ## Writing a scenario
 
+Purchasing policy governance is covered by `10-purchasing-policies`: concurrent orders share a
+rolling 24-hour organization cap and idempotent replays do not consume it again. Exact-match
+autonomy compares product, brand and supplier with the most recent recorded purchase. The 5%
+tolerance compares newly quoted unit prices with that purchase; it never changes an existing
+signed quote or bypasses the order cap, approval threshold or safety rules. Preference-only
+substitutes require an approved preferred brand and a short-stock/fallback selection.
+
 - Start from `lib/fixtures.ts`:
   - `newOrg()` gives an owner (buyer + approver), a buyer-only and an approver-only member, each with their own session.
   - `orderableProducts()` picks products with a price that can be delivered by the date.

@@ -19,6 +19,7 @@ const org = () =>
 
 /** Frozen line: see ProposalLineSchema. */
 export type StoredProposalLine = {
+  brand?: string | null;
   productId: string;
   name: string;
   vendorName: string;
