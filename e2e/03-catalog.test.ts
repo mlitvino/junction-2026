@@ -37,6 +37,13 @@ describe("catalog", () => {
     }
   });
 
+  it("with a query, the closest names come first (not alphabetical)", async () => {
+    const r = ok(await org.buyer.get("/api/products?q=milk&dietary=lactose-free&limit=5"), 200, ProductSearchResponseSchema, "search");
+    assert.ok(r.items.length > 0);
+    assert.match(r.items[0]!.name, /milk/i);
+    assert.doesNotMatch(r.items[0]!.name, /^\d+\s*x|latte|curdled/i, `first result: ${r.items[0]!.name}`);
+  });
+
   it("product details carry content, labels, allergens split by qualifier, nutrition and claims", async () => {
     const [first] = await orderableProducts(org.buyer, date);
     const d = ok(await org.buyer.get(`/api/products/${first!.id}`), 200, ProductDetailSchema, "product detail");

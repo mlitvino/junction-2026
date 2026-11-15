@@ -176,10 +176,14 @@ export async function searchProducts(query: ProductSearchQuery): Promise<Product
   if (query.label) conditions.push(arrayContains(valioProduct.labels, [query.label]));
   const where = conditions.length ? and(...conditions) : undefined;
 
+  const q = query.q?.trim();
+  const sort = query.sort ?? (q ? "relevance" : "name");
   const order =
-    query.sort === "co2"
+    sort === "relevance" && q
+      ? [sql`similarity(${valioProduct.name}, ${q}) desc`, asc(valioProduct.name), asc(valioProduct.id)]
+      : sort === "co2"
       ? [sql`${valioProduct.co2PerKg} asc nulls last`, asc(valioProduct.name)]
-      : query.sort === "reliability"
+      : sort === "reliability"
         ? [sql`${valioProduct.deliveryReliability} desc nulls last`, asc(valioProduct.name)]
         : [asc(valioProduct.name), asc(valioProduct.id)];
 

@@ -1585,7 +1585,7 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
       if (score > (best?.score ?? 0.25)) best = { id: cand.id, score };
     }
   if (best) return best.id;
-  const search = await searchProducts({ q: toTarget, limit: 20, offset: 0, sort: "name" });
+  const search = await searchProducts({ q: toTarget, limit: 20, offset: 0, sort: "relevance" });
   let bestSearch: { id: string; score: number } | null = null;
   for (const item of search.items) {
     const score = computeNameMatchScore(toTarget, item.name);
