@@ -3,6 +3,7 @@ import "server-only";
 import { RequestContext } from "@mastra/core/request-context";
 
 import { callModel, isAgentTestMode, requireGeminiApiKey } from "@/server/agents/mode";
+import { toPlainReply } from "@/server/agents/plain-text";
 import { purchasingAgent } from "@/server/agents/purchasing-agent";
 import { ACTOR_KEY } from "@/server/agents/tools/actor";
 import { getMastra } from "@/server/mastra";
@@ -88,7 +89,7 @@ export async function runPurchasingAgent(input: AgentRunRequest, user: SessionUs
       const newest = (await listProposals(actor, {}))[0] ?? null;
       if (newest && newest.id !== before) activeProposal = newest;
     }
-    return { reply: result.text || "Done.", mode: "gemini", toolCalls, activeProposal };
+    return { reply: toPlainReply(result.text) || "Done.", mode: "gemini", toolCalls, activeProposal };
   }
 
   // ---------- Deterministic orchestration (TEST_MODE=TRUE) ----------
