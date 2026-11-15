@@ -50,13 +50,14 @@ const memory = () => {
   const values = new Map();
   return { getItem: (k) => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), values };
 };
-async function setup() {
+async function setup(options = {}) {
   const storage = memory(),
     mock = createMockApi(() => storage),
     service = createWorkspaceService(mock.api, {
       mock: true,
       capabilities: mock,
       storage: () => storage,
+      ...options,
     });
   await service.initialize();
   return { service, mock, storage };
@@ -232,6 +233,43 @@ test("approval-first, same review object and idempotent canonical order", async 
   assert.equal(a.createdByName, "anna.lindholm");
   assert.equal(state(service).orders.length, 1);
   assert.equal(state(service).proposals[0].status, "ORDERED");
+});
+test("brand feedback follows confirmed approvals and purchases, never failed or rejected actions", async () => {
+  const feedback = [];
+  const { service, mock } = await setup({ onPurchaseConfirmed: (value) => feedback.push(value) });
+  const id = service.newThread("Feedback");
+  await service.sendMessage(id, "Order 100 litres of lactose-free milk");
+  const proposal = state(service).proposals[0];
+  await assert.rejects(service.placeOrder(proposal.id));
+  assert.deepEqual(feedback, []);
+
+  const decide = mock.api.decideApproval;
+  mock.api.decideApproval = async () => {
+    throw new Error("Approval unavailable");
+  };
+  await assert.rejects(service.approve(proposal.id, "APPROVED"));
+  assert.deepEqual(feedback, []);
+  mock.api.decideApproval = decide;
+  await service.approve(proposal.id, "APPROVED");
+  assert.deepEqual(feedback, ["approved"]);
+
+  const order = mock.api.placeOrder;
+  mock.api.placeOrder = async () => {
+    throw new Error("Order unavailable");
+  };
+  await assert.rejects(service.placeOrder(proposal.id));
+  assert.deepEqual(feedback, ["approved"]);
+  mock.api.placeOrder = order;
+  await Promise.all([service.placeOrder(proposal.id), service.placeOrder(proposal.id)]);
+  assert.deepEqual(feedback, ["approved", "purchased"]);
+
+  const other = await setup({ onPurchaseConfirmed: (value) => feedback.push(value) });
+  await other.service.sendMessage(
+    other.service.newThread("Reject"),
+    "Order 100 litres of lactose-free milk",
+  );
+  await other.service.approve(state(other.service).proposals[0].id, "REJECTED", "Not needed");
+  assert.deepEqual(feedback, ["approved", "purchased"]);
 });
 test("quantity revision cancels the former approval; information never changes a version", async () => {
   const { service } = await setup();

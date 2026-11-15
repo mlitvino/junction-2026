@@ -8,9 +8,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE_PATH || "playwright")
 const base = process.env.FRONTEND_BASE_URL || "http://localhost:3001";
 
 async function authorizeInDialog(page, title, label) {
-  const dialog = page.getByRole("dialog", { name: title, exact: true });
-  await dialog.getByRole("button", { name: "Use standard confirmation", exact: true }).click();
-  await dialog.getByRole("button", { name: label, exact: true }).click();
+  const dialog = page
+    .getByRole("dialog", { name: title, exact: true })
+    .or(page.getByRole("region", { name: title, exact: true }));
+  const hold = dialog.getByRole("button", { name: `Hold to ${label.toLowerCase()}`, exact: true });
+  await hold.focus();
+  await page.keyboard.down("Space");
+  await page.waitForTimeout(900);
+  await page.keyboard.up("Space");
 }
 
 test("connected canonical purchasing across Buyer and Approver browser contexts", async (t) => {
@@ -87,19 +92,19 @@ test("connected canonical purchasing across Buyer and Approver browser contexts"
     pending.hash,
   );
   await review.goto(base + `/approvals/${pending.approval.id}`);
-  await review.getByRole("button", { name: "Approve", exact: true }).click();
-  await authorizeInDialog(review, "Approve this purchase?", "Approve purchase");
+  await review.getByRole("button", { name: "Approve proposal", exact: true }).click();
+  await authorizeInDialog(review, "Approve this proposal?", "Approve");
   await review.getByText("Approved", { exact: true }).first().waitFor();
   const approved = await (await buyer.request.get(base + `/api/proposals/${created.id}`)).json();
   assert.equal(approved.hash, pending.hash);
   assert.equal(approved.approval.status, "APPROVED");
   await page.reload();
-  await page.getByRole("button", { name: "Continue to checkout", exact: true }).click();
+  await page.getByRole("region", { name: "Checkout", exact: true }).waitFor();
   await page
-    .getByRole("complementary", { name: "Checkout", exact: true })
-    .getByRole("button", { name: "Confirm order", exact: true })
+    .getByRole("region", { name: "Checkout", exact: true })
+    .getByRole("button", { name: "Buy", exact: true })
     .click();
-  await authorizeInDialog(page, "Record this order?", "Record order");
+  await authorizeInDialog(page, "Record this order?", "Buy");
   await page.getByRole("link", { name: "View order details", exact: true }).waitFor();
   const orders = await (await buyer.request.get(base + "/api/orders")).json();
   assert.equal(orders.items.length, 1);
@@ -114,7 +119,7 @@ test("connected canonical purchasing across Buyer and Approver browser contexts"
   assert.equal((await replay.json()).id, order.id);
   await page.reload();
   assert.equal((await (await buyer.request.get(base + "/api/orders")).json()).items.length, 1);
-  await page.getByRole("button", { name: "Open checkout", exact: true }).click();
+  await page.getByRole("region", { name: "Checkout", exact: true }).waitFor();
   await page.getByRole("link", { name: "View order details", exact: true }).click();
   await page.getByRole("heading", { name: `Order ${order.id}`, exact: true }).waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("aimo:v32:records")), null);

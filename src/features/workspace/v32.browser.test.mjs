@@ -11,9 +11,14 @@ const screenshots =
 mkdirSync(screenshots, { recursive: true });
 
 async function authorizeInDialog(page, title, label) {
-  const dialog = page.getByRole("dialog", { name: title, exact: true });
-  await dialog.getByRole("button", { name: "Use standard confirmation", exact: true }).click();
-  await dialog.getByRole("button", { name: label, exact: true }).click();
+  const dialog = page
+    .getByRole("dialog", { name: title, exact: true })
+    .or(page.getByRole("region", { name: title, exact: true }));
+  const hold = dialog.getByRole("button", { name: `Hold to ${label.toLowerCase()}`, exact: true });
+  await hold.focus();
+  await page.keyboard.down("Space");
+  await page.waitForTimeout(900);
+  await page.keyboard.up("Space");
 }
 
 test("complete v3.2 frontend", async (t) => {
@@ -178,16 +183,16 @@ test("complete v3.2 frontend", async (t) => {
     assert((await composer.boundingBox()).height > initialHeight);
     await composer.fill("");
     await page.waitForFunction(() => document.querySelector("textarea").clientHeight <= 44);
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     const proposalCard = page.getByRole("region", { name: "Purchase proposal", exact: true });
-    await proposalCard.getByText("Total (excl. VAT)", { exact: true }).waitFor();
+    await proposalCard.getByText("Net total", { exact: true }).waitFor();
     await proposalCard.getByText("Proposal v1", { exact: true }).waitFor();
-    await proposalCard.getByRole("button", { name: "Withdraw request", exact: true }).click();
-    const withdrawal = page.getByRole("dialog", { name: "Withdraw this request?", exact: true });
-    await withdrawal.waitFor();
-    await withdrawal.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(
+      await proposalCard.getByRole("button", { name: "Withdraw request", exact: true }).count(),
+      0,
+    );
     assert(
-      await proposalCard.getByRole("button", { name: "Review & approve", exact: true }).isVisible(),
+      await proposalCard.getByRole("button", { name: "Approve proposal", exact: true }).isVisible(),
     );
     const local = await state();
     assert(local.threads[0].proposals[0]);
@@ -201,7 +206,7 @@ test("complete v3.2 frontend", async (t) => {
   await t.test("B1 and B8: buyer-only waits for the same review", async () => {
     await capability("buyer");
     assert.equal(
-      await page.getByRole("button", { name: "Review & approve", exact: true }).count(),
+      await page.getByRole("button", { name: "Approve proposal", exact: true }).count(),
       0,
     );
     await page.getByText("Waiting for another authorized approver.", { exact: false }).waitFor();
@@ -243,10 +248,14 @@ test("complete v3.2 frontend", async (t) => {
     await theme("Light");
   });
   await t.test(
-    "B2, B9, B7, B10: non-modal review, approval, recorded order and checkout",
+    "B2, B9, B7, B10: inline review, approval, recorded order and checkout",
     async () => {
-      await page.getByRole("button", { name: "Review & approve", exact: true }).click();
-      await page.getByRole("complementary", { name: "Review order", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Approve proposal", exact: true }).click();
+      await page.getByRole("region", { name: "Approve this proposal?", exact: true }).waitFor();
+      assert.equal(
+        await page.getByRole("complementary", { name: "Review order", exact: true }).count(),
+        0,
+      );
       const composer = page.getByRole("textbox", {
         name: "Continue the conversation",
         exact: true,
@@ -254,16 +263,12 @@ test("complete v3.2 frontend", async (t) => {
       assert(await composer.isEditable());
       await composer.fill("A question kept while reviewing");
       await assertComposerPinned();
-      await page
-        .getByRole("complementary", { name: "Review order", exact: true })
-        .getByRole("button", { name: "Review & approve", exact: true })
-        .click();
-      const approvalDialog = page.getByRole("dialog", {
-        name: "Approve this purchase?",
+      const approvalDialog = page.getByRole("region", {
+        name: "Approve this proposal?",
         exact: true,
       });
       const hold = approvalDialog.getByRole("button", {
-        name: "Hold to approve purchase",
+        name: "Hold to approve",
         exact: true,
       });
       await hold.focus();
@@ -282,7 +287,7 @@ test("complete v3.2 frontend", async (t) => {
       await page.keyboard.down("Space");
       await page.waitForTimeout(900);
       await page.keyboard.up("Space");
-      const checkout = page.getByRole("complementary", { name: "Checkout", exact: true });
+      const checkout = page.getByRole("region", { name: "Checkout", exact: true });
       await checkout.waitFor();
       const approvedRecords = await page.evaluate(() =>
         JSON.parse(sessionStorage.getItem("aimo:v32:records")),
@@ -294,13 +299,28 @@ test("complete v3.2 frontend", async (t) => {
       );
       assert.match(page.url(), /\/buyer\/conversations\//);
       assert(await composer.isEditable());
-      await checkout.getByRole("button", { name: "Confirm order", exact: true }).click();
-      await authorizeInDialog(page, "Record this order?", "Record order");
+      assert.equal(
+        await page.locator('details[class~="group/proposal"]').getAttribute("open"),
+        null,
+      );
+      assert.equal(await page.getByRole("button", { name: "Checkout", exact: true }).count(), 0);
+      const withdraw = checkout.getByRole("button", { name: "Withdraw request", exact: true });
+      const buy = checkout.getByRole("button", { name: "Buy", exact: true });
+      assert(await withdraw.isVisible());
+      const withdrawBox = await withdraw.boundingBox(),
+        buyBox = await buy.boundingBox();
+      assert(buyBox.x > withdrawBox.x && Math.abs(buyBox.y - withdrawBox.y) < 2);
+      await withdraw.click();
       await checkout
-        .getByRole("heading", { name: "Online payment is not connected", exact: true })
-        .waitFor();
-      await checkout.getByRole("button", { name: "Close checkout", exact: true }).click();
-      await page.getByRole("button", { name: "Open checkout", exact: true }).click();
+        .getByRole("region", { name: "Withdraw this request?", exact: true })
+        .getByRole("button", { name: "Cancel", exact: true })
+        .click();
+      await buy.click();
+      await authorizeInDialog(page, "Record this order?", "Buy");
+      await checkout.getByRole("heading", { name: "Order confirmed", exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Checkout", exact: true }).count(), 0);
+      await page.reload();
+      await checkout.waitFor();
       await checkout.getByRole("heading", { name: "Order recorded", exact: true }).waitFor();
       assert.match(page.url(), /\/buyer\/conversations\//);
       const records = await page.evaluate(() =>
@@ -312,7 +332,7 @@ test("complete v3.2 frontend", async (t) => {
       await page.goto(base + `/approvals/${approval}`);
       await page.getByRole("link", { name: "Back to review list", exact: true }).waitFor();
       assert.equal(
-        await page.getByRole("button", { name: "Review & approve", exact: true }).count(),
+        await page.getByRole("button", { name: "Approve proposal", exact: true }).count(),
         0,
       );
       await page.goto(base + `/checkout/${order}`);
@@ -341,7 +361,7 @@ test("complete v3.2 frontend", async (t) => {
       .fill("Order 100 litres of milk");
     await page.getByRole("button", { name: "Send message", exact: true }).click();
     await page.waitForURL(/\/buyer\/conversations\//);
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     await page.getByRole("button", { name: "Reject", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Reject purchase?", exact: true });
     await dialog.getByLabel("Reason for rejection").fill("Please use a smaller quantity.");
@@ -351,7 +371,7 @@ test("complete v3.2 frontend", async (t) => {
       .first()
       .waitFor();
     await send("Make it 50 litres");
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     await send("Order milk-protein-free oat drink");
     await page
       .getByRole("heading", {
@@ -360,7 +380,7 @@ test("complete v3.2 frontend", async (t) => {
       })
       .waitFor();
     assert.equal(
-      await page.getByRole("button", { name: "Review & approve", exact: true }).count(),
+      await page.getByRole("button", { name: "Approve proposal", exact: true }).count(),
       0,
     );
     assert(
@@ -380,7 +400,7 @@ test("complete v3.2 frontend", async (t) => {
     await page.getByRole("heading", { name: /Availability not confirmed/ }).waitFor();
     await page.getByRole("button", { name: "Review purchase proposal", exact: true }).click();
     await page.waitForURL(/\/buyer\/conversations\//);
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     await page.goto(base + "/restocking/new");
     await page.getByLabel("Plan name", { exact: true }).fill("Evening cheese");
     await page.getByLabel("Choose kitchen stock", { exact: true }).selectOption("stock-cheese");
@@ -413,7 +433,7 @@ test("complete v3.2 frontend", async (t) => {
     await choose("Lactose-free kitchen butter", "service pack · KG");
     await page.getByRole("button", { name: "Review purchase proposal", exact: true }).click();
     await page.waitForURL(/\/buyer\/conversations\//);
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     await page.goto(base + `/recipes/${recipe}/plan`);
     await page
       .getByLabel("Mandatory dietary requirement", { exact: true })
@@ -476,28 +496,24 @@ test("complete v3.2 frontend", async (t) => {
       .fill("Order 100 litres of milk");
     await page.getByRole("button", { name: "Send message", exact: true }).click();
     await page.waitForURL(/\/buyer\/conversations\//);
-    await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
     await account();
     await page.getByText("Development tools", { exact: true }).click();
     await page.getByLabel("Quote condition", { exact: true }).selectOption("price");
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "Review & approve", exact: true }).click();
+    await page.getByRole("button", { name: "Approve proposal", exact: true }).click();
+    await authorizeInDialog(page, "Approve this proposal?", "Approve");
     await page
-      .getByRole("complementary", { name: "Review order", exact: true })
-      .getByRole("button", { name: "Review & approve", exact: true })
+      .getByRole("region", { name: "Checkout", exact: true })
+      .getByRole("button", { name: "Buy", exact: true })
       .click();
-    await authorizeInDialog(page, "Approve this purchase?", "Approve purchase");
-    await page
-      .getByRole("complementary", { name: "Checkout", exact: true })
-      .getByRole("button", { name: "Confirm order", exact: true })
-      .click();
-    await authorizeInDialog(page, "Record this order?", "Record order");
+    await authorizeInDialog(page, "Record this order?", "Buy");
     await page
       .getByText("The quote changed. Prepare an updated purchase proposal.", { exact: false })
       .first()
       .waitFor();
     await page
-      .getByRole("complementary", { name: "Checkout", exact: true })
+      .getByRole("region", { name: "Checkout", exact: true })
       .getByRole("button", { name: "Refresh prices & prepare updated proposal", exact: true })
       .waitFor();
     assert.equal(
@@ -535,7 +551,7 @@ test("complete v3.2 frontend", async (t) => {
           .click();
         const completed = flow.getByLabel("Completed product selection", { exact: true });
         await completed.getByText("Products selected", { exact: true }).waitFor();
-        await flow.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+        await flow.getByRole("button", { name: "Approve proposal", exact: true }).waitFor();
         assert.equal(await completed.getAttribute("open"), null);
         assert.equal(await picker.count(), 0);
         await completed.locator("summary").click();
@@ -549,7 +565,7 @@ test("complete v3.2 frontend", async (t) => {
           await flow.evaluate(() => {
             const selection = document.querySelector('[aria-label="Completed product selection"]');
             const review = [...document.querySelectorAll("button")].find(
-              (el) => el.textContent === "Review & approve",
+              (el) => el.textContent === "Approve proposal",
             );
             return !!(selection.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING);
           }),

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useWorkspace } from "@/client/use-workspace";
 import type { Proposal } from "@/shared/contracts/purchasing";
-import { ActionConfirmation } from "@/components/ui/action-confirmation";
+import { InlineActionConfirmation } from "@/components/ui/inline-action-confirmation";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { useAction } from "@/features/procurement/use-action";
 import {
@@ -52,6 +52,11 @@ export function ChatCheckout({ proposal }: { proposal: Proposal }) {
         ) &&
         proposal.decision.outcome === "ALLOW" &&
         proposal.decision.limits.autonomy === "order_within_limits"));
+  const canWithdraw =
+    s.user?.roles.includes("buyer") &&
+    proposal.createdBy === s.user.id &&
+    !orderId &&
+    ["READY", "PENDING_APPROVAL", "APPROVED"].includes(proposal.status);
   return (
     <div className="space-y-5">
       <ErrorMessage error={loadError} />
@@ -80,25 +85,39 @@ export function ChatCheckout({ proposal }: { proposal: Proposal }) {
       )}
       {!orderId && (
         <Panel>
-          <StatusBadge status={proposal.status} />
-          {canOrder ? (
-            <div className="mt-4">
-              <ActionConfirmation
-                title="Record this order?"
-                holdToConfirm
-                description="Confirm this exact purchase. The service will recheck prices and availability. Supplier dispatch and payment are not connected."
-                trigger="Confirm order"
-                confirmLabel="Record order"
-                onConfirm={() => store.placeOrder(proposal.id).then(() => {})}
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <span className="mr-auto">
+              <StatusBadge status={proposal.status} />
+            </span>
+            {canWithdraw && (
+              <InlineActionConfirmation
+                title="Withdraw this request?"
+                description="This purchase and its review will no longer be actionable."
+                trigger="Withdraw request"
+                confirmLabel="Withdraw"
+                destructive
+                onConfirm={() => store.cancel(proposal.id)}
               />
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-muted-foreground">
-              {stale
-                ? "This quote needs refreshing. Prepare an updated proposal before ordering."
-                : "A buyer can confirm this purchase once it is approved."}
-            </p>
-          )}
+            )}
+            {canOrder ? (
+              <>
+                <InlineActionConfirmation
+                  title="Record this order?"
+                  holdToConfirm
+                  description="Confirm the products, quantities and total shown above. Prices and availability are checked again before confirmation."
+                  trigger="Buy"
+                  confirmLabel="Buy"
+                  onConfirm={() => store.placeOrder(proposal.id).then(() => {})}
+                />
+              </>
+            ) : (
+              <p className="order-last w-full text-sm text-muted-foreground">
+                {stale
+                  ? "This quote needs refreshing. Prepare an updated proposal before ordering."
+                  : "A buyer can confirm this purchase once it is approved."}
+              </p>
+            )}
+          </div>
           {stale &&
             thread &&
             s.user?.roles.includes("buyer") &&
@@ -131,11 +150,10 @@ export function ChatCheckout({ proposal }: { proposal: Proposal }) {
       )}
       {orderId && (
         <Panel>
-          <StatusBadge status="PENDING" label="Payment unavailable" />
-          <h3 className="mt-4 text-sm font-semibold">Online payment is not connected</h3>
+          <StatusBadge status="APPROVED" label="Order confirmed" />
+          <h3 className="mt-4 text-sm font-semibold">Order confirmed</h3>
           <p className="mt-3 text-sm text-muted-foreground">
-            No payment has been processed. The order is recorded; supplier dispatch and payment
-            require a connected fulfillment service.
+            Your order has been recorded. View its receipt and details on the order page.
           </p>
           <Link
             href={`/orders/${orderId}`}
