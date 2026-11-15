@@ -3,11 +3,12 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/components/lib/utils";
 
 export const buttonVariants = cva(
-  "inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 md:min-h-10",
+  "luukku-button inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition-colors disabled:pointer-events-none disabled:opacity-50 md:min-h-10",
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        default:
+          "border border-primary bg-primary text-primary-foreground hover:bg-primary/90 active:translate-y-px",
         secondary: "bg-secondary text-secondary-foreground hover:bg-accent",
         outline: "border border-input bg-card hover:bg-accent hover:text-accent-foreground",
         ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",

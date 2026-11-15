@@ -10,6 +10,12 @@ const screenshots =
   process.env.FRONTEND_SCREENSHOTS || join(process.cwd(), "docs/frontend-v3.2-screenshots");
 mkdirSync(screenshots, { recursive: true });
 
+async function authorizeInDialog(page, title, label) {
+  const dialog = page.getByRole("dialog", { name: title, exact: true });
+  await dialog.getByRole("button", { name: "Use standard confirmation", exact: true }).click();
+  await dialog.getByRole("button", { name: label, exact: true }).click();
+}
+
 test("complete v3.2 frontend", async (t) => {
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   t.after(() => browser.close());
@@ -173,6 +179,16 @@ test("complete v3.2 frontend", async (t) => {
     await composer.fill("");
     await page.waitForFunction(() => document.querySelector("textarea").clientHeight <= 44);
     await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+    const proposalCard = page.getByRole("region", { name: "Purchase proposal", exact: true });
+    await proposalCard.getByText("Total (excl. VAT)", { exact: true }).waitFor();
+    await proposalCard.getByText("Proposal v1", { exact: true }).waitFor();
+    await proposalCard.getByRole("button", { name: "Withdraw request", exact: true }).click();
+    const withdrawal = page.getByRole("dialog", { name: "Withdraw this request?", exact: true });
+    await withdrawal.waitFor();
+    await withdrawal.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert(
+      await proposalCard.getByRole("button", { name: "Review & approve", exact: true }).isVisible(),
+    );
     const local = await state();
     assert(local.threads[0].proposals[0]);
     const records = await page.evaluate(() =>
@@ -242,11 +258,51 @@ test("complete v3.2 frontend", async (t) => {
         .getByRole("complementary", { name: "Review order", exact: true })
         .getByRole("button", { name: "Review & approve", exact: true })
         .click();
-      await page
-        .getByRole("dialog", { name: "Approve this purchase?", exact: true })
-        .getByRole("button", { name: "Approve & record order", exact: true })
-        .click();
-      await page.getByRole("link", { name: "View order", exact: true }).waitFor();
+      const approvalDialog = page.getByRole("dialog", {
+        name: "Approve this purchase?",
+        exact: true,
+      });
+      const hold = approvalDialog.getByRole("button", {
+        name: "Hold to approve purchase",
+        exact: true,
+      });
+      await hold.focus();
+      await page.keyboard.down("Space");
+      await page.waitForTimeout(200);
+      await page.keyboard.up("Space");
+      const afterEarlyRelease = await page.evaluate(() =>
+        JSON.parse(sessionStorage.getItem("aimo:v32:records")),
+      );
+      assert.equal(
+        afterEarlyRelease.proposals.find((p) => p.approval?.id === approval).approval.status,
+        "PENDING",
+        "Early release must not approve",
+      );
+      assert.equal(afterEarlyRelease.orders.length, 0);
+      await page.keyboard.down("Space");
+      await page.waitForTimeout(900);
+      await page.keyboard.up("Space");
+      const checkout = page.getByRole("complementary", { name: "Checkout", exact: true });
+      await checkout.waitFor();
+      const approvedRecords = await page.evaluate(() =>
+        JSON.parse(sessionStorage.getItem("aimo:v32:records")),
+      );
+      assert.equal(
+        approvedRecords.orders.length,
+        0,
+        "Approval must not record an order before checkout",
+      );
+      assert.match(page.url(), /\/buyer\/conversations\//);
+      assert(await composer.isEditable());
+      await checkout.getByRole("button", { name: "Confirm order", exact: true }).click();
+      await authorizeInDialog(page, "Record this order?", "Record order");
+      await checkout
+        .getByRole("heading", { name: "Online payment is not connected", exact: true })
+        .waitFor();
+      await checkout.getByRole("button", { name: "Close checkout", exact: true }).click();
+      await page.getByRole("button", { name: "Open checkout", exact: true }).click();
+      await checkout.getByRole("heading", { name: "Order recorded", exact: true }).waitFor();
+      assert.match(page.url(), /\/buyer\/conversations\//);
       const records = await page.evaluate(() =>
         JSON.parse(sessionStorage.getItem("aimo:v32:records")),
       );
@@ -430,16 +486,18 @@ test("complete v3.2 frontend", async (t) => {
       .getByRole("complementary", { name: "Review order", exact: true })
       .getByRole("button", { name: "Review & approve", exact: true })
       .click();
+    await authorizeInDialog(page, "Approve this purchase?", "Approve purchase");
     await page
-      .getByRole("dialog", { name: "Approve this purchase?", exact: true })
-      .getByRole("button", { name: "Approve & record order", exact: true })
+      .getByRole("complementary", { name: "Checkout", exact: true })
+      .getByRole("button", { name: "Confirm order", exact: true })
       .click();
+    await authorizeInDialog(page, "Record this order?", "Record order");
     await page
       .getByText("The quote changed. Prepare an updated purchase proposal.", { exact: false })
       .first()
       .waitFor();
     await page
-      .getByRole("complementary", { name: "Review order", exact: true })
+      .getByRole("complementary", { name: "Checkout", exact: true })
       .getByRole("button", { name: "Refresh prices & prepare updated proposal", exact: true })
       .waitFor();
     assert.equal(
@@ -588,10 +646,6 @@ test("complete v3.2 frontend", async (t) => {
         document.body.style.overflow !== "hidden" &&
         document.activeElement?.getAttribute("aria-label") === "Open navigation",
     );
-    const notifications = page.getByRole("button", { name: "Open notifications", exact: true });
-    await notifications.press("Enter");
-    await page.getByRole("heading", { name: "Notifications", exact: true }).waitFor();
-    await page.keyboard.press("Escape");
   });
   assert.deepEqual(errors, []);
   assert.deepEqual(purchasingCalls, []);

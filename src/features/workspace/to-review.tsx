@@ -9,8 +9,9 @@ import type { Proposal } from "@/shared/contracts/purchasing";
 import { cn } from "@/components/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Icon, type IconName } from "@/components/ui/icon";
-import { EmptyState, ErrorMessage, StatusBadge, eur, store } from "./ui";
+import { EmptyState, ErrorMessage, StatusBadge, store } from "./ui";
 import { useLoad } from "./use-load";
+import { AnimatedPrice } from "./animated-price";
 
 function purchaseTitle(proposal: Proposal) {
   const first = proposal.lines[0];
@@ -50,13 +51,7 @@ function neededDate(value: string) {
   }).format(new Date(`${value}T12:00:00Z`));
 }
 
-function ReviewRow({
-  proposal,
-  thread,
-}: {
-  proposal: Proposal;
-  thread?: Thread;
-}) {
+function ReviewRow({ proposal, thread }: { proposal: Proposal; thread?: Thread }) {
   const source = sourceFor(proposal, thread);
   const version = thread ? thread.proposals.indexOf(proposal.id) + 1 : null;
   const reasons = proposal.decision.reasons;
@@ -81,7 +76,7 @@ function ReviewRow({
       : reason?.message;
   const pending = proposal.approval?.status === "PENDING";
   return (
-    <li className="p-5 sm:p-6">
+    <li className="luukku-capsule p-5 sm:p-6">
       <div className="flex items-start gap-4">
         <div className="hidden size-11 shrink-0 items-center justify-center rounded-lg border border-primary/10 bg-muted/60 text-primary sm:flex">
           <Icon name={source.icon} />
@@ -143,8 +138,8 @@ function ReviewRow({
           </div>
           <div className="flex items-center justify-between gap-5 lg:justify-end">
             <div className="lg:text-right">
-              <p className="whitespace-nowrap text-xl font-semibold leading-tight tabular-nums">
-                {eur(proposal.totalExclVat, proposal.currency)}
+              <p className="whitespace-nowrap luukku-amount text-xl leading-tight tabular-nums">
+                <AnimatedPrice value={proposal.totalExclVat} currency={proposal.currency} />
               </p>
               <p className="mt-1 text-[11px] text-muted-foreground">Excl. VAT</p>
             </div>
@@ -235,7 +230,7 @@ export function ToReview() {
       )}
       {rows.length > 0 ? (
         <ul
-          className="divide-y overflow-hidden rounded-xl border bg-card shadow-[0_2px_12px_rgba(0,0,0,0.025)]"
+          className="luukku-queue divide-y overflow-hidden rounded-md border border-t-[3px] border-t-primary bg-card shadow-[0_2px_12px_rgba(0,0,0,0.025)]"
           aria-label={history ? "Review history" : "Pending purchases"}
         >
           {rows.map((p) => (
@@ -260,7 +255,7 @@ export function ToReview() {
                 <Icon name="clock" className="size-4 shrink-0 text-muted-foreground" />
                 <span className="break-words">
                   {proposal.id.slice(0, 8)} · Proposal v{version} · {purchaseTitle(proposal)} ·{" "}
-                  {eur(proposal.totalExclVat, proposal.currency)}
+                  <AnimatedPrice value={proposal.totalExclVat} currency={proposal.currency} />
                 </span>
                 <span className="rounded-full bg-muted px-2 py-1 text-[10px] text-muted-foreground">
                   Superseded by {latest.id.slice(0, 8)}
