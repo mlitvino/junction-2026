@@ -114,7 +114,11 @@ function makeAuditEvent(params: {
 
 /** The organization's buyer rules, in the shape the candidate filter uses. */
 export async function customerPreferencesFor(organizationId: string): Promise<CustomerPreferences> {
-  const effective = (await getEffectiveFor(organizationId, "buyer")).values;
+  return toCustomerPreferences((await getEffectiveFor(organizationId, "buyer")).values);
+}
+
+/** Same, from already-loaded effective buyer preferences (no second database round trip). */
+export function toCustomerPreferences(effective: Preferences): CustomerPreferences {
   return {
     dietaryRestrictions: effective.dietaryRestrictions,
     // Candidates are tagged with allergen names; preferences may hold names or GS1 codes.
@@ -386,6 +390,32 @@ const DERIVED_OR_DIFFERENT_HEAD_NOUNS = new Set([
   "potatoes",
 ]);
 
+/**
+ * Extra words that still name the same product as the requested word: a variety plus its class noun
+ * ("Cheddar" → "Valio Cheddar cheese", "rapeseed" → "Rapeseed oil") or a product sold under a
+ * longer name ("milk" → "lactose free milk drink"). They skip the qualifier/head-noun penalty, which
+ * otherwise rejects "Potato salad" for "potato" or "Cocoa butter" for "butter".
+ */
+const SAME_PRODUCT_EXTRA_WORDS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  (
+    [
+      // Only unambiguous varieties: "cream" (cream cheese), "olive" (olives) and "sesame" (seeds) stay out.
+      [["cheddar", "emmental", "emmentaler", "edam", "gouda", "mozzarella", "brie", "camembert", "feta", "parmesan",
+        "halloumi", "mascarpone", "ricotta", "gruyere", "gruyère", "oltermanni"], ["cheese"]],
+      [["rapeseed", "sunflower", "canola", "rypsi"], ["oil"]],
+      [["milk"], ["drink"]],
+    ] as const
+  ).flatMap(([words, extras]) => words.map((w) => [w, new Set<string>(extras)] as const)),
+);
+
+/** Strips verb endings for inflection matching: "skimmed" → "skim", "whipping" / "whipped" → "whip". */
+function verbStem(word: string): string {
+  const m = /^(.{3,}?)(?:ing|ed)$/.exec(word);
+  if (!m) return word;
+  const stem = m[1]!;
+  return /([b-df-hj-np-tv-z])\1$/.test(stem) ? stem.slice(0, -1) : stem;
+}
+
 /** Returns a word and its singularized English stem (e.g. "potatoes" → "potato", "cheeses" → "cheese"). */
 export function wordStems(word: string): string[] {
   const lower = word.trim().toLowerCase();
@@ -437,10 +467,14 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
   let unmatchedCoreCount = 0;
   const matchedCoreIndices: number[] = [];
 
+  // Same word in another form: a short ending ("dice"/"diced") or a verb form ("skim"/"skimmed",
+  // "whipping"/"whipped"). Stems must keep 3+ letters, so "oat" never matches "oatmeal".
   const isInflectionPrefix = (a: string, b: string) =>
     a.length >= 3 &&
     b.length >= 3 &&
-    ((b.startsWith(a) && b.length - a.length <= 2) || (a.startsWith(b) && a.length - b.length <= 2));
+    ((b.startsWith(a) && b.length - a.length <= 2) ||
+      (a.startsWith(b) && a.length - b.length <= 2) ||
+      verbStem(a) === verbStem(b));
 
   for (const rt of reqTokens) {
     const rtStems = wordStems(rt);
@@ -512,11 +546,15 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
   }
 
   if (coreReqTokens.length > 0 && matchedCoreIndices.length > 0) {
+    // Words that only complete the requested product's name ("Cheddar" + "cheese") are not penalized.
+    const sameProductExtras = new Set(reqTokens.flatMap((t) => [...(SAME_PRODUCT_EXTRA_WORDS.get(t) ?? [])]));
+    const isSameProductExtra = (ct: string) => wordStems(ct).some((s) => sameProductExtras.has(s));
+
     // (a) Penalize unrequested ingredient-changing qualifiers anywhere in the candidate name
     // (e.g. "Smoked salmon fillet" for "Salmon fillet", "Cocoa butter" for "butter",
     // "smashed potatoes" for "Diced potatoes").
     const hasUnrequestedQualifier = candTokens.some((ct, idx) => {
-      if (matchedCoreIndices.includes(idx)) return false;
+      if (matchedCoreIndices.includes(idx) || isSameProductExtra(ct)) return false;
       const stems = wordStems(ct);
       if (stems.some((s) => reqStemSet.has(s))) return false;
       return INGREDIENT_CHANGING_QUALIFIERS.has(ct) || stems.some((s) => INGREDIENT_CHANGING_QUALIFIERS.has(s));
@@ -527,6 +565,7 @@ export function computeNameMatchScore(requestedName: string, candidateName: stri
     const hasDifferentHeadNoun = candTokens.some(
       (ct, idx) =>
         !matchedCoreIndices.includes(idx) &&
+        !isSameProductExtra(ct) &&
         DERIVED_OR_DIFFERENT_HEAD_NOUNS.has(ct) &&
         !reqStemSet.has(ct) &&
         !wordStems(ct).some((s) => reqStemSet.has(s)),
@@ -856,6 +895,29 @@ export function filterSyntheticCatalogProducts<
   });
 }
 
+/** Most products priced per requested item (Valio price + availability lookups). */
+const PRICE_LOOKUP_CAP = 40;
+
+/**
+ * Static pre-filter before live lookups: with a requested name, keeps the rows that pass the same
+ * relevance pipeline the selection applies later (best first); without one, the first rows in SQL
+ * (similarity) order. Never more than PRICE_LOOKUP_CAP.
+ */
+export function narrowBeforePricing<T extends { id: string; name: string; category: string; vatCode: string | null }>(
+  rows: readonly T[],
+  productName?: string,
+): T[] {
+  if (!productName?.trim()) return rows.slice(0, PRICE_LOOKUP_CAP);
+  const scored = rows.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode, nameMatchScore: computeNameMatchScore(productName, r.name) }));
+  const score = new Map(
+    selectRelevantCandidates(scored)
+      .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
+      .slice(0, PRICE_LOOKUP_CAP)
+      .map((c) => [c.id, c.nameMatchScore] as const),
+  );
+  return rows.filter((r) => score.has(r.id)).sort((a, b) => score.get(b.id)! - score.get(a.id)!);
+}
+
 export async function getCandidatesByProductType(
   productType: string,
   deliveryDate: string,
@@ -934,6 +996,10 @@ export async function getCandidatesByProductType(
           .orderBy(...orderBySimilarity)
           .limit(200);
       }
+
+      // Narrow down with the static data before asking Valio (undisclosed rate limits): only products
+      // whose names can match the request are priced, at most PRICE_LOOKUP_CAP per item.
+      rows = narrowBeforePricing(rows, productName);
 
       if (rows.length > 0) {
         const priceMap = new Map<string, { price: number; vat: number }>();
@@ -1099,11 +1165,11 @@ export type SelectionInput = {
 /** Ranks products for every requested item and creates one proposal from the chosen lines. */
 export async function createProposalFromItems(actor: Actor, input: SelectionInput): Promise<ProposalFromPromptResponse> {
   const { extractedItems, deliveryDate, autoResolvePartialStock } = input;
-  const [preferences, previousOrders, rules] = await Promise.all([
-    customerPreferencesFor(actor.organizationId),
+  const [previousOrders, rules] = await Promise.all([
     loadHistoricalOrderRecords(actor.organizationId),
     getEffectiveFor(actor.organizationId, "buyer").then((e) => e.values),
   ]);
+  const preferences = toCustomerPreferences(rules);
   const orderId = "pending";
   const auditTrail: PreparationStep[] = [...(input.initialSteps ?? [])];
   const actorId = actor.userId;
@@ -1521,9 +1587,11 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
 const badRequest = (message: string) => new PurchasingError(400, "INVALID_CHANGE", message);
 
 /**
- * Recomputes a replacement line's sales-unit quantity from the old line's requested amount
- * using catalog unit facts (`toSalesUnits`). Falls back to `oldQuantity` plus a warning only
- * when the catalog has no content info or the units are incompatible.
+ * Recomputes a replacement line's sales-unit quantity from the old line's amount using catalog unit
+ * facts (`toSalesUnits`). The originally requested amount (`trace`) is used only while the line still
+ * has the quantity the selection gave it; after the buyer changed it, the line's current quantity
+ * counts. Falls back to `oldQuantity` plus a warning when the catalog has no content info or the
+ * units are incompatible.
  */
 export function computeReplacementQuantity(params: {
   repQuantity?: number;
@@ -1532,7 +1600,8 @@ export function computeReplacementQuantity(params: {
   oldName: string;
   newName: string;
   newSalesUnit: string;
-  trace?: { parsedQuantity: number; parsedUnit: string } | null;
+  /** Pass only when this trace is the line's sole source (not a merge of several requests). */
+  trace?: { parsedQuantity: number; parsedUnit: string; orderedQuantity?: number | null } | null;
   oldFacts?: UnitFacts | null;
   newFacts?: UnitFacts | null;
 }): { quantity: number; conversionNote: string | null; warning: string | null } {
@@ -1542,7 +1611,16 @@ export function computeReplacementQuantity(params: {
 
   let reqAmount = params.oldQuantity;
   let reqUnit = params.oldUnit;
-  if (params.trace && params.trace.parsedQuantity > 0 && params.trace.parsedUnit) {
+  // The original request still describes the line only if converting it again gives the line's
+  // current quantity; a revised quantity ("set to 20") means the current quantity counts.
+  const t = params.trace;
+  const traceUsable = !!t && t.parsedQuantity > 0 && !!t.parsedUnit;
+  const lineUnchanged =
+    traceUsable &&
+    (params.oldFacts
+      ? toSalesUnits(t!.parsedQuantity, t!.parsedUnit, params.oldFacts).quantity === params.oldQuantity
+      : t!.orderedQuantity === undefined || t!.orderedQuantity === null || t!.orderedQuantity === params.oldQuantity);
+  if (params.trace && lineUnchanged) {
     reqAmount = params.trace.parsedQuantity;
     reqUnit = params.trace.parsedUnit;
   } else if (params.oldFacts) {
@@ -1692,16 +1770,6 @@ export function updateSelectionForRevision(params: {
 }
 
 /**
- * Merges lines sharing the same `productId` by summing their quantities and preserving a
- * non-null `substituteFor` when present.
- */
-export function mergeProposalLines<
-  T extends { productId: string; quantity: number; substituteFor?: Draft["substituteFor"] },
->(lines: readonly T[]): T[] {
-  return mergeDraftLines(lines);
-}
-
-/**
  * Applies changes to a proposal's lines and creates the revised proposal (the old one is
  * cancelled unless the revised proposal is BLOCKED by policy). Accepts structured changes
  * and/or a natural-language `prompt` ("change 469330 to 469386", "set 30 cases of milk",
@@ -1797,7 +1865,8 @@ export async function reviseProposalFromRequest(
     const violations = evaluateBuyerPreferences(record, rules);
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const old = lines[idx]!;
-    const trace = pipeline.find((t) => t.selectedProduct?.id === old.productId);
+    const traces = pipeline.filter((t) => t.selectedProduct?.id === old.productId);
+    const trace = traces[0];
     const { quantity, conversionNote, warning } = computeReplacementQuantity({
       repQuantity: rep.quantity,
       oldQuantity: old.quantity,
@@ -1805,7 +1874,8 @@ export async function reviseProposalFromRequest(
       oldName: old.name,
       newName: record.name,
       newSalesUnit: record.salesUnit,
-      trace,
+      // A line merged from several requests has no single original amount: use its current quantity.
+      trace: traces.length === 1 ? trace : null,
       oldFacts: unitFactsMap.get(old.productId) ?? null,
       newFacts: unitFactsMap.get(record.id) ?? null,
     });
@@ -1869,7 +1939,7 @@ export async function reviseProposalFromRequest(
   }
   if (input.date && input.date !== current.pricingDate) applied.push(`Moved the delivery date from ${current.pricingDate} to ${input.date}.`);
 
-  const mergedLines = mergeProposalLines(lines);
+  const mergedLines = mergeDraftLines(lines);
 
   const updatedSelection = updateSelectionForRevision({
     oldSelection: current.selection,

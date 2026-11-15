@@ -269,6 +269,11 @@ export const ReviseProposalRequestSchema = z.object({
 
 export const ReviseProposalResponseSchema = z.object({
   previousProposalId: id,
+  previousCancelled: z.boolean().optional().meta({
+    description:
+      "True when the previous proposal was cancelled (replaced). False when the revision is BLOCKED by policy: " +
+      "the previous proposal then stays as it was and can still be used. Always sent by the server.",
+  }),
   appliedChanges: z.array(z.string()),
   proposal: ProposalSchema,
 });

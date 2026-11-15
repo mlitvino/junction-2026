@@ -13,7 +13,7 @@ import { describe, it } from "node:test";
 import { app } from "@/server/api/app";
 import { AgentError, callModel, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
 import { parseOrderChangeDeterministically } from "@/server/agents/order-change-agent";
-import { evaluatePolicy } from "@/server/policy/evaluate";
+import { evaluatePolicy, mergeDraftLines } from "@/server/policy/evaluate";
 import { runPurchasingAgent } from "@/server/services/agent";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
@@ -27,12 +27,12 @@ import {
 import {
   computeNameMatchScore,
   computeReplacementQuantity,
+  narrowBeforePricing,
   evaluateBuyerPreferences,
   evaluateCustomerPreferences,
   filterRelevantCandidates,
   filterSyntheticCatalogProducts,
   isNonFoodProduct,
-  mergeProposalLines,
   parseQuantityAndUnit,
   planCandidateSearchTerms,
   selectRelevantCandidates,
@@ -385,8 +385,45 @@ describe("Selection relevance, stemming, and modifier handling", () => {
     assert.ok(potatoMatches.includes("Potato 5 kg"));
     assert.ok(!potatoMatches.includes("Jenkki Fresh"));
 
+    // Varieties named with their class noun, products with a longer name, and verb forms still match.
+    for (const [requested, name] of [
+      ["Cheddar", "Valio Cheddar cheese 1kg"],
+      ["Emmental", "Valio Emmental cheese slices 1 kg"],
+      ["rapeseed", "Rapeseed oil 1 L"],
+      ["lactose-free milk", "Arla lactose free milk drink 1 L"],
+      ["skim milk", "Valio skimmed milk 1 L"],
+      ["whipping cream", "Valio whipped cream 2 dl"],
+    ] as const)
+      assert.ok(computeNameMatchScore(requested, name) >= 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
+    // …while different products stay below the floor.
+    for (const [requested, name] of [
+      ["potato", "Potato salad 1 kg"],
+      ["butter", "Cocoa butter 1 kg"],
+      ["salmon fillet", "Smoked salmon fillet 1 kg"],
+      ["milk", "Milk chocolate 100 g"],
+      ["Cheddar", "Cheddar crisps 100 g"],
+      ["cream", "Valio cream cheese 200 g"],
+      ["oat", "Oatmeal 1 kg"],
+    ] as const)
+      assert.ok(computeNameMatchScore(requested, name) < 0.35, `${requested} → ${name}: ${computeNameMatchScore(requested, name)}`);
+
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh parsley 100 g"]), ["Dill 100 g"]);
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh dill 50 g", "Fresh parsley 100 g"]), ["Fresh dill 50 g"]);
+  });
+});
+
+describe("Narrowing candidates before live price lookups", () => {
+  const row = (id: string, name: string) => ({ id, name, category: "0101", vatCode: "FOOD" });
+
+  it("prices only products whose names can match, best first, at most 40", () => {
+    const rows = [row("1", "Valio milk 1 L"), row("2", "Milk chocolate 100 g"), row("3", "Valio lactose free milk 1 L"), row("4", "Fennel")];
+    assert.deepEqual(narrowBeforePricing(rows, "lactose-free milk").map((r) => r.id)[0], "3");
+    assert.ok(!narrowBeforePricing(rows, "lactose-free milk").some((r) => r.id === "4"));
+    assert.deepEqual(narrowBeforePricing(rows, "unicorn milk"), [], "nothing matches: nothing is priced");
+
+    const many = Array.from({ length: 200 }, (_, i) => row(String(i), `Valio milk ${i} L`));
+    assert.equal(narrowBeforePricing(many, "milk").length, 40);
+    assert.equal(narrowBeforePricing(many).length, 40, "without a name: the first 40 in SQL order");
   });
 });
 
@@ -506,6 +543,20 @@ describe("Shared buyer preferences and proposal revision helpers", () => {
     });
     assert.equal(noContent.quantity, 5);
     assert.ok(noContent.warning && noContent.warning.includes("Check the quantity"));
+
+    // The buyer changed 5 cases (100 L) to 2 cases (40 L): the swap follows the 40 L, not the
+    // original 100 L request.
+    const afterEdit = computeReplacementQuantity({
+      oldQuantity: 2,
+      oldUnit: "KI",
+      oldName: "Milk 20L case",
+      newName: "Milk 1L carton",
+      newSalesUnit: "ST",
+      trace: { parsedQuantity: 100, parsedUnit: "L", orderedQuantity: 2 },
+      oldFacts,
+      newFacts,
+    });
+    assert.equal(afterEdit.quantity, 40);
   });
 
   it("updates selection pipeline, suggestedAlternatives, and warnings on swap/update/remove/add", () => {
@@ -691,6 +742,20 @@ describe("B2: deterministic order-change parsing with commas, decimals, and prep
     );
     assert.deepEqual(withoutKnown.replacements, butter.replacements);
   });
+
+  it("understands quantities with any unit word, 'and set N cases' on swaps, and remove lists", () => {
+    assert.deepEqual(parseOrderChangeDeterministically("set milk to 30 cases").quantityUpdates, [{ target: "milk", quantity: 30 }]);
+    assert.deepEqual(parseOrderChangeDeterministically("change quantity of milk to 300 pcs").quantityUpdates, [
+      { target: "milk", quantity: 300 },
+    ]);
+    assert.deepEqual(parseOrderChangeDeterministically("set butter to 2,5 kg").quantityUpdates, [{ target: "butter", quantity: 2.5 }]);
+    assert.deepEqual(parseOrderChangeDeterministically("set 30 cases of milk").quantityUpdates, [{ target: "milk", quantity: 30 }]);
+    // The contract's own example (ReviseProposalRequestSchema.prompt).
+    assert.deepEqual(parseOrderChangeDeterministically("Change 469330 to 469386 and set 30 cases").replacements, [
+      { fromTarget: "469330", toTarget: "469386", quantity: 30 },
+    ]);
+    assert.deepEqual(parseOrderChangeDeterministically("remove milk, butter").removeTargets, ["milk", "butter"]);
+  });
 });
 
 describe("B3: merging duplicate productId lines on revision and policy evaluation", () => {
@@ -715,7 +780,7 @@ describe("B3: merging duplicate productId lines on revision and policy evaluatio
       substituteFor: { requested: "Product A", reason: "swap" as const },
     };
 
-    const merged = mergeProposalLines(afterSwap);
+    const merged = mergeDraftLines(afterSwap);
     assert.equal(merged.length, 1);
     assert.equal(merged[0]!.productId, "B");
     assert.equal(merged[0]!.quantity, 14);

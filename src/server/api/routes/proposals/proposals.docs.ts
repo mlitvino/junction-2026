@@ -186,7 +186,8 @@ export const reviseProposalRoute = createRoute({
   summary: "Change a proposal",
   description:
     "Swap products, change quantities, remove or add lines, move the date, structured or in words (`prompt`). " +
-    "Proposals never change: this creates a new, re-priced and re-checked proposal and cancels the old one. Creator only.",
+    "Proposals never change: this creates a new, re-priced and re-checked proposal and cancels the old one, unless the new one " +
+    "is BLOCKED by policy: then the old one stays as it was (`previousCancelled: false`). Creator only.",
   security,
   request: {
     params: IdParam,
