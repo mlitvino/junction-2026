@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import { ExtractedProductItemSchema } from "./extract";
-import { ItemProcurementTraceSchema, PreviousOrderRecordSchema, SuggestedAlternativeSchema } from "./selection";
+import {
+  ItemProcurementTraceSchema,
+  PreviousOrderRecordSchema,
+  StoryStepSchema,
+  SuggestedAlternativeSchema,
+} from "./selection";
 import { PolicyOutcomeSchema, PolicyReasonSchema } from "./policy";
 import { DataSourceSchema } from "./products";
 
@@ -97,6 +102,10 @@ export const ProposalSelectionSchema = z.object({
   previousOrdersUsed: z.array(PreviousOrderRecordSchema),
   warnings: z.array(z.string()).meta({
     description: "Things a human should check, e.g. quantity unit differs from the sales unit, unusual quantity vs history.",
+  }),
+  steps: z.array(StoryStepSchema).optional().meta({
+    description:
+      "The agent's story step by step (shared/contracts/selection.ts `StoryStepSchema`), in order. Absent on older proposals.",
   }),
 });
 

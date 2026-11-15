@@ -11,7 +11,7 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { InlineActionConfirmation } from "@/components/ui/inline-action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
-import { BudgetComparison, SelectionTrail } from "./selection-trail";
+import { AgentSteps, BudgetComparison, SelectionTrail } from "./selection-trail";
 import type {
   Proposal,
   ProposalLine,
@@ -1013,6 +1013,15 @@ export function ApprovalCard({
                 </div>
                 <PriceDisplay value={proposal.totalExclVat} currency={proposal.currency} />
               </div>
+              <AgentSteps
+                key={`steps-${proposal.id}`}
+                proposal={proposal}
+                reconciliation={
+                  threadId
+                    ? s.local.threads.find((t) => t.id === threadId)?.recipeReconciliation
+                    : undefined
+                }
+              />
               <div className="space-y-2 border-t pt-3">
                 <EvidenceDisclosure title="Budget & policy check" icon="shield-outline">
                   <BudgetComparison proposal={proposal} />

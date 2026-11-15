@@ -73,6 +73,11 @@ describe("recipes and inventory", () => {
     assert.equal(r.proposal.source, "recipe");
     assert.equal(r.proposal.lines.length, 1, "only the milk is ordered");
     assert.match(r.proposal.lines[0]!.name, /milk|maito/i);
+    assert.deepEqual(
+      [...new Set((r.selection.steps ?? []).map((s) => s.step))],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+      "every step of the recipe story is recorded",
+    );
   });
 
   it("other organizations don't see this recipe", async () => {

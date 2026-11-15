@@ -54,6 +54,10 @@ export const today = () =>
     day: "2-digit",
   }).format(new Date());
 const stamp = () => new Date().toISOString();
+// A revision the policy blocks leaves the previous proposal as it was (`previousCancelled: false`).
+const keptPrevious = (revised: { previousCancelled?: boolean; proposal: { status: string } }) =>
+  revised.previousCancelled === false ||
+  (revised.previousCancelled === undefined && revised.proposal.status === "BLOCKED");
 const uid = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 function parseQtyUnitQuery(text: string) {
   const unitMatch = text.match(
@@ -84,6 +88,35 @@ function parseQtyUnitQuery(text: string) {
     query: stripped || text.trim(),
   };
 }
+
+// Kitchen stock created by "Check low stock and restock to target" when nothing is low yet, so the
+// feature can be demonstrated. Each is linked to a real, orderable catalog product at creation.
+const DEMO_STOCK = [
+  {
+    id: "demo-stock-milk",
+    name: "Demo: lactose-free milk",
+    query: "lactose-free milk",
+    unit: "L",
+    onHand: 4,
+    minimum: 20,
+  },
+  {
+    id: "demo-stock-butter",
+    name: "Demo: butter",
+    query: "butter",
+    unit: "KG",
+    onHand: 1,
+    minimum: 4,
+  },
+  {
+    id: "demo-stock-cream",
+    name: "Demo: cooking cream",
+    query: "cooking cream",
+    unit: "L",
+    onHand: 2,
+    minimum: 5,
+  },
+];
 
 export function createWorkspaceService(
   api: WorkspaceApi,
@@ -241,7 +274,9 @@ export function createWorkspaceService(
   }
   function appendProposalTimeline(id: string, proposalId: string) {
     editThread(id, (t) => {
-      if (!t.timeline!.some((entry) => entry.kind === "proposal" && entry.proposalId === proposalId)) {
+      if (
+        !t.timeline!.some((entry) => entry.kind === "proposal" && entry.proposalId === proposalId)
+      ) {
         t.timeline!.push({ kind: "proposal", proposalId });
       }
     });
@@ -461,13 +496,70 @@ export function createWorkspaceService(
     const product = snapshot.productDetails[productId] ?? (await loadProduct(productId));
     return convertToSalesUnits(product, quantity, unit)?.quantity ?? null;
   }
+  async function seedDemoStock() {
+    const created: string[] = [];
+    for (const demo of DEMO_STOCK) {
+      // Keep stock the user has already adjusted, including a completed demo restock.
+      if (
+        snapshot.inventory.some((item) => item.id === demo.id || item.id.startsWith(`${demo.id}-`))
+      )
+        continue;
+      const candidates = (await api.searchProducts(demo.query, 0)).items.slice(0, 8);
+      if (!candidates.length) continue;
+      const { offers } = await api.getOffers(
+        candidates.map((p) => p.id),
+        today(),
+      );
+      const needed = Math.max(demo.minimum, demo.onHand) * 2 - demo.onHand;
+      let productId: string | undefined;
+      for (const product of candidates) {
+        const offer = offers.find((o) => o.productId === product.id);
+        const available = offer?.availability;
+        if (
+          !offer?.price?.found ||
+          offer.price.priceExclVat === null ||
+          !available?.orderable ||
+          available.salesBlock
+        )
+          continue;
+        const sales = await toSales(product.id, needed, demo.unit);
+        if (
+          sales !== null &&
+          available.availableQuantity !== null &&
+          available.availableQuantity >= sales &&
+          (available.availableDate?.slice(0, 10) ?? "9999") <= today()
+        ) {
+          productId = product.id;
+          break;
+        }
+      }
+      if (!productId) continue;
+      await api.saveInventory({
+        id: uid(demo.id),
+        ingredientName: demo.name,
+        productType: demo.name,
+        linkedProductId: productId,
+        quantityInStock: demo.onHand,
+        unit: demo.unit,
+        minParLevel: demo.minimum,
+        location: "Demo kitchen",
+      });
+      record(
+        "Demo kitchen stock created",
+        productId,
+        `${demo.name}: ${demo.onHand} ${demo.unit} on hand, trigger ${demo.minimum} ${demo.unit}.`,
+      );
+      created.push(demo.name);
+    }
+    return created;
+  }
   async function handleRestockSetup(id: string, text: string, current?: Proposal) {
     if (
       text
         .trim()
         .replace(/[.!?]+$/, "")
         .toLowerCase() === RESTOCK_SCENARIO_PROMPT.toLowerCase() &&
-      snapshot.local.plans.some((p) => !p.paused)
+      snapshot.local.plans.some((p) => p.id.startsWith("starter-restock-") && !p.paused)
     ) {
       const run = await checkAllPlans();
       const ready = run.lines.filter((line) => line.state === "ready");
@@ -499,10 +591,6 @@ export function createWorkspaceService(
       return;
     }
     await loadInventory();
-    if (current && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(current.status)) {
-      putProposal(await api.cancelProposal(current.id));
-      record("Previous purchase withdrawn for restocking changes", current.id);
-    }
     const requested = text
       .match(/(?:restock|replenish)\s+(.+?)(?:\s+to\s|\s+instead|$)/i)?.[1]
       ?.toLowerCase();
@@ -510,6 +598,10 @@ export function createWorkspaceService(
       ? snapshot.inventory.find((i) => i.ingredientName.toLowerCase().includes(requested))
       : undefined;
     if (item) {
+      if (current && ["READY", "PENDING_APPROVAL", "APPROVED"].includes(current.status)) {
+        putProposal(await api.cancelProposal(current.id));
+        record("Previous purchase withdrawn for restocking changes", current.id);
+      }
       const previous = snapshot.local.plans.find((p) => p.inventoryId === item.id);
       const target =
         Number(text.match(/\bto\s+(\d+(?:\.\d+)?)/i)?.[1]) ||
@@ -533,6 +625,93 @@ export function createWorkspaceService(
         l.drafts["restock:new"] = JSON.stringify(draft);
       });
     }
+    if (!item && /\blow\s+stock\b|\bto\s+target\b|\bbelow\b/i.test(text)) {
+      const findLow = () =>
+        snapshot.inventory.flatMap((i) =>
+          i.linkedProductId && i.minParLevel !== null && i.quantityInStock < i.minParLevel
+            ? [{ stock: i, productId: i.linkedProductId, minPar: i.minParLevel }]
+            : [],
+        );
+      let low = findLow();
+      let demo: string[] = [];
+      if (!low.length) {
+        demo = await single("seed-demo-stock", seedDemoStock);
+        if (demo.length || snapshot.inventory.some((item) => item.id.startsWith("demo-stock-"))) {
+          await loadInventory();
+          low = findLow();
+        }
+      }
+      const unlinked = snapshot.inventory.filter(
+        (i) => !i.linkedProductId && i.minParLevel !== null && i.quantityInStock < i.minParLevel,
+      );
+      const unlinkedNames = `${unlinked.map((i) => i.ingredientName).join(", ")} ${unlinked.length === 1 ? "is" : "are"}`;
+      if (low.length) {
+        const lines: RestockRun["lines"] = [];
+        for (const { stock, productId, minPar } of low) {
+          const previous = snapshot.local.plans.find((p) => p.inventoryId === stock.id);
+          const plan = PlanSchema.parse({
+            id: previous?.id ?? uid("plan"),
+            name: previous?.name ?? stock.ingredientName,
+            ingredient: stock.ingredientName,
+            productId,
+            unit: stock.unit,
+            current: stock.quantityInStock,
+            threshold: minPar,
+            target: previous?.target ?? Math.max(minPar, stock.quantityInStock) * 2,
+            location: stock.location ?? "Kitchen",
+            schedule: previous?.schedule ?? "threshold",
+            paused: previous?.paused ?? false,
+            inventoryId: stock.id,
+          } satisfies RestockPlan);
+          local((l) => {
+            l.plans = [plan, ...l.plans.filter((p) => p.id !== plan.id)];
+          });
+          record(
+            "Restocking plan configured locally",
+            plan.id,
+            "Created from a low-stock check. Background scheduling is not connected; run checks manually.",
+          );
+          lines.push(...(await evaluatePlan(plan.id)).lines);
+        }
+        excludeOverlappingLines(lines);
+        const run: RestockRun = {
+          id: uid("check"),
+          planId: "all",
+          at: stamp(),
+          lines,
+          conversationId: id,
+        };
+        local((l) => l.runs.unshift(run));
+        record(
+          "Restocking check completed",
+          run.id,
+          "Created from a low-stock request. No server scheduler or inventory reservation is active.",
+        );
+        const ready = lines.filter((l) => l.state === "ready").length;
+        answer(
+          id,
+          `${demo.length ? `No linked stock was low, so I added demo kitchen stock linked to real catalog products (${demo.join(", ")}). ` : ""}${low.length} item${low.length === 1 ? " is" : "s are"} below the trigger level, so I configured restock plans and checked prices and availability for today. ${ready} ${ready === 1 ? "is" : "are"} ready for a purchase proposal${ready < lines.length ? "; the rest need attention" : ""}. Nothing has been ordered.${unlinked.length ? ` Skipped because they aren’t linked to a Valio product: ${unlinked.map((i) => i.ingredientName).join(", ")}.` : ""} Review the plan below, then prepare the purchase proposal for review.`,
+        );
+        editThread(id, (t) => {
+          t.query = "restocking";
+          t.timeline!.push({ kind: "restock", runId: run.id });
+        });
+        return;
+      }
+      const reason = !snapshot.inventory.length
+        ? "No kitchen stock is recorded yet, so there is nothing to compare against trigger levels."
+        : unlinked.length
+          ? `${unlinkedNames} below the minimum stock level but not linked to a Valio product, so I can’t check prices or availability for a restock. Create a plan for ${unlinked.length === 1 ? "it" : "them"} from Restocking → New plan and choose the product.`
+          : `Nothing is below its minimum stock level (${snapshot.inventory.length} ${snapshot.inventory.length === 1 ? "item" : "items"} checked), so no restock plan is needed.`;
+      // Demo stock is always attempted first, so say when the catalog had nothing suitable.
+      answer(
+        id,
+        demo.length
+          ? reason
+          : `${reason} Demo setup needs new matching catalog products with a confirmed price, compatible units and enough stock for delivery today. Existing kitchen stock was kept.`,
+      );
+      return;
+    }
     answer(
       id,
       "Let’s set the product, trigger level and target stock. Restocking plans are configured locally until background scheduling is connected.",
@@ -554,14 +733,14 @@ export function createWorkspaceService(
       revised.proposal,
       id,
       thread(id).source,
-      revised.proposal.status === "BLOCKED"
+      keptPrevious(revised)
         ? "Change blocked by policy; previous proposal remains active."
         : revised.appliedChanges.join(" ") || "Swapped to an alternative product.",
     );
     await refresh();
     answer(
       id,
-      updated.status === "BLOCKED"
+      keptPrevious(revised)
         ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
         : `Updated the proposal (${revised.appliedChanges.join(", ") || "swapped product"}). Please review before continuing.`,
     );
@@ -594,15 +773,15 @@ export function createWorkspaceService(
         revised.proposal,
         id,
         thread(id).source,
-        revised.proposal.status === "BLOCKED"
+        keptPrevious(revised)
           ? "Change blocked by policy; previous proposal remains active."
           : revised.appliedChanges.join(" ") ||
-            "A new purchase proposal replaces the previous quantity.",
+              "A new purchase proposal replaces the previous quantity.",
       );
       await refresh();
       answer(
         id,
-        updated.status === "BLOCKED"
+        keptPrevious(revised)
           ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
           : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${parsed.salesUnit ?? "units"}`}). Please review before continuing.`,
       );
@@ -668,7 +847,8 @@ export function createWorkspaceService(
             typeof recipeCall?.args.recipeId === "string" ? recipeCall.args.recipeId : undefined;
           const dishArg =
             typeof recipeCall?.args.dishQuery === "string" ? recipeCall.args.dishQuery : undefined;
-          const hint = `${recipeIdArg ?? ""} ${dishArg ?? ""} ${synced.note ?? ""} ${synced.selection?.prompt ?? ""} ${text}`.toLowerCase();
+          const hint =
+            `${recipeIdArg ?? ""} ${dishArg ?? ""} ${synced.note ?? ""} ${synced.selection?.prompt ?? ""} ${text}`.toLowerCase();
           const matchedRecipe =
             (recipeIdArg ? recipes.find((r) => r.id === recipeIdArg) : undefined) ??
             recipes.find(
@@ -724,9 +904,7 @@ export function createWorkspaceService(
         const warnings = synced.selection?.warnings ?? [];
         answer(
           id,
-          warnings.length
-            ? `${result.reply}\n\nNote: ${warnings.join(" ")}`
-            : result.reply,
+          warnings.length ? `${result.reply}\n\nNote: ${warnings.join(" ")}` : result.reply,
         );
         appendProposalTimeline(id, synced.id);
         return;
@@ -745,7 +923,9 @@ export function createWorkspaceService(
     } catch (error) {
       const agentUnavailable =
         error instanceof ApiError &&
-        (error.status === 503 || error.code === "AGENT_NOT_CONFIGURED" || error.code === "MODEL_FAILED");
+        (error.status === 503 ||
+          error.code === "AGENT_NOT_CONFIGURED" ||
+          error.code === "MODEL_FAILED");
       if (!agentUnavailable) throw error;
       const swapCheck = parseSwapCommand(text, current);
       if (swapCheck.recognized) {
@@ -1144,7 +1324,7 @@ export function createWorkspaceService(
     const { members } = await api.getMembers();
     publish({ members });
   }
-  async function checkPlan(planId: string) {
+  async function evaluatePlan(planId: string) {
     const plan = snapshot.local.plans.find((p) => p.id === planId);
     if (!plan) throw new Error("Restocking plan not found.");
     const stock = await loadInventory();
@@ -1167,19 +1347,22 @@ export function createWorkspaceService(
         ["READY", "PENDING_APPROVAL", "APPROVED"].includes(p.status) &&
         p.lines.some((l) => l.productId === plan.productId),
     );
-    const state = existing
-      ? "partial"
-      : amount === 0
-        ? "covered"
-        : !offer?.price?.found ||
-            !availability?.orderable ||
-            availability.availableQuantity === null ||
-            sales === null
-          ? "unknown"
-          : availability.availableQuantity < sales ||
-              (availability.availableDate?.slice(0, 10) ?? "9999") > today()
-            ? "partial"
-            : "ready";
+    const state =
+      plan.paused || existing
+        ? "partial"
+        : amount === 0
+          ? "covered"
+          : !offer?.price?.found ||
+              offer.price.priceExclVat === null ||
+              !availability?.orderable ||
+              availability.salesBlock ||
+              availability.availableQuantity === null ||
+              sales === null
+            ? "unknown"
+            : availability.availableQuantity < sales ||
+                (availability.availableDate?.slice(0, 10) ?? "9999") > today()
+              ? "partial"
+              : "ready";
     const run: RestockRun = {
       id: uid("check"),
       planId,
@@ -1191,16 +1374,30 @@ export function createWorkspaceService(
           quantity: sales ?? amount ?? 0,
           unit: sales !== null ? (offer?.price?.salesUnit ?? plan.unit) : plan.unit,
           state,
-          reason: existing
-            ? "An open purchase already includes this product. Review it to avoid duplicate coverage; inventory has not been reserved."
-            : state === "ready"
-              ? "A purchase can be prepared for review."
-              : state === "covered"
-                ? "Stock is above the configured trigger. No purchase is needed."
-                : "Excluded from purchase until quantity, date or availability is confirmed.",
+          reason: plan.paused
+            ? "This plan is paused. Resume it before preparing a purchase."
+            : existing
+              ? "An open purchase already includes this product. Review it to avoid duplicate coverage; inventory has not been reserved."
+              : state === "ready"
+                ? "A purchase can be prepared for review."
+                : state === "covered"
+                  ? "Stock is above the configured trigger. No purchase is needed."
+                  : "Excluded from purchase until quantity, date or availability is confirmed.",
+          ...(current === null
+            ? {}
+            : {
+                onHand: current,
+                trigger: plan.threshold,
+                target: plan.target,
+                stockUnit: plan.unit,
+              }),
         },
       ],
     };
+    return run;
+  }
+  async function checkPlan(planId: string) {
+    const run = await evaluatePlan(planId);
     local((l) => l.runs.unshift(run));
     record(
       "Restocking check completed",
@@ -1208,6 +1405,16 @@ export function createWorkspaceService(
       "Manual check. No server scheduler or inventory reservation is active.",
     );
     return run;
+  }
+  function excludeOverlappingLines(lines: RestockRun["lines"]) {
+    const counts = new Map<string, number>();
+    for (const line of lines) counts.set(line.productId, (counts.get(line.productId) ?? 0) + 1);
+    for (const line of lines)
+      if ((counts.get(line.productId) ?? 0) > 1 && line.state !== "covered") {
+        line.state = "partial";
+        line.reason =
+          "Several plans reference this product. Consolidate their stock targets before purchasing to avoid duplicate coverage.";
+      }
   }
   async function checkAllPlans() {
     return single("check-all-plans", async () => {
@@ -1221,15 +1428,7 @@ export function createWorkspaceService(
         at: stamp(),
         lines: runs.flatMap((r) => r.lines),
       };
-      const counts = new Map<string, number>();
-      for (const line of combined.lines)
-        counts.set(line.productId, (counts.get(line.productId) ?? 0) + 1);
-      for (const line of combined.lines)
-        if ((counts.get(line.productId) ?? 0) > 1 && line.state !== "covered") {
-          line.state = "partial";
-          line.reason =
-            "Several plans reference this product. Consolidate their stock targets before purchasing to avoid duplicate coverage.";
-        }
+      excludeOverlappingLines(combined.lines);
       local((l) => l.runs.unshift(combined));
       return combined;
     });
@@ -1278,13 +1477,13 @@ export function createWorkspaceService(
             revised.proposal,
             threadId,
             thread(threadId).source,
-            revised.proposal.status === "BLOCKED"
+            keptPrevious(revised)
               ? "Change blocked by policy; previous proposal remains active."
               : revised.appliedChanges.join(" ") || "Updated purchase proposal.",
           );
           answer(
             threadId,
-            updated.status === "BLOCKED"
+            keptPrevious(revised)
               ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
               : `Updated the proposal (${revised.appliedChanges.join(", ") || "revised items"}). Please review before continuing.`,
           );
@@ -1489,34 +1688,41 @@ export function createWorkspaceService(
       await refresh();
     },
     async prepareRun(id: string) {
-      const run = snapshot.local.runs.find((r) => r.id === id);
-      if (!run) throw new Error("Check not found.");
-      if (run.threadId) return { threadId: run.threadId };
-      const ready = run.lines.filter((l) => l.state === "ready");
-      if (!ready.length)
-        throw new Error("No confirmed items are ready. Resolve the items needing attention first.");
-      const latest = await api.listProposals();
-      publish({ proposals: latest.items });
-      if (
-        latest.items.some(
-          (p) =>
-            ["READY", "PENDING_APPROVAL", "APPROVED"].includes(p.status) &&
-            p.lines.some((line) => ready.some((item) => item.productId === line.productId)),
+      return single(`prepare-run:${id}`, async () => {
+        const run = snapshot.local.runs.find((r) => r.id === id);
+        if (!run) throw new Error("Check not found.");
+        if (run.threadId) return { threadId: run.threadId };
+        const ready = run.lines.filter((l) => l.state === "ready");
+        if (!ready.length)
+          throw new Error(
+            "No confirmed items are ready. Resolve the items needing attention first.",
+          );
+        const latest = await api.listProposals();
+        publish({ proposals: latest.items });
+        if (
+          latest.items.some(
+            (p) =>
+              ["READY", "PENDING_APPROVAL", "APPROVED"].includes(p.status) &&
+              p.lines.some((line) => ready.some((item) => item.productId === line.productId)),
+          )
         )
-      )
-        throw new Error(
-          "An open purchase already covers an item in this check. Review it or run a new check before preparing another proposal.",
+          throw new Error(
+            "An open purchase already covers an item in this check. Review it or run a new check before preparing another proposal.",
+          );
+        const result = await createPurchase(
+          {
+            lines: ready.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+            date: today(),
+          },
+          run.conversationId,
+          "Restocking",
         );
-      const result = await createPurchase(
-        {
-          lines: ready.map((l) => ({ productId: l.productId, quantity: l.quantity })),
-          date: today(),
-        },
-        undefined,
-        "Restocking",
-      );
-      this.linkRun(id, result.threadId);
-      return result;
+        local((l) => {
+          const saved = l.runs.find((r) => r.id === id);
+          if (saved) saved.threadId = result.threadId;
+        });
+        return result;
+      });
     },
   };
 }

@@ -35,6 +35,7 @@ import {
   type LiveLineCheck,
   type RuleResult,
 } from "@/server/purchasing/rules";
+import { revisionsOf, withPricingSteps, type PricedProposal } from "@/server/purchasing/story";
 import type { PolicyOutcome } from "@/shared/contracts/policy";
 import type {
   Approval,
@@ -238,6 +239,15 @@ export type CreateProposalOptions = {
   selection?: ProposalSelection | null;
   /** Extra audit entries about how the proposal was prepared (e.g. the agent's search steps). */
   preparation?: Omit<AuditEntry, "resourceType" | "resourceId">[];
+  /**
+   * Called once the lines are priced and the policy has decided, before anything is stored: it can
+   * replace the selection and add audit entries that depend on the result (budget comparison, the
+   * story's steps). Pure and synchronous.
+   */
+  onPriced?: (priced: PricedProposal) => {
+    selection?: ProposalSelection | null;
+    preparation?: Omit<AuditEntry, "resourceType" | "resourceId">[];
+  };
 };
 
 /** Prices the lines, runs the policy check and freezes the result. Network first, then one insert. */
@@ -291,6 +301,19 @@ export async function createProposal(
   // The expiry is part of the deal, so the hash covers it too. The id is made here so it can be signed.
   const id = randomUUID();
   const hash = contentHash({ ...frozen, quoteExpiresAt: expiresAt.toISOString() });
+  const status = initialStatus(decision.outcome);
+  const priced = options.onPriced?.({
+    id,
+    status,
+    hash,
+    lineCount: lines.length,
+    totalExclVat: decision.totalExclVat,
+    currency: decision.currency,
+    pricingDate: decision.pricingDate,
+    decision,
+  });
+  const selection = priced?.selection !== undefined ? priced.selection : (options.selection ?? null);
+  const preparation = [...(options.preparation ?? []), ...(priced?.preparation ?? [])];
 
   return d.transaction(async (tx) => {
     const [row] = await tx
@@ -299,7 +322,7 @@ export async function createProposal(
         id,
         organizationId: actor.organizationId,
         createdBy: actor.userId,
-        status: initialStatus(decision.outcome),
+        status,
         outcome: decision.outcome,
         hash,
         ...signProposalContent({ proposalId: id, hash }),
@@ -308,13 +331,13 @@ export async function createProposal(
         updatedAt: createdAt,
         quoteExpiresAt: expiresAt,
         source,
-        selection: (options.selection ?? null) as Record<string, unknown> | null,
+        selection: selection as Record<string, unknown> | null,
         ...frozen,
       })
       .returning();
     const created = row!;
     await recordAudit(tx, actor, [
-      ...(options.preparation ?? []).map((p) => ({ ...p, resourceType: "proposal" as const, resourceId: created.id })),
+      ...preparation.map((p) => ({ ...p, resourceType: "proposal" as const, resourceId: created.id })),
       {
         action: "proposal.created",
         resourceType: "proposal",
@@ -394,6 +417,8 @@ export async function reviseProposal(
   enforce(canCancel(old.status));
   if (!next.lines.length) throw new PurchasingError(400, "EMPTY_PROPOSAL", "The revision removes every line; cancel the proposal instead.");
 
+  const baseSelection = next.selection !== undefined ? next.selection : old.selection;
+  const story = old.source === "recipe" ? "recipe_order" : "simple_buy";
   const revised = await createProposal(
     actor,
     {
@@ -403,7 +428,19 @@ export async function reviseProposal(
     },
     {
       source: old.source ?? "buyer",
-      selection: next.selection !== undefined ? next.selection : old.selection,
+      selection: baseSelection,
+      // The story's later steps (budget, order, approval or change, checkout) now describe this revision.
+      onPriced: baseSelection?.steps
+        ? (priced) => ({
+            selection: {
+              ...baseSelection,
+              steps: withPricingSteps(story, baseSelection.steps!, priced, [
+                ...revisionsOf(baseSelection.steps),
+                { previousProposalId: old.id, appliedChanges: next.appliedChanges },
+              ]),
+            },
+          })
+        : undefined,
       preparation: [
         {
           action: "proposal.revised",

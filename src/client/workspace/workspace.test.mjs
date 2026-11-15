@@ -663,6 +663,212 @@ test("dietary changes cannot be bypassed through restock or manual selection in 
   assert.equal(state(service).orders.length, 0);
 });
 
+test("'Check low stock and restock to target' creates a mock plan and check per low item, without ordering", async () => {
+  const { service } = await setup();
+  const id = service.newThread("Restock");
+  await service.sendMessage(id, "Check low stock and restock to target");
+  const plans = state(service).local.plans;
+  // Mock inventory below trigger: cheese, butter, cream, salmon (onion, salt, potatoes are fine).
+  for (const inventoryId of ["stock-cheese", "stock-butter", "stock-cream", "stock-salmon"])
+    assert.equal(plans.filter((p) => p.inventoryId === inventoryId).length, 1, inventoryId);
+  assert(!plans.some((p) => p.inventoryId === "stock-onion"));
+  // One combined check, shown in the chat as a restock plan card.
+  const [run] = state(service).local.runs;
+  assert.equal(state(service).local.runs.length, 1);
+  assert.equal(run.planId, "all");
+  assert.equal(run.lines.length, 4);
+  const cheese = run.lines.find((l) => l.productId === "cheese");
+  assert.deepEqual(
+    [cheese.onHand, cheese.trigger, cheese.target, cheese.stockUnit, cheese.state],
+    [8, 12, 40, "KG", "ready"],
+  );
+  assert.equal(cheese.quantity, 8);
+  const thread = state(service).local.threads[0];
+  assert.deepEqual(
+    thread.timeline.filter((e) => e.kind === "restock"),
+    [{ kind: "restock", runId: run.id }],
+  );
+  assert.equal(thread.query, "restocking");
+  assert.equal(state(service).orders.length, 0);
+  assert.match(thread.messages.at(-1).text, /4 items are below/);
+  // The plan can be turned into a purchase proposal for approval, never an order.
+  const [prepared, repeated] = await Promise.all([
+    service.prepareRun(run.id),
+    service.prepareRun(run.id),
+  ]);
+  assert.equal(prepared.threadId, id);
+  assert.equal(repeated.threadId, id);
+  assert.equal(state(service).proposals.length, 1);
+  assert.equal(state(service).proposals[0].status, "PENDING_APPROVAL");
+  assert.equal(state(service).orders.length, 0);
+  // Pressing it again reuses the plans instead of duplicating them.
+  const count = plans.length;
+  await service.sendMessage(id, "Check low stock and restock to target");
+  assert.equal(state(service).local.plans.length, count);
+  assert.equal(state(service).proposals[0].status, "PENDING_APPROVAL");
+});
+
+test("low-stock request explains an empty or unlinked inventory instead of claiming everything is stocked", async () => {
+  const { mock, storage } = await setup();
+  const real = (await mock.api.getInventory()).items;
+  async function reply(items) {
+    const service = createWorkspaceService(
+      {
+        ...mock.api,
+        getInventory: async () => ({ organizationId: null, items }),
+        searchProducts: async () => ({ total: 0, items: [] }),
+      },
+      { mock: true, capabilities: mock, storage: () => storage },
+    );
+    await service.initialize();
+    const id = service.newThread("Restock");
+    await service.sendMessage(id, "Check low stock and restock to target");
+    assert.equal(state(service).local.runs.length, 0);
+    return state(service)
+      .local.threads.find((t) => t.id === id)
+      .messages.at(-1).text;
+  }
+  assert.match(await reply([]), /No kitchen stock is recorded/);
+  const unlinked = { ...real[0], ingredientName: "Oats", linkedProductId: null };
+  unlinked.quantityInStock = 0;
+  unlinked.minParLevel = 5;
+  assert.match(await reply([unlinked]), /Oats is below the minimum.*not linked to a Valio product/);
+  const full = { ...real[0], quantityInStock: 50, minParLevel: 5 };
+  assert.match(await reply([full]), /Nothing is below its minimum stock level \(1 item checked\)/);
+});
+
+test("low-stock request on a fully stocked or empty kitchen creates linked demo stock, then the plan", async () => {
+  const { mock } = await setup();
+  const real = (await mock.api.getInventory()).items;
+  for (const start of [[], real.map((i) => ({ ...i, quantityInStock: 999 }))]) {
+    const { mock, storage } = await setup();
+    const saved = new Map();
+    const service = createWorkspaceService(
+      {
+        ...mock.api,
+        getInventory: async () => ({ organizationId: null, items: [...start, ...saved.values()] }),
+        saveInventory: async (body) => {
+          const item = {
+            ...body,
+            organizationId: null,
+            location: body.location ?? null,
+            updatedAt: new Date().toISOString(),
+          };
+          saved.set(body.id, item);
+          return item;
+        },
+      },
+      { mock: true, capabilities: mock, storage: () => storage },
+    );
+    await service.initialize();
+    const id = service.newThread("Restock");
+    await service.sendMessage(id, "Check low stock and restock to target");
+    const items = [...saved.values()];
+    assert(items.length > 0);
+    assert(items.every((i) => i.linkedProductId && i.ingredientName.startsWith("Demo:")));
+    const [run] = state(service).local.runs;
+    assert.equal(run.lines.length, items.length);
+    assert(run.lines.some((l) => l.state === "ready"));
+    const thread = state(service).local.threads.find((t) => t.id === id);
+    assert.match(
+      thread.messages.at(-1).text,
+      /No linked stock was low, so I added demo kitchen stock/,
+    );
+    assert(thread.timeline.some((e) => e.kind === "restock"));
+    assert.equal(state(service).orders.length, 0);
+    const savedItems = structuredClone(items);
+    const planCount = state(service).local.plans.length;
+    await service.sendMessage(id, "Check low stock and restock to target");
+    assert.deepEqual([...saved.values()], savedItems);
+    assert.equal(state(service).local.plans.length, planCount);
+    const result = await service.prepareRun(state(service).local.runs[0].id);
+    assert.equal(result.threadId, id);
+    assert.equal(state(service).proposals[0].status, "PENDING_APPROVAL");
+    assert.equal(state(service).orders.length, 0);
+  }
+});
+
+test("demo stock and the restock conversation survive refresh and support approval and ordering", async () => {
+  const storage = memory();
+  const mock = createMockApi(() => storage);
+  let inventory = [];
+  let writes = 0;
+  const api = {
+    ...mock.api,
+    getInventory: async () => ({ organizationId: "kitchen", items: inventory }),
+    saveInventory: async (body) => {
+      writes++;
+      const item = await mock.api.saveInventory(body);
+      inventory.push(item);
+      return item;
+    },
+  };
+  // Connected orchestration uses catalog IDs returned by the adapter, never hardcoded mock SKUs.
+  const service = createWorkspaceService(api, { mock: false, storage: () => storage });
+  await service.initialize();
+  const id = service.newThread("Restock demo");
+  await service.sendMessage(id, "Check low stock and restock to target");
+  assert.equal(inventory.length, 3);
+  assert.equal(writes, 3);
+  const run = state(service).local.runs[0];
+  assert.equal(run.lines.length, 3);
+  assert(run.lines.every((line) => line.state === "ready"));
+  const resumed = createWorkspaceService(api, { mock: false, storage: () => storage });
+  await resumed.initialize();
+  assert.equal(state(resumed).local.runs[0].conversationId, id);
+  await resumed.prepareRun(run.id);
+  const proposal = state(resumed).proposals[0];
+  assert.equal(proposal.status, "PENDING_APPROVAL");
+  assert.equal(state(resumed).orders.length, 0);
+  await resumed.approve(proposal.id, "APPROVED");
+  await resumed.placeOrder(proposal.id);
+  assert.equal(state(resumed).orders.length, 1);
+  assert.equal(writes, 3);
+});
+
+test("demo setup preserves previously stocked demo items and reports unavailable catalog data", async () => {
+  const { mock } = await setup();
+  const item = (await mock.api.getInventory()).items[0];
+  let writes = 0;
+  const inventory = ["milk", "butter", "cream"].map((name) => ({
+    ...item,
+    id: `demo-stock-${name}`,
+    quantityInStock: 1000,
+  }));
+  const service = createWorkspaceService(
+    {
+      ...mock.api,
+      getInventory: async () => ({ organizationId: "kitchen", items: inventory }),
+      saveInventory: async () => {
+        writes++;
+        throw new Error("Must preserve existing stock");
+      },
+    },
+    { mock: true, storage: memory },
+  );
+  await service.initialize();
+  const id = service.newThread("Stocked demo");
+  await service.sendMessage(id, "Check low stock and restock to target");
+  assert.equal(writes, 0);
+  assert.equal(state(service).local.runs.length, 0);
+  assert.match(state(service).local.threads[0].messages.at(-1).text, /Nothing is below/);
+});
+
+test("low-stock checks preserve paused plans and exclude duplicate product coverage", async () => {
+  const { service, mock } = await setup();
+  service.pausePlan("pizza-cheese");
+  const cream = (await mock.api.getInventory()).items.find((item) => item.id === "stock-cream");
+  await mock.api.saveInventory({ ...cream, id: "second-cream", quantityInStock: 0 });
+  const id = service.newThread("Restock");
+  await service.sendMessage(id, "Check low stock and restock to target");
+  const run = state(service).local.runs[0];
+  assert(state(service).local.plans.find((p) => p.id === "pizza-cheese").paused);
+  assert.equal(run.lines.find((line) => line.productId === "cheese").state, "partial");
+  const creams = run.lines.filter((line) => line.productId === "cream");
+  assert.equal(creams.length, 2);
+  assert(creams.every((line) => line.state === "partial"));
+});
+
 test("overlapping restock plans stay excluded and a later open purchase invalidates an old ready check", async () => {
   const { service } = await setup();
   service.savePlan({
@@ -851,7 +1057,8 @@ test("mock reviseProposal validates targets before cancelling, merges addItems, 
     (err) => err.code === "INVALID_CHANGE",
   );
   await assert.rejects(
-    () => api.reviseProposal(p.id, { quantityUpdates: [{ productId: "nonexistent", quantity: 5 }] }),
+    () =>
+      api.reviseProposal(p.id, { quantityUpdates: [{ productId: "nonexistent", quantity: 5 }] }),
     (err) => err.code === "INVALID_CHANGE",
   );
   await assert.rejects(
@@ -1258,7 +1465,9 @@ test("FE1: parseSwapCommand ignores quantity changes and per-line quantity revis
   );
   assert.equal(afterIt.lines[0].quantity, 2); // butter can't convert 150 L -> ST, so stays 2 and asks confirmation
   assert.doesNotMatch(
-    state(service).local.threads.find((t) => t.id === threadId).messages.at(-1).text,
+    state(service)
+      .local.threads.find((t) => t.id === threadId)
+      .messages.at(-1).text,
     /Could not find alternative/i,
   );
 

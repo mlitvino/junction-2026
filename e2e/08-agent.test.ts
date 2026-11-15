@@ -35,6 +35,15 @@ describe("agent", () => {
 
     const trace = res.selection.pipeline[0]!;
     assert.ok(trace.conversionNote, "the conversion is explained");
+    // The story of the "simple buy" in nine numbered steps, for the UI.
+    const steps = res.selection.steps ?? [];
+    assert.deepEqual(
+      [...new Set(steps.map((s) => s.step))],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "every step of the simple-buy story is recorded",
+    );
+    assert.ok(steps.every((s) => s.story === "simple_buy"));
+    assert.equal(steps.find((s) => s.key === "compare_budget")?.details?.outcome, "REQUIRE_APPROVAL");
     const product = ok(await org.buyer.get(`/api/products/${line.productId}`), 200, ProductDetailSchema, "chosen product");
     if (product.contentPerSalesUnit?.unit === "L") {
       const litres = line.quantity * product.contentPerSalesUnit.value;
@@ -54,11 +63,11 @@ describe("agent", () => {
 
     // The audit trail tells the agent's work in the order it happened.
     const trail = ok(await org.buyer.get(`/api/proposals/${res.proposal.id}/audit`), 200, AuditListSchema, "audit");
-    const steps = trail.items.map((e) => e.action);
+    const auditActions = trail.items.map((e) => e.action);
     assert.deepEqual(
-      steps.slice(0, 5),
+      auditActions.slice(0, 5),
       ["agent.prompt_extracted", "agent.catalog_searched", "agent.preferences_filtered", "agent.candidates_ranked", "proposal.created"],
-      `audit order: ${steps.join(", ")}`,
+      `audit order: ${auditActions.join(", ")}`,
     );
 
     // POST /api/products/rank recommends the same product for the same need.

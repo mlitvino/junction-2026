@@ -73,6 +73,109 @@ export function RestockPlanCard({ plan }: { plan: RestockPlan }) {
     </Panel>
   );
 }
+const runStateBadge = {
+  ready: { status: "READY", label: "Ready to order" },
+  partial: { status: "PENDING", label: "Partial or late" },
+  unknown: { status: "UNKNOWN", label: "Availability not confirmed" },
+  covered: { status: "APPROVED", label: "Covered by stock" },
+} as const;
+
+/** Restock plan produced from "Check low stock and restock to target", shown in the chat. */
+export function RestockPlanSummary({ runId }: { runId: string }) {
+  const s = useWorkspace(),
+    action = useAction(),
+    router = useRouter(),
+    run = s.local.runs.find((r) => r.id === runId);
+  if (!run) return null;
+  const ready = run.lines.filter((l) => l.state === "ready").length;
+  return (
+    <Panel className="space-y-5">
+      <div>
+        <h2 className="section-title">Restock plan</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {run.lines.length} {run.lines.length === 1 ? "item" : "items"} below trigger · {ready}{" "}
+          ready for a proposal · Prices and availability checked for {displayDate(run.at)}
+        </p>
+      </div>
+      <ul className="divide-y">
+        {run.lines.map((line, index) => {
+          const badge = runStateBadge[line.state];
+          const hasStock = line.onHand !== undefined && !!line.target;
+          const percent = (value: number) =>
+            Math.min(100, Math.max(0, (value / line.target!) * 100));
+          return (
+            <li key={`${line.productId}-${index}`} className="py-4 first:pt-0 last:pb-0">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-semibold">{line.name}</h3>
+                  {hasStock && (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {line.onHand} {line.stockUnit} on hand · Trigger {line.trigger} · Target{" "}
+                      {line.target} {line.stockUnit}
+                    </p>
+                  )}
+                </div>
+                <StatusBadge status={badge.status} label={badge.label} />
+              </div>
+              {hasStock && (
+                <div
+                  role="img"
+                  aria-label={`${line.onHand} of ${line.target} ${line.stockUnit} in stock, trigger at ${line.trigger}`}
+                  className="relative mt-3 h-2 rounded-full bg-muted"
+                >
+                  <div
+                    className="h-full rounded-full bg-warning"
+                    style={{ width: `${percent(line.onHand!)}%` }}
+                  />
+                  <div
+                    className="absolute -inset-y-0.5 w-0.5 bg-foreground"
+                    style={{ left: `${percent(line.trigger ?? 0)}%` }}
+                  />
+                </div>
+              )}
+              <p className="mt-3 text-sm">
+                {line.state === "ready" ? (
+                  <>
+                    Order <strong>{line.quantity}</strong> {line.unit} to reach the target.
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">{line.reason}</span>
+                )}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+      <ErrorMessage error={action.error} />
+      <div className="flex flex-wrap gap-3">
+        <Button
+          disabled={action.busy || (!run.threadId && (!ready || !s.user?.roles.includes("buyer")))}
+          onClick={() =>
+            void action.run(async () => {
+              const result = await store.prepareRun(run.id);
+              router.push(`/buyer/conversations/${result.threadId}`);
+            })
+          }
+        >
+          {action.busy
+            ? "Preparing…"
+            : run.threadId
+              ? "View purchase proposal"
+              : "Prepare purchase proposal"}
+        </Button>
+        <Link
+          href={`/restocking/runs/${run.id}`}
+          className={buttonVariants({ variant: "outline" })}
+        >
+          Open full check
+        </Link>
+        <Link href="/restocking" className={buttonVariants({ variant: "ghost" })}>
+          View restock plans
+        </Link>
+      </div>
+    </Panel>
+  );
+}
 export function Restocking() {
   const s = useWorkspace(),
     action = useAction(),

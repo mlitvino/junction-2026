@@ -20,6 +20,7 @@ const ConversationEntrySchema = z.discriminatedUnion("kind", [
     closed: z.boolean().optional(),
   }),
   z.object({ kind: z.literal("proposal"), proposalId: z.string() }),
+  z.object({ kind: z.literal("restock"), runId: z.string() }),
 ]);
 export type ConversationEntry = z.infer<typeof ConversationEntrySchema>;
 export const ThreadSchema = z.object({
@@ -107,8 +108,13 @@ export const RunSchema = z.object({
       unit: z.string(),
       state: z.enum(["ready", "partial", "unknown", "covered"]),
       reason: z.string(),
+      onHand: z.number().optional(),
+      trigger: z.number().optional(),
+      target: z.number().optional(),
+      stockUnit: z.string().optional(),
     }),
   ),
+  conversationId: z.string().optional(),
   threadId: z.string().optional(),
 });
 export type RestockRun = z.infer<typeof RunSchema>;
@@ -212,7 +218,12 @@ export function getConversationStatus(
   if (thread.query)
     return {
       status: "PENDING",
-      label: thread.query === "restocking" ? "Configure restocking" : "Choose products",
+      label:
+        thread.query !== "restocking"
+          ? "Choose products"
+          : thread.timeline?.some((entry) => entry.kind === "restock")
+            ? "Review restock plan"
+            : "Configure restocking",
     };
   return { status: "DRAFT", label: "No purchase yet" };
 }

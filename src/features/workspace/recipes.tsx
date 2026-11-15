@@ -717,6 +717,7 @@ export function MealPlan({ id }: { id: string }) {
           <div className="sticky bottom-20 z-10 rounded-lg border bg-background p-4 lg:bottom-4">
             <div className="flex flex-wrap gap-3">
               <Button
+                variant="outline"
                 className="w-full sm:w-auto"
                 disabled={
                   action.busy ||
@@ -746,7 +747,6 @@ export function MealPlan({ id }: { id: string }) {
               </Button>
               {s.user?.roles.includes("buyer") && (
                 <Button
-                  variant="outline"
                   className="w-full sm:w-auto"
                   disabled={action.busy || portions <= 0 || !date}
                   onClick={() =>
@@ -765,6 +765,11 @@ export function MealPlan({ id }: { id: string }) {
                 </Button>
               )}
             </div>
+            <p className="mt-2 text-caption text-muted-foreground">
+              Auto-prepare lets the agent subtract kitchen stock, pick the best compliant product
+              for each missing ingredient and prepare the proposal; every step is shown on it.
+              Review purchase proposal uses the products you chose above.
+            </p>
             {attention.length > 0 && (
               <p className="mt-2 text-caption text-warning">
                 Resolve all ingredients needing attention before preparing the full batch purchase.

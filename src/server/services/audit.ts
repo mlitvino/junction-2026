@@ -34,8 +34,12 @@ export type AuditEntry = {
 export async function recordAudit(tx: Writer, actor: AuditActor, entries: AuditEntry | AuditEntry[]) {
   const list = Array.isArray(entries) ? entries : [entries];
   if (!list.length) return;
+  // One transaction gives every row the same `now()`: stamp them one millisecond apart, ending now,
+  // so a trail written in one go (the agent's steps) reads back in the order it happened.
+  const end = Date.now();
   await tx.insert(auditEvent).values(
-    list.map((e) => ({
+    list.map((e, i) => ({
+      createdAt: new Date(end - (list.length - 1 - i)),
       organizationId: actor.organizationId,
       actorType: e.actorType ?? (actor.agent ? "agent" : "user"),
       actorId: e.actorType === "system" ? null : actor.userId,

@@ -44,6 +44,13 @@ import {
   type Actor,
 } from "@/server/services/purchasing";
 import { rankCandidates } from "@/server/purchasing/ranking";
+import {
+  makeStep,
+  stepDetails,
+  withPricingSteps,
+  type StoryKey,
+  type StoryKind,
+} from "@/server/purchasing/story";
 import { toSalesUnits, type Conversion, type UnitFacts } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
 import type { Preferences } from "@/shared/contracts/preferences";
@@ -61,6 +68,7 @@ import type {
   NutritionPreferences,
   PreviousOrderRecord,
   RemovedCandidate,
+  StoryStep,
   SuggestedAlternative,
 } from "@/shared/contracts/selection";
 import type {
@@ -103,11 +111,16 @@ function makeAuditEvent(params: {
   eventType: string;
   summary: string;
   details?: Record<string, unknown>;
+  /** The story step this entry belongs to; adds `story`, `step` and `stepKey` to the details. */
+  story?: { kind: StoryKind; key: StoryKey; item?: string };
 }): PreparationStep {
+  const details = params.details ?? {};
   return {
     action: `agent.${params.eventType}`,
     summary: params.summary,
-    details: params.details ?? {},
+    details: params.story
+      ? { ...stepDetails(params.story.kind, params.story.key, details), ...(params.story.item ? { item: params.story.item } : {}) }
+      : details,
     actorType: params.actorType === "system" ? "system" : "agent",
   };
 }
@@ -123,8 +136,21 @@ export function toCustomerPreferences(effective: Preferences): CustomerPreferenc
     dietaryRestrictions: effective.dietaryRestrictions,
     // Candidates are tagged with allergen names; preferences may hold names or GS1 codes.
     excludedAllergens: allergenNames([...allergenCodes(effective.excludedAllergens)]),
-    nutrition: {},
+    nutrition: nutritionLimitsOf(effective),
   };
+}
+
+/** The organization's nutrition limits per 100 g/ml; unset (null or absent) limits are left out. */
+export function nutritionLimitsOf(
+  rules: Partial<Pick<Preferences, "maxCaloriesPer100g" | "maxFatPer100g" | "maxSugarPer100g" | "maxSaltPer100g" | "minProteinPer100g">>,
+): NutritionPreferences {
+  const limits: NutritionPreferences = {};
+  if (rules.maxCaloriesPer100g != null) limits.maxCaloriesPer100g = rules.maxCaloriesPer100g;
+  if (rules.maxFatPer100g != null) limits.maxFatPer100g = rules.maxFatPer100g;
+  if (rules.maxSugarPer100g != null) limits.maxSugarPer100g = rules.maxSugarPer100g;
+  if (rules.maxSaltPer100g != null) limits.maxSaltPer100g = rules.maxSaltPer100g;
+  if (rules.minProteinPer100g != null) limits.minProteinPer100g = rules.minProteinPer100g;
+  return limits;
 }
 
 export const DEFAULT_MOCK_PREVIOUS_ORDERS: PreviousOrderRecord[] = [
@@ -677,7 +703,8 @@ export type BuyerPreferenceRuleTarget = {
 export type BuyerPreferenceRules = Pick<
   Preferences,
   "dietaryRestrictions" | "excludedAllergens" | "blockedVendors" | "maxCo2PerKg" | "minDeliveryReliability"
->;
+> &
+  Parameters<typeof nutritionLimitsOf>[0];
 
 /**
  * Shared buyer-preference check used by product selection, product ranking, and proposal revision.
@@ -736,7 +763,8 @@ export function evaluateBuyerPreferences(
   }
 
   const actual = product.nutrition;
-  if (actual && nutritionLimits) {
+  nutritionLimits ??= nutritionLimitsOf(rules);
+  if (actual) {
     if (
       nutritionLimits.maxCaloriesPer100g !== undefined &&
       actual.caloriesPer100g > nutritionLimits.maxCaloriesPer100g
@@ -1168,6 +1196,8 @@ export type SelectionInput = {
   source: ProposalSource;
   /** Steps recorded before selection (e.g. prompt extraction, recipe reconciliation). */
   initialSteps?: PreparationStep[];
+  /** Story steps recorded before selection (extract; or read recipe, total quantity, inventory). */
+  initialStorySteps?: StoryStep[];
   /** Note stored on the proposal (defaults to the prompt). */
   note?: string;
 };
@@ -1182,6 +1212,8 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
   const preferences = toCustomerPreferences(rules);
   const orderId = "pending";
   const auditTrail: PreparationStep[] = [...(input.initialSteps ?? [])];
+  const story: StoryKind = input.source === "recipe" ? "recipe_order" : "simple_buy";
+  const storySteps: StoryStep[] = [...(input.initialStorySteps ?? [])];
   const actorId = actor.userId;
   const actorName = actor.userName;
   const previousProductIds = new Set(previousOrders.map((o) => o.productId.toLowerCase()));
@@ -1220,6 +1252,15 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
           requestedName: item.productName,
           candidateCount: rawByType.length,
         },
+        story: { kind: story, key: "search_by_type", item: item.productName },
+      }),
+    );
+    storySteps.push(
+      makeStep(story, "search_by_type", {
+        item: item.productName,
+        status: rawByType.length ? "done" : "warning",
+        summary: `Found ${rawByType.length} product(s) for '${item.productName}' by product type '${item.productType}'.`,
+        details: { productType: item.productType, requestedName: item.productName, candidateCount: rawByType.length },
       }),
     );
 
@@ -1243,6 +1284,33 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
         });
       })
       .sort((a, b) => b.nameMatchScore - a.nameMatchScore || a.name.localeCompare(b.name));
+
+    {
+      const best = scoredByName.slice(0, 5).map((c) => ({ id: c.id, name: c.name, nameMatchScore: c.nameMatchScore }));
+      const summary = best.length
+        ? `Sorted ${scoredByName.length} product(s) by match with '${item.productName}': best '${best[0]!.name}' (${best[0]!.nameMatchScore.toFixed(2)}).`
+        : `Nothing to sort for '${item.productName}'.`;
+      auditTrail.push(
+        makeAuditEvent({
+          orderId,
+          actorType: "agent",
+          actorId,
+          actorName,
+          eventType: "name_sorted",
+          summary,
+          details: { requestedName: item.productName, best },
+          story: { kind: story, key: "sort_by_name", item: item.productName },
+        }),
+      );
+      storySteps.push(
+        makeStep(story, "sort_by_name", {
+          item: item.productName,
+          status: best.length ? "done" : "warning",
+          summary,
+          details: { requestedName: item.productName, candidateCount: scoredByName.length, best },
+        }),
+      );
+    }
 
     // Step 4: Remove entries that don't match buyer preferences (dietary, allergens, blocked vendors,
     // CO2, delivery reliability).
@@ -1275,6 +1343,23 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
           requestedName: item.productName,
           survivingCount: survivingCandidates.length,
           removedByPreferences,
+        },
+        story: { kind: story, key: "filter_preferences", item: item.productName },
+      }),
+    );
+    storySteps.push(
+      makeStep(story, "filter_preferences", {
+        item: item.productName,
+        status: scoredByName.length > 0 && survivingCandidates.length === 0 ? "warning" : "done",
+        summary: `Checked ${scoredByName.length} product(s) for '${item.productName}' against dietary, allergen, nutrition and other rules: ${survivingCandidates.length} compliant, ${removedByPreferences.length} removed.`,
+        details: {
+          compliantCount: survivingCandidates.length,
+          removed: removedByPreferences.slice(0, 20).map((r) => ({ id: r.id, name: r.name, reasons: r.reasons })),
+          rules: {
+            dietaryRestrictions: preferences.dietaryRestrictions,
+            excludedAllergens: preferences.excludedAllergens,
+            nutrition: preferences.nutrition,
+          },
         },
       }),
     );
@@ -1358,8 +1443,33 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
           ranking: ranked.slice(0, 5).map((r) => ({ id: r.id, name: r.name, score: r.score, tier: r.tier, reasons: r.reasons })),
           unavailable: unavailable.map((u) => ({ id: u.id, reason: u.reason })),
         },
+        story: { kind: story, key: "sort_by_history", item: item.productName },
       }),
     );
+    {
+      const knownProducts = survivingCandidates.filter((c) => c.previouslyOrderedProduct).map((c) => c.id);
+      const knownBrands = [...new Set(survivingCandidates.filter((c) => c.previouslyOrderedBrand && c.brand).map((c) => c.brand!))];
+      const history = previousOrders.length > 0;
+      storySteps.push(
+        makeStep(story, "sort_by_history", {
+          item: item.productName,
+          status: !selectedProduct ? "warning" : history ? "done" : "skipped",
+          summary: !selectedProduct
+            ? `No compliant, deliverable product for '${item.productName}'.`
+            : history
+              ? `Ranked ${ranked.length} product(s) with the order history (${knownProducts.length} ordered before, ${knownBrands.length} known brand(s)) next to price, availability, reliability and CO2: chose '${selectedProduct.name}' (${selectedProduct.id}).`
+              : `No previous orders to sort by; ranked by price, availability, reliability and CO2: chose '${selectedProduct.name}' (${selectedProduct.id}).`,
+          details: {
+            previousOrdersAvailable: history,
+            previouslyOrderedProductIds: knownProducts,
+            previouslyOrderedBrands: knownBrands,
+            selectedProductId: selectedProduct?.id ?? null,
+            ranking: ranked.slice(0, 5).map((r) => ({ id: r.id, name: r.name, score: r.score, tier: r.tier, reasons: r.reasons })),
+            unavailable: unavailable.map((u) => ({ id: u.id, reason: u.reason })),
+          },
+        }),
+      );
+    }
 
     pipeline.push({
       extractedItem: item,
@@ -1494,6 +1604,7 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     suggestedAlternatives,
     previousOrdersUsed: previousOrders,
     warnings,
+    steps: storySteps,
   };
 
   if (!finalDrafts.length) {
@@ -1515,9 +1626,29 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
       date: deliveryDate,
       note: (input.note ?? input.prompt ?? undefined)?.slice(0, 1000),
     },
-    { source: input.source, selection, preparation: auditTrail },
+    {
+      source: input.source,
+      selection,
+      preparation: auditTrail,
+      // Steps 6 to 9 need the priced proposal: budget comparison, order, approval or change, checkout.
+      onPriced: (priced) => {
+        const steps = withPricingSteps(story, storySteps, priced);
+        const budget = steps.find((s) => s.key === "compare_budget")!;
+        return {
+          selection: { ...selection, steps },
+          preparation: [
+            {
+              action: "agent.budget_compared",
+              summary: budget.summary,
+              details: stepDetails(story, "compare_budget", budget.details ?? {}),
+              actorType: "agent" as const,
+            },
+          ],
+        };
+      },
+    },
   );
-  return { proposal, selection, message: nextStepMessage(proposal) };
+  return { proposal, selection: proposal.selection ?? selection, message: nextStepMessage(proposal) };
 }
 
 /** What happens next, in words a buyer or an agent can act on. */
@@ -1552,8 +1683,17 @@ export async function createProposalFromPrompt(
         summary: `Extracted ${extraction.items.length} item(s) from the request: ${
           extraction.items.map((i) => `${i.productQuantity} of '${i.productName}' (${i.productType})`).join("; ") || "none"
         }.`,
-        details: { prompt: input.prompt, extractedItems: extraction.items },
+        details: stepDetails("simple_buy", "extract", { prompt: input.prompt, extractedItems: extraction.items }),
       },
+    ],
+    initialStorySteps: [
+      makeStep("simple_buy", "extract", {
+        status: extraction.items.length ? "done" : "warning",
+        summary: `Extracted ${extraction.items.length} item(s) as [name] - [type] - [quantity]: ${
+          extraction.items.map((i) => `${i.productName} - ${i.productType} - ${i.productQuantity}`).join("; ") || "none"
+        }.`,
+        details: { prompt: input.prompt, items: extraction.items },
+      }),
     ],
   });
 }

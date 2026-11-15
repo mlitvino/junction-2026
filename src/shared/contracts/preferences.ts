@@ -31,6 +31,26 @@ export const PreferencesSchema = z.object({
     description: "Required dietary tags for products the agent picks (e.g. `vegetarian`, `lactose-free`, `gluten-free`).",
     example: ["lactose-free"],
   }),
+  maxCaloriesPer100g: z.number().positive().nullable().optional().meta({
+    description: "Maximum kcal per 100 g/ml; the agent drops products above it. Null/absent = no limit. Products without nutrition data are not excluded.",
+    example: 450,
+  }),
+  maxFatPer100g: z.number().positive().nullable().optional().meta({
+    description: "Maximum fat (g) per 100 g/ml. Null/absent = no limit.",
+    example: 20,
+  }),
+  maxSugarPer100g: z.number().positive().nullable().optional().meta({
+    description: "Maximum sugar (g) per 100 g/ml. Null/absent = no limit.",
+    example: 10,
+  }),
+  maxSaltPer100g: z.number().positive().nullable().optional().meta({
+    description: "Maximum salt (g) per 100 g/ml. Null/absent = no limit.",
+    example: 1.5,
+  }),
+  minProteinPer100g: z.number().positive().nullable().optional().meta({
+    description: "Minimum protein (g) per 100 g/ml. Null/absent = no minimum.",
+    example: 5,
+  }),
 
   // ----- Vendors and brands -----
   preferredVendors: z.array(z.string().min(1)).max(500).meta({

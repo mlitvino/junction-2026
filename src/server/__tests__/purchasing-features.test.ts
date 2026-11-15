@@ -506,6 +506,18 @@ describe("Shared buyer preferences and proposal revision helpers", () => {
     assert.ok(bad.some((r) => r.includes("reliability")));
   });
 
+  it("applies the organization's nutrition limits when the rules carry them", () => {
+    const rules = { ...DEFAULT_PREFERENCES, maxFatPer100g: 10, minProteinPer100g: 5 };
+    const nutrition = { caloriesPer100g: 200, fatPer100g: 28, sugarPer100g: 1, saltPer100g: 1, proteinPer100g: 3 };
+    const reasons = evaluateBuyerPreferences({ dietaryTags: [], allergens: [], vendorName: "V", nutrition }, rules);
+    assert.equal(reasons.length, 2);
+    assert.ok(reasons.some((r) => r.startsWith("Fat")));
+    assert.ok(reasons.some((r) => r.startsWith("Protein")));
+    // Null limits and products without nutrition data exclude nothing.
+    assert.deepEqual(evaluateBuyerPreferences({ dietaryTags: [], allergens: [], vendorName: "V", nutrition }, DEFAULT_PREFERENCES), []);
+    assert.deepEqual(evaluateBuyerPreferences({ dietaryTags: [], allergens: [], vendorName: "V", nutrition: null }, rules), []);
+  });
+
   it("recomputes replacement quantity across pack sizes and falls back with warning when content is unknown", () => {
     const oldFacts = {
       salesUnit: "KI",
