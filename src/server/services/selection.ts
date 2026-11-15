@@ -114,7 +114,11 @@ function makeAuditEvent(params: {
 
 /** The organization's buyer rules, in the shape the candidate filter uses. */
 export async function customerPreferencesFor(organizationId: string): Promise<CustomerPreferences> {
-  const effective = (await getEffectiveFor(organizationId, "buyer")).values;
+  return toCustomerPreferences((await getEffectiveFor(organizationId, "buyer")).values);
+}
+
+/** Same, from already-loaded effective buyer preferences (no second database round trip). */
+export function toCustomerPreferences(effective: Preferences): CustomerPreferences {
   return {
     dietaryRestrictions: effective.dietaryRestrictions,
     // Candidates are tagged with allergen names; preferences may hold names or GS1 codes.
@@ -1161,11 +1165,11 @@ export type SelectionInput = {
 /** Ranks products for every requested item and creates one proposal from the chosen lines. */
 export async function createProposalFromItems(actor: Actor, input: SelectionInput): Promise<ProposalFromPromptResponse> {
   const { extractedItems, deliveryDate, autoResolvePartialStock } = input;
-  const [preferences, previousOrders, rules] = await Promise.all([
-    customerPreferencesFor(actor.organizationId),
+  const [previousOrders, rules] = await Promise.all([
     loadHistoricalOrderRecords(actor.organizationId),
     getEffectiveFor(actor.organizationId, "buyer").then((e) => e.values),
   ]);
+  const preferences = toCustomerPreferences(rules);
   const orderId = "pending";
   const auditTrail: PreparationStep[] = [...(input.initialSteps ?? [])];
   const actorId = actor.userId;
@@ -1766,16 +1770,6 @@ export function updateSelectionForRevision(params: {
 }
 
 /**
- * Merges lines sharing the same `productId` by summing their quantities and preserving a
- * non-null `substituteFor` when present.
- */
-export function mergeProposalLines<
-  T extends { productId: string; quantity: number; substituteFor?: Draft["substituteFor"] },
->(lines: readonly T[]): T[] {
-  return mergeDraftLines(lines);
-}
-
-/**
  * Applies changes to a proposal's lines and creates the revised proposal (the old one is
  * cancelled unless the revised proposal is BLOCKED by policy). Accepts structured changes
  * and/or a natural-language `prompt` ("change 469330 to 469386", "set 30 cases of milk",
@@ -1945,7 +1939,7 @@ export async function reviseProposalFromRequest(
   }
   if (input.date && input.date !== current.pricingDate) applied.push(`Moved the delivery date from ${current.pricingDate} to ${input.date}.`);
 
-  const mergedLines = mergeProposalLines(lines);
+  const mergedLines = mergeDraftLines(lines);
 
   const updatedSelection = updateSelectionForRevision({
     oldSelection: current.selection,

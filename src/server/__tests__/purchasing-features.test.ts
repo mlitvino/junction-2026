@@ -13,7 +13,7 @@ import { describe, it } from "node:test";
 import { app } from "@/server/api/app";
 import { AgentError, callModel, GEMINI_MODEL, isAgentTestMode, requireGeminiApiKey, resolveAgentModel } from "@/server/agents/mode";
 import { parseOrderChangeDeterministically } from "@/server/agents/order-change-agent";
-import { evaluatePolicy } from "@/server/policy/evaluate";
+import { evaluatePolicy, mergeDraftLines } from "@/server/policy/evaluate";
 import { runPurchasingAgent } from "@/server/services/agent";
 import { extractProductsFromPrompt } from "@/server/services/extract";
 import { canonicalizeJson, sha256Canonical } from "@/server/services/intelligence";
@@ -33,7 +33,6 @@ import {
   filterRelevantCandidates,
   filterSyntheticCatalogProducts,
   isNonFoodProduct,
-  mergeProposalLines,
   parseQuantityAndUnit,
   planCandidateSearchTerms,
   selectRelevantCandidates,
@@ -781,7 +780,7 @@ describe("B3: merging duplicate productId lines on revision and policy evaluatio
       substituteFor: { requested: "Product A", reason: "swap" as const },
     };
 
-    const merged = mergeProposalLines(afterSwap);
+    const merged = mergeDraftLines(afterSwap);
     assert.equal(merged.length, 1);
     assert.equal(merged[0]!.productId, "B");
     assert.equal(merged[0]!.quantity, 14);
