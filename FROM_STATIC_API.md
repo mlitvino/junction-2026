@@ -218,6 +218,29 @@ The rest of this branch's contract changes are still **required** or **breaking*
 
 ---
 
+## Review of PRs #11–#13: frontend fixes
+
+This is a code review of the workspace changes merged in PRs #11–#13. Types and tests pass, so these are behaviour bugs. The backend side of the same review is fixed (see "Backend changes since the review" below).
+
+| # | Where | Problem | Effect | Suggested fix |
+| --- | --- | --- | --- | --- |
+| 1 | `src/client/workspace/model.ts`, `getConversationStatus` | Takes `thread.proposals.at(-1)` as the conversation's proposal. | A revision blocked by policy is appended to the thread, but the server keeps the previous proposal live. The conversation list then shows **BLOCKED** while the detail view (`resolveActiveProposal`) shows the still-active READY or PENDING_APPROVAL proposal. | Use `resolveActiveProposal` here too. The revise response now says explicitly whether the old one was replaced: `previousCancelled` (below). |
+| 2 | `src/client/workspace/helpers.ts`, `findMatchingRecipe` | Matches when any recipe **tag** appears anywhere in the message. | Tags like "cheese", "potato", "soup", "snack" and "lunch" send ordinary product requests ("buy 20 kg cheese", "10 L cream for the soup") into the recipe flow, and that flow first **cancels the active proposal**. | Match on the recipe name or id only, or require a recipe or dish intent ("recipe", "make", "cook", "for N servings"). Use whole-word matching, and ask before replacing an active proposal. |
+| 3 | `src/client/workspace/helpers.ts`, `parseQuantityRevisionCommand` | `Number(lineMatch[2].replace(/,/g, ""))` removes every comma. | "set butter to 1,5 kg" becomes **15**, ten times the intended amount. | Treat `,` as a decimal point (`replace(",", ".")`), as `parseQtyUnitQuery` and the server extractor do. |
+| 4 | Contract values not handled | `APPROVAL_EXPIRED` (409 when deciding an expired approval) is not handled anywhere. `mayContainAllergens` is never shown. | An expired approval shows a generic error. "May contain" warnings are invisible to buyers. | Map `APPROVAL_EXPIRED` to "This approval expired with the prices. Ask the buyer for a new proposal." Show `mayContainAllergens` next to `allergenNames` on product cards and in the picker. |
+
+### Backend changes since the review (no action needed, but good to know)
+
+- **`ReviseProposalResponse.previousCancelled`** (optional, always sent):
+  - `true`: the old proposal was cancelled and replaced.
+  - `false`: the revision came back BLOCKED and the old proposal **stays as it was**, so keep showing it as the active one.
+- **Agent product matching** is fixed for varieties, longer names and verb forms. "Cheddar" finds "Cheddar cheese", "rapeseed" finds "Rapeseed oil", "lactose-free milk" finds "… milk drink", "skim milk" finds "skimmed milk" and "whipping cream" finds "whipped cream". Different products such as potato salad, cocoa butter or milk chocolate are still kept out.
+- **Changes in words** (test mode: `TEST_MODE=TRUE`) now understand any unit word: "set milk to 30 cases", "change quantity of milk to 300 pcs", "set 30 cases of milk", "Change 469330 to 469386 and set 30 cases". They also accept comma lists: "remove milk, butter".
+- **A swap after a quantity edit** keeps the edited amount. Before, it went back to the original request.
+- **Fewer Valio calls per prompt:** at most 40 products are priced per requested item, and only the ones whose names can match. The UI sees no difference.
+
+---
+
 ## For the frontend (`src/app`, `src/features`, `src/components`, `src/client`)
 
 `getProduct`, `getOffers` and `evaluatePolicy` only gained fields. Since the new response fields are optional, existing mocks compile; see [the fixes above](#contract-changes-fixes-to-apply-on-your-side) for the enum and product-field checks. Features to build, roughly in priority order:
