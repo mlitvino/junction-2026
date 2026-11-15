@@ -57,7 +57,7 @@ import type {
 } from "@/shared/contracts/purchasing";
 
 import { recordAudit, type AuditActor, type AuditEntry } from "./audit";
-import { getAvailability, getPrices } from "./catalog";
+import { getAvailability, getPrices, today } from "./catalog";
 import { evaluateDraft } from "./policy";
 import { checkProposalSignature, signProposalContent } from "./trust";
 
@@ -256,6 +256,9 @@ export async function createProposal(
   request: CreateProposalRequest,
   options: CreateProposalOptions = {},
 ): Promise<Proposal> {
+  // Goods can't be delivered in the past (Helsinki date); today is fine.
+  if (request.date && request.date < today())
+    throw new PurchasingError(422, "DATE_IN_PAST", `The delivery date ${request.date} is in the past. Pick today or a later date.`);
   const mergedRequestLines = mergeDraftLines(request.lines);
   const decision = await evaluateDraft(actor.organizationId, { ...request, lines: mergedRequestLines });
   const d = await db();
