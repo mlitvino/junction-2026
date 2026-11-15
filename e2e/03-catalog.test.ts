@@ -44,6 +44,28 @@ describe("catalog", () => {
     assert.doesNotMatch(r.items[0]!.name, /^\d+\s*x|latte|curdled/i, `first result: ${r.items[0]!.name}`);
   });
 
+  it("understands how buyers type: quantities, plurals, Finnish words, typos", async () => {
+    const first = async (q: string) => {
+      const r = ok(await org.buyer.get(`/api/products?q=${encodeURIComponent(q)}&limit=5`), 200, ProductSearchResponseSchema, `search "${q}"`);
+      assert.ok(r.items.length > 0, `"${q}" finds something`);
+      return r;
+    };
+    // A request with an amount searches the product (and the lactose-free tag).
+    const amount = await first("100 litres of lactose-free milk");
+    assert.ok(amount.items.every((p) => p.dietaryTags.includes("lactose-free")));
+    assert.match(amount.items[0]!.name, /milk/i);
+    assert.doesNotMatch(amount.items[0]!.name, /coffee|latte|chocolate/i, `first: ${amount.items[0]!.name}`);
+    // Plurals.
+    assert.match((await first("salmon fillets")).items[0]!.name, /salmon/i);
+    // Finnish food words: "voi" is butter, not "voima" or "Savoie"; "maito" is milk, not chocolate.
+    assert.match((await first("voi")).items[0]!.name, /butter|voi\b/i);
+    assert.doesNotMatch((await first("maito")).items[0]!.name, /suklaa|chocolate/i);
+    // A typo is corrected, and the response says so.
+    const typo = await first("mlik");
+    assert.equal(typo.matchedFuzzy, true);
+    assert.equal(typo.searchedFor, "milk");
+  });
+
   it("product details carry content, labels, allergens split by qualifier, nutrition and claims", async () => {
     const [first] = await orderableProducts(org.buyer, date);
     const d = ok(await org.buyer.get(`/api/products/${first!.id}`), 200, ProductDetailSchema, "product detail");

@@ -58,6 +58,7 @@ import {
   selectRelevantCandidates,
   wordStems,
 } from "@/server/search/name-match";
+import { finnishEnglish, productWords, scoringName } from "@/server/search/query";
 import { ValioApiError } from "@/server/valio/client";
 import { toSalesUnits, type Conversion, type UnitFacts } from "@/server/valio/units";
 import { allergenCodes, allergenNames } from "@/shared/contracts/allergens";
@@ -403,10 +404,8 @@ export type CandidateSearchPlan = {
  */
 export function planCandidateSearchTerms(productType: string, productName?: string): CandidateSearchPlan {
   const typeNorm = productType.trim().toLowerCase();
-  const nameWords = (productName ?? "")
-    .toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((w) => w.length > 1);
+  // Quantities, units and filler words aren't product words ("1,8 kg of salmon fillet").
+  const nameWords = productWords(productName ?? "");
   const coreWords = nameWords.filter((w) => !GENERIC_MODIFIERS.has(w));
   const modifierWords = nameWords.filter((w) => GENERIC_MODIFIERS.has(w));
   const modifierBoostTerms = [
@@ -418,12 +417,17 @@ export function planCandidateSearchTerms(productType: string, productName?: stri
     ),
   ];
   const primaryWords = coreWords.length > 0 ? coreWords : nameWords;
-  const primaryTermGroups = primaryWords.map((w) => wordStems(w));
+  // Each word also matches its plural stem and, for Finnish food words, the English name ("voita" → butter).
+  const primaryTermGroups = primaryWords.map((w) => {
+    const english = finnishEnglish(w);
+    return [...new Set([...wordStems(w), ...(english ? wordStems(english) : [])])];
+  });
   const fallbackOrStems =
     coreWords.length > 1
       ? [...new Set(coreWords.flatMap((w) => wordStems(w)).filter((s) => s.length >= 4))]
       : [];
-  const scoringQuery = (productName?.trim() || typeNorm).toLowerCase();
+  // Scored against English names, so Finnish food words count in English.
+  const scoringQuery = nameWords.length ? scoringName(productName!) : typeNorm;
 
   return {
     typeNorm,
@@ -474,7 +478,7 @@ export function narrowBeforePricing<T extends { id: string; name: string; catego
   productName?: string,
 ): T[] {
   if (!productName?.trim()) return rows.slice(0, PRICE_LOOKUP_CAP);
-  const scored = rows.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode, nameMatchScore: computeNameMatchScore(productName, r.name) }));
+  const scored = rows.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode, nameMatchScore: computeNameMatchScore(scoringName(productName), r.name) }));
   const score = new Map(
     selectRelevantCandidates(scored)
       .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
@@ -803,7 +807,7 @@ export async function createProposalFromItems(actor: Actor, input: SelectionInpu
     // Step 3: Score and sort list of best match by [Product name]
     const scoredByName: CandidateProduct[] = rawByType
       .map((record) => {
-        const nameMatchScore = computeNameMatchScore(item.productName, record.name);
+        const nameMatchScore = computeNameMatchScore(scoringName(item.productName), record.name);
         const previouslyOrderedProduct =
           previousProductIds.has(record.id.toLowerCase()) ||
           previousProductNames.has(record.name.trim().toLowerCase());
@@ -1576,7 +1580,7 @@ export async function reviseProposalFromRequest(
     };
     const toProduct = toCandidateProduct({
       record,
-      nameMatchScore: trace ? computeNameMatchScore(trace.extractedItem.productName, record.name) : 1,
+      nameMatchScore: trace ? computeNameMatchScore(scoringName(trace.extractedItem.productName), record.name) : 1,
       previouslyOrderedProduct: false,
       previouslyOrderedBrand: false,
       requestedQuantity: quantity,
@@ -1662,7 +1666,7 @@ async function nutritionOf(ids: readonly string[]): Promise<Map<string, UnifiedC
 /** The agent's candidates for a need, as product summaries, most relevant first. */
 async function rankCandidatesFor(q: string, date: string): Promise<ProductSummary[]> {
   const records = await getCandidatesByProductType(inferProductType(q), date, q, { strict: true });
-  const scored = records.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode ?? null, nameMatchScore: computeNameMatchScore(q, r.name) }));
+  const scored = records.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode ?? null, nameMatchScore: computeNameMatchScore(scoringName(q), r.name) }));
   const ids = selectRelevantCandidates(scored)
     .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
     .map((c) => c.id);
@@ -1738,7 +1742,7 @@ export async function rankProducts(actor: Actor, req: RankProductsRequest): Prom
         availableQuantity: avail?.availableQuantity ?? null,
         deliveryReliability: p.deliveryReliability,
         co2PerKg: p.co2PerKg,
-        nameMatch: req.q ? computeNameMatchScore(req.q, p.name) : 1,
+        nameMatch: req.q ? computeNameMatchScore(scoringName(req.q), p.name) : 1,
         previouslyOrderedProduct: orderedIds.has(p.id),
         previouslyOrderedBrand: !!p.brand && orderedBrands.has(p.brand.toLowerCase()),
       };
