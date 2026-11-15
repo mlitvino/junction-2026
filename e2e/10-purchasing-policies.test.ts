@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { after, before, describe, it } from "node:test";
+import { after, beforeEach, describe, it } from "node:test";
 import { ProposalSchema } from "@/shared/contracts/purchasing";
 import { ProductSearchResponseSchema } from "@/shared/contracts/products";
 import { PolicyDecisionSchema } from "@/shared/contracts/policy";
@@ -17,7 +17,8 @@ import {
 describe("purchasing policy governance", () => {
   let org: Org;
   const date = deliveryDate();
-  before(async () => {
+  // Each scenario needs its own spending history and preferences.
+  beforeEach(async () => {
     org = await newOrg("gov");
   });
   after(() => cleanup(RUN));
@@ -135,8 +136,8 @@ describe("purchasing policy governance", () => {
       ProposalSchema,
       "second proposal",
     );
-    assert.equal(first.decision.outcome, "ALLOW");
-    assert.equal(second.decision.outcome, "ALLOW");
+    assert.equal(first.decision.outcome, "ALLOW", JSON.stringify(first.decision.reasons));
+    assert.equal(second.decision.outcome, "ALLOW", JSON.stringify(second.decision.reasons));
     const attempts = await Promise.all(
       [first, second].map((p) =>
         org.buyer.post(`/api/proposals/${p.id}/order`, { idempotencyKey: `gov-${p.id}` }),
