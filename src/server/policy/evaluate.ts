@@ -106,7 +106,7 @@ export function evaluatePolicy(prefs: Preferences, lines: PolicyLineFacts[], opt
   for (const line of lines) {
     const { product, productId } = line;
     if (!product) {
-      deny({ code: "UNKNOWN_PRODUCT", productId, message: `Product ${productId} is not in the catalog.` });
+      deny({ code: "UNKNOWN_PRODUCT", productId, message: `Product ${productId} is not in the imported Valio catalog (new Valio products appear after the catalog is re-imported).` });
       continue;
     }
     if (line.unitPriceExclVat === null)
