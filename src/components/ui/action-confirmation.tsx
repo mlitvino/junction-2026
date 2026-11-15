@@ -96,7 +96,7 @@ export function ActionConfirmation({
               {action.error}
             </p>
           )}
-          <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
             <Button variant="ghost" disabled={action.busy} onClick={() => dialog.current?.close()}>
               Cancel
             </Button>

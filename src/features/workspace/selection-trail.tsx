@@ -3,14 +3,14 @@
 import { useState } from "react";
 import type { Proposal } from "@/shared/contracts/purchasing";
 import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import { useAction } from "@/features/procurement/use-action";
 import { store, eur, ErrorMessage } from "./ui";
 
 export function BudgetComparison({ proposal }: { proposal: Proposal }) {
   const { limits, outcome } = proposal.decision;
   const total = proposal.totalExclVat;
-  const overMax =
-    total !== null && limits.maxOrderValue !== null && total > limits.maxOrderValue;
+  const overMax = total !== null && limits.maxOrderValue !== null && total > limits.maxOrderValue;
   const overAuto =
     total !== null && limits.autoApproveBelow !== null && total >= limits.autoApproveBelow;
 
@@ -75,11 +75,13 @@ export function SelectionTrail({
   threadId,
   canRevise,
   onRevised,
+  compact = false,
 }: {
   proposal: Proposal;
   threadId?: string;
   canRevise: boolean;
   onRevised?: (revised: Proposal) => void;
+  compact?: boolean;
 }) {
   const selection = proposal.selection;
   const action = useAction();
@@ -89,10 +91,24 @@ export function SelectionTrail({
   const proposalLineIds = new Set(proposal.lines.map((l) => l.productId));
 
   return (
-    <details className="rounded-md border bg-muted/30 px-4 py-2 text-sm" open>
-      <summary className="min-h-10 cursor-pointer py-2 font-medium">
-        Agent selection &amp; preference filtering ({selection.extractedItems.length} item
-        {selection.extractedItems.length === 1 ? "" : "s"})
+    <details
+      className={
+        compact
+          ? "group/selection rounded-lg text-sm"
+          : "group/selection rounded-md border bg-muted/30 px-4 py-2 text-sm"
+      }
+      open={!compact}
+    >
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2.5 rounded-lg px-2 py-3 text-xs text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground">
+        <Icon name="agents" className="size-4 shrink-0 text-primary" />
+        <span className="flex-1">
+          Agent selection &amp; preference filtering ({selection.extractedItems.length} item
+          {selection.extractedItems.length === 1 ? "" : "s"})
+        </span>
+        <Icon
+          name="chevron"
+          className="size-3.5 shrink-0 transition-transform group-open/selection:rotate-90"
+        />
       </summary>
       <div className="space-y-4 border-t py-3">
         <ErrorMessage error={action.error} />
@@ -128,7 +144,8 @@ export function SelectionTrail({
                   {step.extractedItem.productName} ({step.parsedQuantity} {step.parsedUnit})
                 </p>
                 <span className="text-caption text-muted-foreground">
-                  {step.matchedByTypeCount} found for type &ldquo;{step.extractedItem.productType}&rdquo;
+                  {step.matchedByTypeCount} found for type &ldquo;{step.extractedItem.productType}
+                  &rdquo;
                 </span>
               </div>
               {step.conversionNote && (
@@ -152,8 +169,8 @@ export function SelectionTrail({
               {step.removedByPreferences.length > 0 && (
                 <details className="text-caption">
                   <summary className="cursor-pointer text-muted-foreground">
-                    Excluded by preferences (dietary, allergens, blocked vendors, CO2, reliability) (
-                    {step.removedByPreferences.length})
+                    Excluded by preferences (dietary, allergens, blocked vendors, CO2, reliability)
+                    ({step.removedByPreferences.length})
                   </summary>
                   <ul className="mt-1 space-y-1 pl-3 text-muted-foreground">
                     {step.removedByPreferences.map((removed) => (
@@ -186,14 +203,16 @@ export function SelectionTrail({
                               {isSelected ? " (Selected)" : ""}
                             </p>
                             <p className="text-muted-foreground">
-                              {eur(candidate.unitPriceEur, proposal.currency)} / {candidate.salesUnit}
+                              {eur(candidate.unitPriceEur, proposal.currency)} /{" "}
+                              {candidate.salesUnit}
                               {" · "}
                               {Math.round(candidate.nameMatchScore * 100)}% name match
                               {candidate.availableQuantity != null
                                 ? ` · ${candidate.availableQuantity} avail.`
                                 : ""}
                               {candidate.previouslyOrderedProduct ? " · Previously ordered" : ""}
-                              {!candidate.previouslyOrderedProduct && candidate.previouslyOrderedBrand
+                              {!candidate.previouslyOrderedProduct &&
+                              candidate.previouslyOrderedBrand
                                 ? " · Preferred brand"
                                 : ""}
                             </p>

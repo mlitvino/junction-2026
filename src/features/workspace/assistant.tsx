@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
 import { resolveActiveProposal } from "@/client/workspace/service";
@@ -16,11 +16,12 @@ import {
   EmptyState,
   ErrorMessage,
   ApprovalCard,
-  BasketReviewDrawer,
   StatusBadge,
+  PriceDisplay,
 } from "./ui";
 import { ProductPicker } from "./product-picker";
 import { ChatCheckout } from "./chat-checkout";
+import type { Proposal } from "@/shared/contracts/purchasing";
 
 const suggestions = [
   { text: "Order 100 litres of lactose-free milk", icon: "orders" },
@@ -253,32 +254,75 @@ export function AssistantWelcome() {
   );
 }
 
+function ChatProposal({
+  proposal,
+  threadId,
+  onCheckout,
+}: {
+  proposal: Proposal;
+  threadId: string;
+  onCheckout: () => void;
+}) {
+  const card = (
+    <ApprovalCard
+      key={proposal.id}
+      proposal={proposal}
+      threadId={threadId}
+      compact
+      inlineActions
+      onCheckout={onCheckout}
+    />
+  );
+  if (!["APPROVED", "ORDERED"].includes(proposal.status)) return card;
+  return (
+    <details className="group/proposal luukku-chamber overflow-hidden rounded-xl border">
+      <summary className="flex min-h-16 cursor-pointer list-none flex-wrap items-center gap-3 p-4">
+        <Icon name="check-circle" className="size-5 shrink-0 text-success" />
+        <div className="min-w-0 flex-1">
+          <span className="text-sm font-semibold">Purchase proposal</span>
+          <p className="mt-1 truncate text-xs text-muted-foreground">
+            {proposal.lines[0]?.name ?? "Purchase request"}
+          </p>
+        </div>
+        <StatusBadge status={proposal.status} />
+        <PriceDisplay value={proposal.totalExclVat} currency={proposal.currency} />
+        <Icon
+          name="chevron"
+          className="size-4 shrink-0 text-muted-foreground transition-transform group-open/proposal:rotate-90"
+        />
+      </summary>
+      <div className="border-t p-3 sm:p-4">{card}</div>
+    </details>
+  );
+}
+
 export function AssistantConversation({ id }: { id: string }) {
-  const s = useWorkspace(),
-    [review, setReview] = useState<string | null>(null),
-    [checkout, setCheckout] = useState<string | null>(null);
-  const close = useCallback(() => {
-    setReview(null);
-    setCheckout(null);
-  }, []);
-  const openCheckout = (proposalId: string) => {
-    setReview(proposalId);
-    setCheckout(proposalId);
-  };
+  const s = useWorkspace();
+  const [checkout, setCheckout] = useState<string | null>(null);
+  const openCheckout = (proposalId: string) => setCheckout(proposalId);
   const thread = s.local.threads.find((t) => t.id === id);
   const recommendation = useRef<HTMLDivElement>(null);
+  const checkoutSection = useRef<HTMLElement>(null);
   const active = resolveActiveProposal(thread, s.proposals);
   const currentProposalId = active?.id;
+  const checkoutProposalId =
+    active && (checkout === active.id || ["APPROVED", "ORDERED"].includes(active.status))
+      ? active.id
+      : null;
   const hasCurrentProposal =
     !!active &&
     (!thread?.timeline ||
-      thread.timeline.some(
-        (entry) => entry.kind === "proposal" && entry.proposalId === active.id,
-      ));
+      thread.timeline.some((entry) => entry.kind === "proposal" && entry.proposalId === active.id));
   useEffect(() => {
     if (currentProposalId)
       recommendation.current?.scrollIntoView({ block: "start", behavior: "instant" });
   }, [currentProposalId, hasCurrentProposal]);
+  useEffect(() => {
+    if (checkoutProposalId && checkoutProposalId === currentProposalId) {
+      checkoutSection.current?.scrollIntoView({ block: "nearest", behavior: "instant" });
+      checkoutSection.current?.focus({ preventScroll: true });
+    }
+  }, [checkoutProposalId, currentProposalId]);
   if (!thread)
     return (
       <Page title="Conversation unavailable">
@@ -291,15 +335,8 @@ export function AssistantConversation({ id }: { id: string }) {
       </Page>
     );
   const activeId = active?.id;
-  const drawerProposal =
-    review === active?.id &&
-    !["CANCELLED", "REJECTED", "ORDERED", "EXPIRED"].includes(active.status)
-      ? active
-      : undefined;
   return (
-    <div
-      className={`conversation-layout flex flex-1 flex-col ${drawerProposal ? "review-open" : ""}`}
-    >
+    <div className="conversation-layout flex flex-1 flex-col">
       <div className="mx-auto flex w-full max-w-conversation flex-1 flex-col">
         <h1 className="sr-only">Assistant</h1>
         <div className="space-y-6 pb-6">
@@ -393,23 +430,36 @@ export function AssistantConversation({ id }: { id: string }) {
                       <p className="mt-2">{thread.diff}</p>
                     </div>
                   )}
-                  <ApprovalCard
+                  <ChatProposal
                     key={proposal.id}
                     proposal={proposal}
                     threadId={id}
-                    compact
-                    onReview={() => {
-                      setCheckout(null);
-                      setReview(proposal.id);
-                    }}
                     onCheckout={() => openCheckout(proposal.id)}
                   />
-                  <Link
-                    href={`/proposals/${proposal.id}`}
-                    className="inline-block min-h-11 py-3 text-sm text-primary underline underline-offset-4"
-                  >
-                    Open purchase details & activity
-                  </Link>
+                  {checkoutProposalId === proposal.id &&
+                    !["CANCELLED", "REJECTED"].includes(proposal.status) && (
+                      <section
+                        ref={checkoutSection}
+                        tabIndex={-1}
+                        aria-label="Checkout"
+                        className="luukku-chamber space-y-4 rounded-xl border p-4 sm:p-5"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <h2 className="text-base font-semibold">Checkout</h2>
+                          {!["APPROVED", "ORDERED"].includes(proposal.status) && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label="Close checkout"
+                              onClick={() => setCheckout(null)}
+                            >
+                              <Icon name="close" />
+                            </Button>
+                          )}
+                        </div>
+                        <ChatCheckout key={proposal.id} proposal={proposal} />
+                      </section>
+                    )}
                 </div>
               );
             })}
@@ -537,18 +587,6 @@ export function AssistantConversation({ id }: { id: string }) {
           )}
         </div>
         <ConversationComposer id={id} />
-        {drawerProposal && (
-          <BasketReviewDrawer
-            proposal={drawerProposal}
-            threadId={id}
-            onClose={close}
-            onCheckout={() => openCheckout(drawerProposal.id)}
-          >
-            {checkout === drawerProposal.id ? (
-              <ChatCheckout key={drawerProposal.id} proposal={drawerProposal} />
-            ) : undefined}
-          </BasketReviewDrawer>
-        )}
       </div>
     </div>
   );

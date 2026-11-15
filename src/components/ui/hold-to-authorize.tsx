@@ -15,7 +15,6 @@ export function HoldToAuthorize({
   onAuthorize: () => void;
 }) {
   const [holding, setHolding] = useState(false);
-  const [standard, setStandard] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const completed = useRef(false);
   function cancel() {
@@ -48,73 +47,56 @@ export function HoldToAuthorize({
     };
   }, []);
   return (
-    <div className="flex flex-col items-end gap-2">
-      {standard ? (
-        <Button type="submit" disabled={disabled}>
-          {label}
-        </Button>
-      ) : (
-        <Button
-          type="button"
-          disabled={disabled}
-          className="luukku-hold min-w-48"
-          data-holding={holding}
-          aria-label={disabled ? "Saving" : `Hold to ${label.toLowerCase()}`}
-          title="Hold for 0.8 seconds. Keyboard: hold Space or Enter."
-          onPointerDown={(event) => {
-            if (event.button !== 0) return;
-            event.preventDefault();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            event.currentTarget.focus();
-            start();
-          }}
-          onPointerUp={cancel}
-          onPointerMove={(event) => {
-            if (!timer.current) return;
-            const bounds = event.currentTarget.getBoundingClientRect();
-            if (
-              event.clientX < bounds.left ||
-              event.clientX > bounds.right ||
-              event.clientY < bounds.top ||
-              event.clientY > bounds.bottom
-            )
-              cancel();
-          }}
-          onPointerCancel={cancel}
-          onLostPointerCapture={cancel}
-          onBlur={cancel}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") cancel();
-            if ([" ", "Enter"].includes(event.key)) {
-              event.preventDefault();
-              if (!event.repeat) start();
-            }
-          }}
-          onKeyUp={(event) => {
-            if ([" ", "Enter"].includes(event.key)) {
-              event.preventDefault();
-              cancel();
-            }
-          }}
-        >
-          <Icon name="shield-outline" className="size-4" />
-          {disabled ? "Saving…" : holding ? "Authorizing…" : `Hold · ${label}`}
-        </Button>
-      )}
-      <button
+    <span className="inline-flex items-center">
+      <Button
         type="button"
         disabled={disabled}
-        className="min-h-6 text-[10px] text-muted-foreground underline underline-offset-4"
-        onClick={() => {
-          cancel();
-          setStandard(!standard);
+        className="luukku-hold min-w-48"
+        data-holding={holding}
+        aria-label={disabled ? "Saving" : `Hold to ${label.toLowerCase()}`}
+        title="Hold for 0.8 seconds. Keyboard: hold Space or Enter."
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.currentTarget.focus();
+          start();
+        }}
+        onPointerUp={cancel}
+        onPointerMove={(event) => {
+          if (!timer.current) return;
+          const bounds = event.currentTarget.getBoundingClientRect();
+          if (
+            event.clientX < bounds.left ||
+            event.clientX > bounds.right ||
+            event.clientY < bounds.top ||
+            event.clientY > bounds.bottom
+          )
+            cancel();
+        }}
+        onPointerCancel={cancel}
+        onLostPointerCapture={cancel}
+        onBlur={cancel}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") cancel();
+          if ([" ", "Enter"].includes(event.key)) {
+            event.preventDefault();
+            if (!event.repeat) start();
+          }
+        }}
+        onKeyUp={(event) => {
+          if ([" ", "Enter"].includes(event.key)) {
+            event.preventDefault();
+            cancel();
+          }
         }}
       >
-        {standard ? "Use hold confirmation" : "Use standard confirmation"}
-      </button>
+        <Icon name="shield-outline" className="size-4" />
+        {disabled ? "Saving…" : holding ? "Authorizing…" : `Hold · ${label}`}
+      </Button>
       <span className="sr-only" role="status">
         {holding ? "Keep holding for 0.8 seconds. Release to cancel." : ""}
       </span>
-    </div>
+    </span>
   );
 }
