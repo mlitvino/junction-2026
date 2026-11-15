@@ -1556,9 +1556,11 @@ async function resolveReplacementId(toTarget: string, pipeline: ItemProcurementT
 const badRequest = (message: string) => new PurchasingError(400, "INVALID_CHANGE", message);
 
 /**
- * Recomputes a replacement line's sales-unit quantity from the old line's requested amount
- * using catalog unit facts (`toSalesUnits`). Falls back to `oldQuantity` plus a warning only
- * when the catalog has no content info or the units are incompatible.
+ * Recomputes a replacement line's sales-unit quantity from the old line's amount using catalog unit
+ * facts (`toSalesUnits`). The originally requested amount (`trace`) is used only while the line still
+ * has the quantity the selection gave it; after the buyer changed it, the line's current quantity
+ * counts. Falls back to `oldQuantity` plus a warning when the catalog has no content info or the
+ * units are incompatible.
  */
 export function computeReplacementQuantity(params: {
   repQuantity?: number;
@@ -1567,7 +1569,8 @@ export function computeReplacementQuantity(params: {
   oldName: string;
   newName: string;
   newSalesUnit: string;
-  trace?: { parsedQuantity: number; parsedUnit: string } | null;
+  /** Pass only when this trace is the line's sole source (not a merge of several requests). */
+  trace?: { parsedQuantity: number; parsedUnit: string; orderedQuantity?: number | null } | null;
   oldFacts?: UnitFacts | null;
   newFacts?: UnitFacts | null;
 }): { quantity: number; conversionNote: string | null; warning: string | null } {
@@ -1577,7 +1580,16 @@ export function computeReplacementQuantity(params: {
 
   let reqAmount = params.oldQuantity;
   let reqUnit = params.oldUnit;
-  if (params.trace && params.trace.parsedQuantity > 0 && params.trace.parsedUnit) {
+  // The original request still describes the line only if converting it again gives the line's
+  // current quantity; a revised quantity ("set to 20") means the current quantity counts.
+  const t = params.trace;
+  const traceUsable = !!t && t.parsedQuantity > 0 && !!t.parsedUnit;
+  const lineUnchanged =
+    traceUsable &&
+    (params.oldFacts
+      ? toSalesUnits(t!.parsedQuantity, t!.parsedUnit, params.oldFacts).quantity === params.oldQuantity
+      : t!.orderedQuantity === undefined || t!.orderedQuantity === null || t!.orderedQuantity === params.oldQuantity);
+  if (params.trace && lineUnchanged) {
     reqAmount = params.trace.parsedQuantity;
     reqUnit = params.trace.parsedUnit;
   } else if (params.oldFacts) {
@@ -1832,7 +1844,8 @@ export async function reviseProposalFromRequest(
     const violations = evaluateBuyerPreferences(record, rules);
     if (violations.length) throw badRequest(`${record.name} (${record.id}) breaks the organization's rules: ${violations.join("; ")}.`);
     const old = lines[idx]!;
-    const trace = pipeline.find((t) => t.selectedProduct?.id === old.productId);
+    const traces = pipeline.filter((t) => t.selectedProduct?.id === old.productId);
+    const trace = traces[0];
     const { quantity, conversionNote, warning } = computeReplacementQuantity({
       repQuantity: rep.quantity,
       oldQuantity: old.quantity,
@@ -1840,7 +1853,8 @@ export async function reviseProposalFromRequest(
       oldName: old.name,
       newName: record.name,
       newSalesUnit: record.salesUnit,
-      trace,
+      // A line merged from several requests has no single original amount: use its current quantity.
+      trace: traces.length === 1 ? trace : null,
       oldFacts: unitFactsMap.get(old.productId) ?? null,
       newFacts: unitFactsMap.get(record.id) ?? null,
     });

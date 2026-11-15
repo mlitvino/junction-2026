@@ -528,6 +528,20 @@ describe("Shared buyer preferences and proposal revision helpers", () => {
     });
     assert.equal(noContent.quantity, 5);
     assert.ok(noContent.warning && noContent.warning.includes("Check the quantity"));
+
+    // The buyer changed 5 cases (100 L) to 2 cases (40 L): the swap follows the 40 L, not the
+    // original 100 L request.
+    const afterEdit = computeReplacementQuantity({
+      oldQuantity: 2,
+      oldUnit: "KI",
+      oldName: "Milk 20L case",
+      newName: "Milk 1L carton",
+      newSalesUnit: "ST",
+      trace: { parsedQuantity: 100, parsedUnit: "L", orderedQuantity: 2 },
+      oldFacts,
+      newFacts,
+    });
+    assert.equal(afterEdit.quantity, 40);
   });
 
   it("updates selection pipeline, suggestedAlternatives, and warnings on swap/update/remove/add", () => {
