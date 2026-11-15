@@ -6,6 +6,7 @@ import {
   ProposalSchema,
   ProposalListSchema,
   ApprovalListSchema,
+  PendingApprovalCountSchema,
   OrderSchema,
   OrderListSchema,
   DecideApprovalRequestSchema,
@@ -132,6 +133,7 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
     requestApproval: (id: string) =>
       request(`/proposals/${encodeURIComponent(id)}/approval`, ProposalSchema, "POST"),
     listApprovals: () => request("/approvals", ApprovalListSchema),
+    getPendingApprovalCount: () => request("/approvals/pending-count", PendingApprovalCountSchema),
     decideApproval: (id: string, body: z.input<typeof DecideApprovalRequestSchema>) =>
       request(
         `/approvals/${encodeURIComponent(id)}/decision`,

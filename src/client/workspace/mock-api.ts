@@ -484,6 +484,23 @@ export function createMockApi(
       save();
       return structuredClone(p);
     },
+    async getPendingApprovalCount() {
+      load();
+      current("approver");
+      const pending = data.proposals.filter(
+        (p) =>
+          p.approval?.status === "PENDING" &&
+          (!p.quoteExpiresAt || Date.parse(p.quoteExpiresAt) > Date.now()),
+      );
+      return {
+        count: pending.length,
+        nextExpiresAt:
+          pending
+            .map((p) => p.quoteExpiresAt)
+            .filter((at) => at != null)
+            .sort()[0] ?? null,
+      };
+    },
     async listApprovals() {
       load();
       current("approver");
