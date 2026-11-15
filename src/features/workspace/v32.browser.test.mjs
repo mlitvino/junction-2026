@@ -33,6 +33,21 @@ test("complete v3.2 frontend", async (t) => {
   async function settle() {
     await page.getByRole("heading", { level: 1 }).first().waitFor();
   }
+  async function assertComposerPinned(target = page) {
+    const form = await target
+      .getByRole("form", { name: "Assistant message", exact: true })
+      .boundingBox();
+    const viewport = target.viewportSize();
+    const navigation =
+      viewport.width < 1024
+        ? await target
+            .getByRole("navigation", { name: "Primary mobile navigation", exact: true })
+            .boundingBox()
+        : null;
+    const bottom = navigation ? navigation.y - 8 : viewport.height - 16;
+    assert(Math.abs(form.y + form.height - bottom) < 2, "Composer must stay at the window bottom");
+    assert(form.x >= 0 && form.x + form.width <= viewport.width);
+  }
   async function send(text) {
     const input = page.getByRole("textbox", { name: "Continue the conversation", exact: true });
     await input.fill(text);
@@ -91,13 +106,72 @@ test("complete v3.2 frontend", async (t) => {
     assert.equal(await settings.innerText(), "Settings & Administration");
     assert.equal(await sidebar.getByText("anna.lindholm", { exact: true }).count(), 0);
     assert.equal(await sidebar.getByText("Buyer & Approver", { exact: true }).count(), 0);
-    await page
-      .getByRole("textbox", { name: "What do you need?", exact: true })
-      .fill("Order 100 litres of lactose-free milk");
-    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    assert.equal(await page.locator("header").getByText("Development", { exact: true }).count(), 0);
+    assert.equal(
+      await page
+        .getByRole("link", { name: "Browse catalog & prepare purchase", exact: true })
+        .count(),
+      0,
+    );
+    const input = page.getByRole("textbox", { name: "What do you need?", exact: true });
+    assert(
+      (await page.getByRole("form", { name: "Assistant message", exact: true }).boundingBox())
+        .height <= 64,
+    );
+    const suggestions = page.locator("summary").filter({ hasText: /^\s*Suggestions\s*$/ });
+    const example = page.getByRole("button", {
+      name: "Order 100 litres of lactose-free milk",
+      exact: true,
+    });
+    assert.equal(await example.isVisible(), false);
+    await suggestions.press("Enter");
+    const suggestionRows = await suggestions
+      .locator("..")
+      .locator("button")
+      .evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const box = button.getBoundingClientRect();
+          return { x: box.x, y: box.y, icons: button.querySelectorAll("svg").length };
+        }),
+      );
+    assert.equal(suggestionRows.length, 4);
+    suggestionRows.forEach((row, index) => {
+      assert.equal(row.x, suggestionRows[0].x);
+      assert.equal(row.icons, 2);
+      if (index) assert(row.y > suggestionRows[index - 1].y);
+    });
+    assert.equal(
+      await page
+        .getByText(
+          "Choose an example and adjust it before sending. Human approval is required by default.",
+          { exact: true },
+        )
+        .count(),
+      0,
+    );
+    await example.click();
+    assert.equal(await input.inputValue(), "Order 100 litres of lactose-free milk");
+    assert(await input.evaluate((element) => element === document.activeElement));
+    await suggestions.click();
+    assert.equal(await example.isVisible(), false);
+    await input.press("Enter");
     await page.waitForURL(/\/buyer\/conversations\//);
     conversation = page.url();
     await page.getByRole("textbox", { name: "Continue the conversation", exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("link", { name: "New conversation", exact: true }).count(),
+      0,
+    );
+    assert.equal(await page.getByLabel("Suggested follow-ups", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("About this conversation", { exact: true }).count(), 0);
+    const composer = page.getByRole("textbox", { name: "Continue the conversation", exact: true });
+    const initialHeight = (await composer.boundingBox()).height;
+    assert(initialHeight <= 44);
+    await composer.fill("A preference for this purchase. ".repeat(25));
+    await page.waitForFunction(() => document.querySelector("textarea").clientHeight > 44);
+    assert((await composer.boundingBox()).height > initialHeight);
+    await composer.fill("");
+    await page.waitForFunction(() => document.querySelector("textarea").clientHeight <= 44);
     await page.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
     const local = await state();
     assert(local.threads[0].proposals[0]);
@@ -163,6 +237,7 @@ test("complete v3.2 frontend", async (t) => {
       });
       assert(await composer.isEditable());
       await composer.fill("A question kept while reviewing");
+      await assertComposerPinned();
       await page
         .getByRole("complementary", { name: "Review order", exact: true })
         .getByRole("button", { name: "Review & approve", exact: true })
@@ -179,7 +254,7 @@ test("complete v3.2 frontend", async (t) => {
       order = records.orders[0].id;
       assert.equal(records.orders[0].totalExclVat, 232.5);
       await page.goto(base + `/approvals/${approval}`);
-      await page.getByRole("heading", { name: "Review purchase", exact: true }).waitFor();
+      await page.getByRole("link", { name: "Back to review list", exact: true }).waitFor();
       assert.equal(
         await page.getByRole("button", { name: "Review & approve", exact: true }).count(),
         0,
@@ -193,6 +268,18 @@ test("complete v3.2 frontend", async (t) => {
   );
   await t.test("B5 and B6: rejection recovery and hard safety block", async () => {
     await page.goto(base + "/buyer");
+    const recent = page
+      .locator("details")
+      .filter({ has: page.locator("summary").filter({ hasText: /^\s*Recent conversations\s*$/ }) });
+    await recent.locator("summary").waitFor();
+    assert.equal(await recent.locator("ul").isVisible(), false);
+    await recent.locator("summary").click();
+    assert(await recent.locator("ul").isVisible());
+    await recent.getByText("Order recorded", { exact: true }).waitFor();
+    assert.equal(await recent.getByText("Continue", { exact: true }).count(), 0);
+    assert.equal(await recent.locator("li").first().locator("a > svg").count(), 1);
+    await recent.locator("summary").click();
+    assert.equal(await recent.locator("ul").isVisible(), false);
     await page
       .getByRole("textbox", { name: "What do you need?", exact: true })
       .fill("Order 100 litres of milk");
@@ -369,6 +456,75 @@ test("complete v3.2 frontend", async (t) => {
       before,
     );
   });
+  await t.test(
+    "product selection stays before its proposal and becomes collapsed read-only history",
+    async () => {
+      const flow = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+      try {
+        await flow.goto(base + "/buyer");
+        await flow
+          .getByRole("textbox", { name: "What do you need?", exact: true })
+          .fill("Find milk");
+        await flow.getByRole("button", { name: "Send message", exact: true }).click();
+        const picker = flow.getByRole("region", { name: "Product picker", exact: true });
+        await picker.getByRole("checkbox").first().check();
+        await flow.evaluate(() => window.scrollTo(0, 0));
+        await assertComposerPinned(flow);
+        await flow.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await assertComposerPinned(flow);
+        await picker
+          .getByRole("button", { name: "Prepare purchase for review", exact: true })
+          .click();
+        const completed = flow.getByLabel("Completed product selection", { exact: true });
+        await completed.getByText("Products selected", { exact: true }).waitFor();
+        await flow.getByRole("button", { name: "Review & approve", exact: true }).waitFor();
+        assert.equal(await completed.getAttribute("open"), null);
+        assert.equal(await picker.count(), 0);
+        await completed.locator("summary").click();
+        assert.equal(await completed.locator("input, button").count(), 0);
+        await completed
+          .getByText("This selection is read-only. Send a new message to change the purchase.", {
+            exact: true,
+          })
+          .waitFor();
+        assert(
+          await flow.evaluate(() => {
+            const selection = document.querySelector('[aria-label="Completed product selection"]');
+            const review = [...document.querySelectorAll("button")].find(
+              (el) => el.textContent === "Review & approve",
+            );
+            return !!(selection.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING);
+          }),
+        );
+        await completed.locator("summary").click();
+        const input = flow.getByRole("textbox", { name: "Continue the conversation", exact: true });
+        await input.fill("Why this product?");
+        await input.press("Enter");
+        await flow.waitForFunction(() => {
+          const messages = document.querySelector('[aria-label="Conversation messages"]');
+          return messages.lastElementChild?.textContent.startsWith("The recommendation uses");
+        });
+        await flow.reload();
+        await flow.getByText("Products selected", { exact: true }).waitFor();
+        assert.equal(
+          await flow.getByRole("region", { name: "Product picker", exact: true }).count(),
+          0,
+        );
+        await flow.setViewportSize({ width: 390, height: 844 });
+        assert(await flow.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await flow.evaluate(() => {
+          document.activeElement?.blur();
+          window.scrollTo(0, 0);
+        });
+        await flow.screenshot({
+          path: join(screenshots, "completed-product-selection-mobile.png"),
+          fullPage: false,
+        });
+      } finally {
+        await flow.close();
+      }
+    },
+  );
   await t.test("D7–D9: shared shell, themes, actual mobile layouts and screenshots", async () => {
     const views = [
       ["assistant", conversation],
@@ -386,6 +542,9 @@ test("complete v3.2 frontend", async (t) => {
           await page.goto(url);
           await settle();
           await overflow();
+          if (label === "assistant")
+            await page.waitForFunction(() => document.querySelector("textarea").clientHeight <= 44);
+          if (label === "assistant") await assertComposerPinned();
           if (width === 1440 || width === 390)
             await page.screenshot({
               path: join(screenshots, `${label}-${color.toLowerCase()}-${width}.png`),

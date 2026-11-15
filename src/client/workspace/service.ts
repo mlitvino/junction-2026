@@ -11,6 +11,7 @@ import {
   PlanSchema,
   emptySnapshot,
   emptyLocal,
+  getConversationTimeline,
   type WorkspaceSnapshot,
   type RestockPlan,
   type Thread,
@@ -205,11 +206,24 @@ export function createWorkspaceService(
   function editThread(id: string, apply: (t: Thread) => void) {
     local((l) => {
       const t = l.threads.find((t) => t.id === id);
-      if (t) apply(t);
+      if (t) {
+        t.timeline ??= getConversationTimeline(t, snapshot.proposals);
+        apply(t);
+      }
     });
   }
   function answer(id: string, text: string) {
-    editThread(id, (t) => t.messages.push({ role: "assistant", text, at: stamp() }));
+    editThread(id, (t) => {
+      t.timeline!.push({ kind: "message", index: t.messages.length });
+      t.messages.push({ role: "assistant", text, at: stamp() });
+    });
+  }
+  function openProducts(id: string, query: string, replacementId?: string) {
+    editThread(id, (t) => {
+      for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
+      t.query = query;
+      t.timeline!.push({ kind: "products", id: uid("selection"), query, replacementId });
+    });
   }
   function newThread(title: string, source: Thread["source"] = "Assistant") {
     const id = uid("conversation");
@@ -232,8 +246,19 @@ export function createWorkspaceService(
     threadId?: string,
     source: Thread["source"] = "Assistant",
     replaceId?: string,
+    pickerId?: string,
   ) {
     return single(`create:${threadId ?? JSON.stringify(body)}`, async () => {
+      if (threadId && pickerId) {
+        editThread(threadId, () => {});
+        const picker = thread(threadId).timeline?.find(
+          (entry) => entry.kind === "products" && entry.id === pickerId,
+        );
+        if (!picker || picker.kind !== "products" || picker.closed || picker.proposalId)
+          throw new Error(
+            "This product selection is closed. Send a new message to change the purchase.",
+          );
+      }
       body = CreateProposalRequestSchema.parse(body);
       if (!snapshot.user?.roles.includes("buyer"))
         throw new Error("A Buyer is required to prepare this purchase.");
@@ -282,6 +307,15 @@ export function createWorkspaceService(
       putProposal(created);
       editThread(id, (t) => {
         t.proposals.push(created.id);
+        if (pickerId) {
+          const picker = t.timeline!.find(
+            (entry) => entry.kind === "products" && entry.id === pickerId,
+          );
+          if (picker?.kind === "products") {
+            picker.proposalId = created.id;
+            picker.closed = true;
+          }
+        }
         t.diff = replaceId
           ? "A new purchase proposal replaces the previous quantity, products or delivery requirements."
           : undefined;
@@ -310,6 +344,7 @@ export function createWorkspaceService(
           ? "This purchase does not meet the purchasing requirements. You can change the request or review the reasons below."
           : "I’ve prepared a purchase proposal. Please review the products, quantity and conditions before continuing.",
       );
+      editThread(id, (t) => t.timeline!.push({ kind: "proposal", proposalId: created.id }));
       return { threadId: id, proposal: current };
     });
   }
@@ -339,6 +374,8 @@ export function createWorkspaceService(
       if (!text) return;
       const runEpoch = epoch;
       editThread(id, (t) => {
+        for (const entry of t.timeline!) if (entry.kind === "products") entry.closed = true;
+        t.timeline!.push({ kind: "message", index: t.messages.length });
         t.messages.push({ role: "user", text, at: stamp() });
         t.working = true;
         t.error = undefined;
@@ -358,6 +395,12 @@ export function createWorkspaceService(
               ? `The recommendation uses ${current.lines.map((l) => l.name).join(", ")}, priced for ${current.pricingDate}. ${current.decision.reasons.map((r) => r.message).join(" ")} Availability and units are shown in the item details. This explanation does not change your proposal.`
               : "Choose a product or prepare a purchase first, and I can explain its pricing, units and purchasing conditions.",
           );
+          if (current && /alternative|compare/i.test(text))
+            openProducts(
+              id,
+              thread(id).query,
+              current.status === "ORDERED" ? undefined : current.id,
+            );
           return;
         }
         if (/recipe|macaroni|meal|portions/i.test(text)) {
@@ -463,9 +506,7 @@ export function createWorkspaceService(
               id,
               `I need a verified conversion from ${normalized} to ${first.salesUnit}. Please confirm the quantity in sales units using the product picker; the current proposal has not changed.`,
             );
-            editThread(id, (t) => {
-              t.query = first.name;
-            });
+            openProducts(id, first.name, current.id);
             return;
           }
           await createPurchase(
@@ -498,6 +539,7 @@ export function createWorkspaceService(
             id,
             "Please confirm the updated product, sales-unit quantity and delivery date below. The previous pending purchase has been withdrawn so it cannot be approved with outdated requirements.",
           );
+          openProducts(id, thread(id).query, current.id);
           return;
         }
         editThread(id, (t) => {
@@ -544,6 +586,7 @@ export function createWorkspaceService(
             id,
             "Choose the product and confirm its sales-unit quantity below. I’ll prepare it for review.",
           );
+          openProducts(id, query, current?.status === "ORDERED" ? undefined : current?.id);
         } else {
           const extracted = await api.extract(text);
           const query = extracted.items[0]?.productName ?? text;
@@ -555,6 +598,7 @@ export function createWorkspaceService(
             id,
             "I found the purchasing requirements. Confirm the product, sales-unit quantity and delivery date below. Physical quantities need verified packaging information before they can be ordered.",
           );
+          openProducts(id, query, current?.status === "ORDERED" ? undefined : current?.id);
         }
       } catch (error) {
         editThread(id, (t) => {
@@ -832,7 +876,10 @@ export function createWorkspaceService(
     async discussRecipe(recipeId: string, portions: number, question: string) {
       const recipe = await loadRecipe(recipeId),
         id = newThread(`${recipe.name} · ${portions} portions`, "Recipes");
-      editThread(id, (t) => t.messages.push({ role: "user", text: question, at: stamp() }));
+      editThread(id, (t) => {
+        t.timeline!.push({ kind: "message", index: t.messages.length });
+        t.messages.push({ role: "user", text: question, at: stamp() });
+      });
       const ingredients = recipeNeeds(recipe, portions, snapshot.inventory);
       answer(
         id,

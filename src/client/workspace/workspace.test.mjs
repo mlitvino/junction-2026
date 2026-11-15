@@ -36,6 +36,9 @@ const { createWorkspaceService, compatibleQuantity, recipeNeeds } = require(
 );
 const { ProposalSchema, OrderSchema } = require(join(output, "src/shared/contracts/purchasing.js"));
 const { EffectiveResponseSchema } = require(join(output, "src/shared/contracts/preferences.js"));
+const { getConversationStatus, getConversationTimeline, ThreadSchema } = require(
+  join(output, "src/client/workspace/model.js"),
+);
 const memory = () => {
   const values = new Map();
   return { getItem: (k) => values.get(k) ?? null, setItem: (k, v) => values.set(k, v), values };
@@ -52,6 +55,150 @@ async function setup() {
   return { service, mock, storage };
 }
 const state = (service) => service.getSnapshot();
+
+test("conversation timeline preserves selections, proposals and later messages across refresh", async () => {
+  const { service, mock, storage } = await setup();
+  const id = service.newThread("Product selection");
+  await service.sendMessage(id, "Find milk");
+  const thread = () => state(service).local.threads.find((t) => t.id === id);
+  const picker = thread().timeline.find((entry) => entry.kind === "products");
+  assert(picker);
+  const originalCreate = mock.api.createProposal;
+  mock.api.createProposal = async () => {
+    throw new Error("Creation failed");
+  };
+  await assert.rejects(
+    service.createPurchase(
+      { lines: [{ productId: "milk", quantity: 2 }] },
+      id,
+      "Manual",
+      undefined,
+      picker.id,
+    ),
+    /Creation failed/,
+  );
+  assert.equal(thread().timeline.find((entry) => entry.kind === "products").closed, undefined);
+  mock.api.createProposal = originalCreate;
+  const result = await service.createPurchase(
+    { lines: [{ productId: "milk", quantity: 2 }] },
+    id,
+    "Manual",
+    undefined,
+    picker.id,
+  );
+  assert.deepEqual(
+    thread().timeline.map((entry) => entry.kind),
+    ["message", "message", "products", "message", "proposal"],
+  );
+  assert.equal(thread().timeline[2].proposalId, result.proposal.id);
+  assert.equal(thread().timeline[2].closed, true);
+  await assert.rejects(
+    service.createPurchase(
+      { lines: [{ productId: "milk", quantity: 3 }] },
+      id,
+      "Manual",
+      undefined,
+      picker.id,
+    ),
+    /selection is closed/,
+  );
+  assert.equal(state(service).proposals.length, 1);
+  await service.sendMessage(id, "Why this product?");
+  assert.deepEqual(
+    thread()
+      .timeline.slice(-2)
+      .map((entry) => entry.kind),
+    ["message", "message"],
+  );
+  await service.sendMessage(id, "Show another alternative");
+  assert.equal(thread().timeline.at(-1).kind, "products");
+  assert.notEqual(thread().timeline.at(-1).id, picker.id);
+  assert.equal(thread().timeline.at(-1).replacementId, result.proposal.id);
+  const saved = JSON.parse(JSON.stringify(thread().timeline));
+  const resumed = createWorkspaceService(mock.api, {
+    mock: true,
+    capabilities: mock,
+    storage: () => storage,
+  });
+  await resumed.initialize();
+  assert.deepEqual(state(resumed).local.threads.find((t) => t.id === id).timeline, saved);
+  const legacy = { ...thread(), timeline: undefined };
+  assert(ThreadSchema.safeParse(legacy).success);
+  const recovered = getConversationTimeline(legacy, state(service).proposals);
+  assert(
+    recovered.findIndex((entry) => entry.kind === "products") <
+      recovered.findIndex((entry) => entry.kind === "proposal"),
+  );
+  assert.equal(recovered.find((entry) => entry.kind === "products").proposalId, result.proposal.id);
+});
+
+test("recent conversation status follows its latest purchase and never invents a recorded order", async () => {
+  const { service } = await setup();
+  const id = service.newThread("Status test");
+  const thread = () => state(service).local.threads.find((t) => t.id === id);
+  assert.deepEqual(getConversationStatus(thread(), state(service)), {
+    status: "DRAFT",
+    label: "No purchase yet",
+  });
+  const { proposal } = await service.createPurchase(
+    { lines: [{ productId: "milk", quantity: 2 }] },
+    id,
+  );
+  assert.equal(getConversationStatus(thread(), state(service)).status, "PENDING_APPROVAL");
+  for (const status of [
+    "READY",
+    "PENDING_APPROVAL",
+    "APPROVED",
+    "REJECTED",
+    "BLOCKED",
+    "CANCELLED",
+  ]) {
+    assert.equal(
+      getConversationStatus(thread(), { ...state(service), proposals: [{ ...proposal, status }] })
+        .status,
+      status,
+    );
+  }
+  assert.deepEqual(getConversationStatus({ ...thread(), working: true }, state(service)), {
+    status: "PENDING",
+    label: "Preparing",
+  });
+  assert.deepEqual(getConversationStatus({ ...thread(), safetyBlocked: true }, state(service)), {
+    status: "BLOCKED",
+    label: "Needs attention",
+  });
+  const expired = { ...proposal, quoteExpiresAt: "2020-01-01T00:00:00.000Z" };
+  assert.equal(
+    getConversationStatus(thread(), { ...state(service), proposals: [expired] }).label,
+    "Refresh prices",
+  );
+  assert.equal(
+    getConversationStatus(thread(), {
+      ...state(service),
+      local: { ...state(service).local, stale: [proposal.id] },
+    }).label,
+    "Refresh prices",
+  );
+  await service.approve(proposal.id, "APPROVED");
+  assert.equal(getConversationStatus(thread(), state(service)).status, "APPROVED");
+  await service.placeOrder(proposal.id);
+  assert.equal(getConversationStatus(thread(), state(service)).status, "ORDERED");
+  assert.equal(
+    getConversationStatus({ ...thread(), error: "A later question failed" }, state(service)).status,
+    "ORDERED",
+  );
+  assert.deepEqual(
+    getConversationStatus(
+      { ...thread(), proposals: [...thread().proposals, "not-loaded"] },
+      state(service),
+    ),
+    { status: "UNKNOWN", label: "Status unavailable" },
+  );
+  assert.equal(
+    getConversationStatus({ ...thread(), safetyBlocked: true }, state(service)).label,
+    "New request blocked",
+  );
+});
 
 test("approval-first, same review object and idempotent canonical order", async () => {
   const { service } = await setup();

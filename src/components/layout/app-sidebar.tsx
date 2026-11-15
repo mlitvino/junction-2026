@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/components/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { Brand } from "./brand";
+import { PendingReviewBadge } from "./pending-review-badge";
 import { matchesRoute, visibleNavigation, type ShellViewer } from "./navigation";
 
 export function NavigationLinks({
@@ -44,6 +45,7 @@ export function NavigationLinks({
                     >
                       <Icon name={item.icon} className="shrink-0" />
                       <span className="flex-1">{item.label}</span>
+                      {item.href === "/approvals" && <PendingReviewBadge />}
                       {item.upcoming && (
                         <span className="text-caption">
                           Soon<span className="sr-only"> — coming soon</span>

@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import {
   Page,
   Panel,
@@ -48,126 +48,34 @@ export function ActivityTimeline({ resourceId }: { resourceId?: string }) {
     </section>
   );
 }
-export function ToReview() {
-  const s = useWorkspace(),
-    [history, setHistory] = useState(false);
-  useLoad(() => store.refresh(), "to-review");
-  const canReview = s.user?.roles.includes("approver");
-  const pending = s.approvals.filter((a) => a.status === "PENDING");
-  const rows = canReview
-    ? s.approvals
-        .filter((a) => (history ? a.status !== "PENDING" : a.status === "PENDING"))
-        .map((a) => a.proposal)
-    : s.proposals.filter((p) => p.createdBy === s.user?.id && p.approval);
-  return (
-    <Page
-      title="To review"
-      description={
-        canReview
-          ? "Review purchasing requests and the conditions that need your decision."
-          : "Follow the purchasing requests you have sent for review."
-      }
-      wide
-      action={
-        <Button variant="outline" onClick={() => void store.refresh()}>
-          Refresh
-        </Button>
-      }
-    >
-      <ErrorMessage error={s.error} />
-      {canReview && (
-        <div className="flex gap-3">
-          <Button
-            variant={!history ? "secondary" : "ghost"}
-            aria-pressed={!history}
-            onClick={() => setHistory(false)}
-          >
-            Needs action ({pending.length})
-          </Button>
-          <Button
-            variant={history ? "secondary" : "ghost"}
-            aria-pressed={history}
-            onClick={() => setHistory(true)}
-          >
-            History
-          </Button>
-        </div>
-      )}
-      {!rows.length && !s.error ? (
-        <EmptyState title={history ? "No completed reviews yet" : "You’re all caught up"}>
-          Purchases needing a decision will appear here.
-        </EmptyState>
-      ) : (
-        <div className="space-y-4">
-          {rows.map((p) => (
-            <Panel key={p.id}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <StatusBadge status={p.status} />
-                  <h2 className="mt-3 font-semibold">{p.lines[0]?.name ?? "Purchase request"}</h2>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {p.lines.map((l) => `${l.quantity} ${l.salesUnit ?? "units"}`).join(" · ")} ·{" "}
-                    {p.approval?.id}
-                  </p>
-                  <p className="mt-2 text-sm">
-                    {p.decision.reasons.map((r) => r.message).join(" ")}
-                  </p>
-                </div>
-                <div className="space-y-4">
-                  <PriceDisplay value={p.totalExclVat} />
-                  <Link
-                    href={`/approvals/${p.approval!.id}`}
-                    className={`${buttonVariants({ variant: "outline" })} block`}
-                  >
-                    {p.approval?.status === "PENDING" ? "Review purchase" : "View details"}
-                  </Link>
-                </div>
-              </div>
-            </Panel>
-          ))}
-        </div>
-      )}
-    </Page>
-  );
-}
+export { ToReview } from "./to-review";
+
 export function ReviewDetail({ id }: { id: string }) {
   const s = useWorkspace();
-  const router = useRouter();
   useLoad(() => store.refresh(), `review:${id}`);
   const proposal = s.proposals.find((p) => p.approval?.id === id);
   const thread = s.local.threads.find((t) => t.proposals.includes(proposal?.id ?? ""));
   return (
-    <Page
-      title="Review purchase"
-      description="Your decision applies to the exact purchase shown below."
-      action={
-        <Link href="/approvals" className={buttonVariants({ variant: "ghost" })}>
-          Back to review
-        </Link>
-      }
-    >
+    <div className="mx-auto w-full max-w-[860px] space-y-4">
+      <Link
+        href="/approvals"
+        className="mb-2 inline-flex min-h-9 items-center gap-2 text-xs text-muted-foreground hover:text-foreground"
+      >
+        <Icon name="arrow-left" className="size-3.5" />
+        Back to review list
+      </Link>
       <ErrorMessage error={s.error} />
       {proposal ? (
         <>
-          <ApprovalCard proposal={proposal} threadId={thread?.id} />
-          {thread ? (
-            <Link
-              href={`/buyer/conversations/${thread.id}`}
-              className={buttonVariants({ variant: "outline" })}
-            >
-              Ask assistant for changes
-            </Link>
-          ) : (
-            <Button
-              variant="outline"
-              onClick={() =>
-                router.push(`/buyer/conversations/${store.discussPurchase(proposal.id)}`)
-              }
-            >
-              Discuss in assistant
-            </Button>
-          )}
-          <ActivityTimeline resourceId={proposal.id} />
+          <ApprovalCard key={proposal.id} proposal={proposal} threadId={thread?.id} reviewLayout />
+          <details className="rounded-xl border bg-card px-6 py-2">
+            <summary className="cursor-pointer py-3 text-xs text-muted-foreground">
+              Activity & lifecycle
+            </summary>
+            <div className="pb-4 pt-2">
+              <ActivityTimeline resourceId={proposal.id} />
+            </div>
+          </details>
         </>
       ) : (
         !s.error && (
@@ -176,9 +84,10 @@ export function ReviewDetail({ id }: { id: string }) {
           </EmptyState>
         )
       )}
-    </Page>
+    </div>
   );
 }
+
 export function PurchaseDetail({ id }: { id: string }) {
   const s = useWorkspace(),
     error = useLoad(() => store.loadProposal(id), `proposal:${id}`);

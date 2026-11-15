@@ -235,14 +235,30 @@
 /* v3.2: shared conversation, non-modal review and real mobile navigation. */
 @layer components {
   .conversation-layout {
+    --composer-sidebar: 0px;
+    --composer-review: 0px;
+    --composer-page-padding: 1rem;
     min-width: 0;
   }
+  .conversation-composer-space {
+    min-height: 4.75rem;
+    margin-top: auto;
+    flex-shrink: 0;
+  }
   .conversation-composer {
-    --composer-bottom-gap: 5rem;
-    position: sticky;
+    --composer-bottom-gap: calc(5rem + env(safe-area-inset-bottom));
+    position: fixed;
+    left: calc((100% + var(--composer-sidebar) - var(--composer-review)) / 2);
+    width: min(
+      840px,
+      calc(
+        100% - var(--composer-sidebar) - var(--composer-review) - 2 * var(--composer-page-padding)
+      )
+    );
+    transform: translateX(-50%);
     bottom: var(--composer-bottom-gap);
     z-index: 15;
-    margin-top: 2rem;
+    margin-top: auto;
     padding-top: 0.5rem;
     background: var(--background);
   }
@@ -269,13 +285,23 @@
     color: var(--popover-foreground);
     box-shadow: var(--floating-shadow);
   }
+  @media (min-width: 768px) {
+    .conversation-layout {
+      --composer-page-padding: 1.5rem;
+    }
+  }
   @media (min-width: 1024px) {
+    .conversation-layout {
+      --composer-sidebar: 248px;
+      --composer-page-padding: 2rem;
+    }
     .conversation-composer {
       --composer-bottom-gap: 1rem;
     }
   }
   @media (min-width: 1280px) {
     .conversation-layout.review-open {
+      --composer-review: 440px;
       padding-right: 440px;
     }
     .review-drawer {
