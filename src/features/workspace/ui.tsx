@@ -10,7 +10,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
-import { BudgetComparison, SelectionTrail } from "./selection-trail";
+import { AgentSteps, BudgetComparison, SelectionTrail } from "./selection-trail";
 import type {
   Proposal,
   ProposalLine,
@@ -863,6 +863,15 @@ export function ApprovalCard({
             {proposal.selection && proposal.selection.warnings.length > 0 && (
               <p className="text-sm text-warning">{proposal.selection.warnings.join(" ")}</p>
             )}
+            <AgentSteps
+              key={`steps-${proposal.id}`}
+              proposal={proposal}
+              reconciliation={
+                threadId
+                  ? s.local.threads.find((t) => t.id === threadId)?.recipeReconciliation
+                  : undefined
+              }
+            />
             <BudgetComparison proposal={proposal} />
             <SelectionTrail
               key={`trail-${proposal.id}`}

@@ -56,6 +56,10 @@ export const today = () =>
     day: "2-digit",
   }).format(new Date());
 const stamp = () => new Date().toISOString();
+// A revision the policy blocks leaves the previous proposal as it was (`previousCancelled: false`).
+const keptPrevious = (revised: { previousCancelled?: boolean; proposal: { status: string } }) =>
+  revised.previousCancelled === false ||
+  (revised.previousCancelled === undefined && revised.proposal.status === "BLOCKED");
 const uid = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
 function parseQtyUnitQuery(text: string) {
   const unitMatch = text.match(
@@ -522,14 +526,14 @@ export function createWorkspaceService(
       revised.proposal,
       id,
       thread(id).source,
-      revised.proposal.status === "BLOCKED"
+      keptPrevious(revised)
         ? "Change blocked by policy; previous proposal remains active."
         : revised.appliedChanges.join(" ") || "Swapped to an alternative product.",
     );
     await refresh();
     answer(
       id,
-      updated.status === "BLOCKED"
+      keptPrevious(revised)
         ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
         : `Updated the proposal (${revised.appliedChanges.join(", ") || "swapped product"}). Please review before continuing.`,
     );
@@ -562,7 +566,7 @@ export function createWorkspaceService(
         revised.proposal,
         id,
         thread(id).source,
-        revised.proposal.status === "BLOCKED"
+        keptPrevious(revised)
           ? "Change blocked by policy; previous proposal remains active."
           : revised.appliedChanges.join(" ") ||
             "A new purchase proposal replaces the previous quantity.",
@@ -570,7 +574,7 @@ export function createWorkspaceService(
       await refresh();
       answer(
         id,
-        updated.status === "BLOCKED"
+        keptPrevious(revised)
           ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
           : `Updated the proposal (${revised.appliedChanges.join(", ") || `${sales} ${parsed.salesUnit ?? "units"}`}). Please review before continuing.`,
       );
@@ -1219,13 +1223,13 @@ export function createWorkspaceService(
             revised.proposal,
             threadId,
             thread(threadId).source,
-            revised.proposal.status === "BLOCKED"
+            keptPrevious(revised)
               ? "Change blocked by policy; previous proposal remains active."
               : revised.appliedChanges.join(" ") || "Updated purchase proposal.",
           );
           answer(
             threadId,
-            updated.status === "BLOCKED"
+            keptPrevious(revised)
               ? "The revised proposal does not meet purchasing requirements. Your previous proposal remains active. Review the policy reasons below."
               : `Updated the proposal (${revised.appliedChanges.join(", ") || "revised items"}). Please review before continuing.`,
           );

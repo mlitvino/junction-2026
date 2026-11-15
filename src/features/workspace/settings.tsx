@@ -103,6 +103,11 @@ const fieldLabels: Record<SettingKey, string> = {
   preferredOriginCountries: "Preferred origin countries",
   excludedAllergens: "Excluded allergen codes",
   dietaryRestrictions: "Required dietary tags",
+  maxCaloriesPer100g: "Maximum energy, kcal per 100 g/ml",
+  maxFatPer100g: "Maximum fat, g per 100 g/ml",
+  maxSugarPer100g: "Maximum sugar, g per 100 g/ml",
+  maxSaltPer100g: "Maximum salt, g per 100 g/ml",
+  minProteinPer100g: "Minimum protein, g per 100 g/ml",
   allowedCategories: "Categories allowed without approval",
   blockedCategories: "Categories requiring approval",
   allowedProductIds: "Products allowed without approval",
@@ -131,6 +136,11 @@ const listKeys = [
   "preferredBrands",
 ];
 const nullableKeys = [
+  "maxCaloriesPer100g",
+  "maxFatPer100g",
+  "maxSugarPer100g",
+  "maxSaltPer100g",
+  "minProteinPer100g",
   "maxCo2PerKg",
   "minDeliveryReliability",
   "maxOrderValue",

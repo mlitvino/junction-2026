@@ -7,6 +7,7 @@ import { asc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "@/server/db/client";
 import { ensureDatabase } from "@/server/db/migrate";
 import { procurementRecipe } from "@/server/db/schema";
+import { makeStep, stepDetails } from "@/server/purchasing/story";
 import { todayIsoDate } from "@/server/services/inquiry";
 import {
   listInventory,
@@ -469,17 +470,66 @@ export async function createProposalFromRecipe(
 
   const deliveryDate = input.deliveryDate ?? todayIsoDate();
   const coveredCount = ingredientReconciliation.filter((r) => r.coveredByInventory).length;
+  const readSummary = `Loaded recipe '${recipe.name}' (${recipe.id}, ${recipe.source}) for ${requestedServings} servings (${scaleFactor}x the base ${recipe.baseServings}): ${recipe.ingredients
+    .map((i) => `${i.productName} - ${i.productType} - ${i.quantity} ${i.unit}`)
+    .join("; ")}.`;
+  const totalSummary = `Calculated the total quantity of ${ingredientReconciliation.length} ingredient(s) for ${requestedServings} servings: ${ingredientReconciliation
+    .map((r) => `${r.productName} ${r.totalNeededQuantity} ${r.normalizedUnit}`)
+    .join("; ")}.`;
+  const inventorySummary = `Checked ${ingredientReconciliation.length} ingredient(s) against kitchen stock: ${extractedItems.length} to order, ${coveredCount} covered by stock. ${ingredientReconciliation
+    .map((r) => `${r.productName}: needed ${r.totalNeededQuantity} - stock ${r.inventoryStockQuantity} = ${r.actuallyNeededQuantity} ${r.normalizedUnit}`)
+    .join("; ")}.`;
+  const recipeInfo = { recipeId: recipe.id, recipeName: recipe.name, requestedServings, scaleFactor };
   const initialSteps = [
     {
       action: "agent.recipe_loaded",
       summary: `Loaded recipe '${recipe.name}' (${recipe.id}, ${recipe.source}) for ${requestedServings} servings (${scaleFactor}x the base ${recipe.baseServings}).`,
-      details: { recipeId: recipe.id, recipeName: recipe.name, requestedServings, scaleFactor },
+      details: stepDetails("recipe_order", "read_recipe", { ...recipeInfo, ingredients: recipe.ingredients }),
+    },
+    {
+      action: "agent.total_quantity_calculated",
+      summary: totalSummary,
+      details: stepDetails("recipe_order", "total_quantity", {
+        ...recipeInfo,
+        totals: ingredientReconciliation.map((r) => ({
+          productName: r.productName,
+          unit: r.normalizedUnit,
+          baseQuantity: r.aggregatedBaseQuantity,
+          totalNeededQuantity: r.totalNeededQuantity,
+        })),
+      }),
     },
     {
       action: "agent.inventory_reconciled",
       summary: `Checked ${ingredientReconciliation.length} ingredient(s) against kitchen stock: ${extractedItems.length} to order, ${coveredCount} covered by stock.`,
-      details: { ingredientReconciliation },
+      details: stepDetails("recipe_order", "subtract_inventory", { ingredientReconciliation }),
     },
+  ];
+  const initialStorySteps = [
+    makeStep("recipe_order", "read_recipe", {
+      status: recipe.ingredients.length ? "done" : "warning",
+      summary: readSummary,
+      details: { ...recipeInfo, ingredients: recipe.ingredients },
+    }),
+    makeStep("recipe_order", "total_quantity", {
+      status: "done",
+      summary: totalSummary,
+      details: {
+        ...recipeInfo,
+        totals: ingredientReconciliation.map((r) => ({
+          productName: r.productName,
+          productType: r.productType,
+          unit: r.normalizedUnit,
+          baseQuantity: r.aggregatedBaseQuantity,
+          totalNeededQuantity: r.totalNeededQuantity,
+        })),
+      },
+    }),
+    makeStep("recipe_order", "subtract_inventory", {
+      status: "done",
+      summary: inventorySummary,
+      details: { ingredientReconciliation, toOrder: extractedItems },
+    }),
   ];
   const base = { recipeUsed: recipe, requestedServings, scaleFactor, inventoryUsed, ingredientReconciliation };
 
@@ -487,7 +537,7 @@ export async function createProposalFromRecipe(
     return {
       ...base,
       proposal: null,
-      selection: { prompt: null, extractedItems: [], pipeline: [], suggestedAlternatives: [], previousOrdersUsed: [], warnings: [] },
+      selection: { prompt: null, extractedItems: [], pipeline: [], suggestedAlternatives: [], previousOrdersUsed: [], warnings: [], steps: initialStorySteps },
       message: `All ${ingredientReconciliation.length} ingredient(s) for '${recipe.name}' (${requestedServings} servings) are already in stock; nothing to order.`,
     };
   }
@@ -499,6 +549,7 @@ export async function createProposalFromRecipe(
     autoResolvePartialStock: input.autoResolvePartialStock,
     source: "recipe",
     initialSteps,
+    initialStorySteps,
   });
   return { ...base, proposal: result.proposal, selection: result.selection, message: result.message };
 }

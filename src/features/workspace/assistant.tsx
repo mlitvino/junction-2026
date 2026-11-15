@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useWorkspace } from "@/client/use-workspace";
-import { resolveActiveProposal } from "@/client/workspace/service";
+import { buildSwapChipText, resolveActiveProposal } from "@/client/workspace/service";
 import { getConversationStatus, getConversationTimeline } from "@/client/workspace/model";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Icon, type IconName } from "@/components/ui/icon";
@@ -282,6 +282,7 @@ export function AssistantConversation({ id }: { id: string }) {
       </Page>
     );
   const activeId = active?.id;
+  const swapChip = buildSwapChipText(active);
   const drawerProposal =
     review === active?.id &&
     !["CANCELLED", "REJECTED", "ORDERED", "EXPIRED"].includes(active.status)
@@ -498,7 +499,9 @@ export function AssistantConversation({ id }: { id: string }) {
                         </span>
                       </p>
                       <p className="text-caption text-muted-foreground">
-                        Total needed: {Number(item.totalNeededQuantity.toFixed(3))}{" "}
+                        Recipe: {Number(item.aggregatedBaseQuantity.toFixed(3))}{" "}
+                        {item.normalizedUnit} per batch · Total needed:{" "}
+                        {Number(item.totalNeededQuantity.toFixed(3))}{" "}
                         {item.normalizedUnit} · Inventory stock:{" "}
                         {Number(item.inventoryStockQuantity.toFixed(3))} {item.normalizedUnit}
                       </p>
@@ -523,6 +526,21 @@ export function AssistantConversation({ id }: { id: string }) {
             </Link>
           )}
         </div>
+        {swapChip && !thread.working && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-caption text-muted-foreground">
+            <span>Want a different product? Ask for a change:</span>
+            <button
+              type="button"
+              onClick={() => {
+                store.draft(id, swapChip);
+                document.getElementById(`message-${id}`)?.focus();
+              }}
+              className="min-h-9 rounded-full border bg-card px-3 py-1 text-left text-foreground transition-colors hover:bg-accent"
+            >
+              {swapChip}
+            </button>
+          </div>
+        )}
         <ConversationComposer id={id} />
         {drawerProposal && (
           <BasketReviewDrawer proposal={drawerProposal} threadId={id} onClose={close} />

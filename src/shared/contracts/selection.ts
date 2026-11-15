@@ -150,6 +150,46 @@ export const ItemProcurementTraceSchema = z.object({
 
 export type ItemProcurementTrace = z.infer<typeof ItemProcurementTraceSchema>;
 
+/**
+ * One step of the agent's story, in the order of the user stories:
+ *  - `simple_buy` (1 extract, 2 search by type, 3 sort by name, 4 filter by preferences, 5 sort by
+ *    history, 6 compare with budget, 7 create the order, 8 approval or change, 9 checkout + receipt)
+ *  - `recipe_order` (1 read the recipe, 2 total quantity, 3 minus inventory stock, then 4-11 are the
+ *    simple steps 2-9 in the same order)
+ * `step` is the number within its story. Steps 2-5 repeat for every requested item (`item`).
+ */
+export const StoryStepSchema = z.object({
+  story: z.enum(["simple_buy", "recipe_order"]),
+  step: z.number().int().min(1).meta({ description: "Step number within the story.", example: 4 }),
+  key: z.enum([
+    "extract",
+    "read_recipe",
+    "total_quantity",
+    "subtract_inventory",
+    "search_by_type",
+    "sort_by_name",
+    "filter_preferences",
+    "sort_by_history",
+    "compare_budget",
+    "create_order",
+    "approval_or_change",
+    "checkout_receipt",
+  ]),
+  title: z.string().meta({ example: "Remove products that break the preferences" }),
+  item: z.string().nullable().meta({
+    description: "The requested product name the step is about; null when it covers the whole order.",
+  }),
+  status: z.enum(["done", "warning", "blocked", "pending", "skipped"]).meta({
+    description:
+      "`done`; `warning`: done but a human should look; `blocked`: the policy stops the order; `skipped`: nothing to do (e.g. no order history); " +
+      "`pending`: a later human step (8 and 9), where the live state is the proposal's own `status`, `approval` and `orderId`.",
+  }),
+  summary: z.string(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type StoryStep = z.infer<typeof StoryStepSchema>;
+
 /** Suggested alternative candidate for swapping a line item in Step 8 */
 export const SuggestedAlternativeSchema = z.object({
   forProductId: z.string().meta({ example: "460101" }),

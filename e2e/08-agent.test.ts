@@ -35,6 +35,15 @@ describe("agent", () => {
 
     const trace = res.selection.pipeline[0]!;
     assert.ok(trace.conversionNote, "the conversion is explained");
+    // The story of the "simple buy" in nine numbered steps, for the UI.
+    const steps = res.selection.steps ?? [];
+    assert.deepEqual(
+      [...new Set(steps.map((s) => s.step))],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "every step of the simple-buy story is recorded",
+    );
+    assert.ok(steps.every((s) => s.story === "simple_buy"));
+    assert.equal(steps.find((s) => s.key === "compare_budget")?.details?.outcome, "REQUIRE_APPROVAL");
     const product = ok(await org.buyer.get(`/api/products/${line.productId}`), 200, ProductDetailSchema, "chosen product");
     if (product.contentPerSalesUnit?.unit === "L") {
       const litres = line.quantity * product.contentPerSalesUnit.value;
