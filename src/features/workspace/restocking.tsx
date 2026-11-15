@@ -21,6 +21,7 @@ import {
   displayDate,
 } from "./ui";
 import { useLoad } from "./use-load";
+import { RestockScenarioSetup } from "./restock-scenario";
 
 export function RestockPlanCard({ plan }: { plan: RestockPlan }) {
   const action = useAction(),
@@ -93,6 +94,7 @@ export function Restocking() {
       }
     >
       <ErrorMessage error={error || action.error} />
+      <RestockScenarioSetup />
       <Button
         variant="outline"
         disabled={action.busy || !s.local.plans.length}

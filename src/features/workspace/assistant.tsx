@@ -21,6 +21,7 @@ import {
 } from "./ui";
 import { ProductPicker } from "./product-picker";
 import { ChatCheckout } from "./chat-checkout";
+import { RestockScenarioSetup } from "./restock-scenario";
 import type { Proposal } from "@/shared/contracts/purchasing";
 
 const suggestions = [
@@ -581,9 +582,12 @@ export function AssistantConversation({ id }: { id: string }) {
             </Panel>
           )}
           {thread.query === "restocking" && (
-            <Link className={buttonVariants()} href="/restocking/new">
-              Create restock plan
-            </Link>
+            <div className="space-y-4">
+              <RestockScenarioSetup threadId={id} />
+              <Link className={buttonVariants({ variant: "outline" })} href="/restocking">
+                View restock plans
+              </Link>
+            </div>
           )}
         </div>
         <ConversationComposer id={id} />
