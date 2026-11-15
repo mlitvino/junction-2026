@@ -27,6 +27,7 @@ import {
 import {
   computeNameMatchScore,
   computeReplacementQuantity,
+  narrowBeforePricing,
   evaluateBuyerPreferences,
   evaluateCustomerPreferences,
   filterRelevantCandidates,
@@ -409,6 +410,21 @@ describe("Selection relevance, stemming, and modifier handling", () => {
 
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh parsley 100 g"]), ["Dill 100 g"]);
     assert.deepEqual(scoreList("Fresh dill", ["Dill 100 g", "Fresh dill 50 g", "Fresh parsley 100 g"]), ["Fresh dill 50 g"]);
+  });
+});
+
+describe("Narrowing candidates before live price lookups", () => {
+  const row = (id: string, name: string) => ({ id, name, category: "0101", vatCode: "FOOD" });
+
+  it("prices only products whose names can match, best first, at most 40", () => {
+    const rows = [row("1", "Valio milk 1 L"), row("2", "Milk chocolate 100 g"), row("3", "Valio lactose free milk 1 L"), row("4", "Fennel")];
+    assert.deepEqual(narrowBeforePricing(rows, "lactose-free milk").map((r) => r.id)[0], "3");
+    assert.ok(!narrowBeforePricing(rows, "lactose-free milk").some((r) => r.id === "4"));
+    assert.deepEqual(narrowBeforePricing(rows, "unicorn milk"), [], "nothing matches: nothing is priced");
+
+    const many = Array.from({ length: 200 }, (_, i) => row(String(i), `Valio milk ${i} L`));
+    assert.equal(narrowBeforePricing(many, "milk").length, 40);
+    assert.equal(narrowBeforePricing(many).length, 40, "without a name: the first 40 in SQL order");
   });
 });
 

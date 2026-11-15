@@ -891,6 +891,29 @@ export function filterSyntheticCatalogProducts<
   });
 }
 
+/** Most products priced per requested item (Valio price + availability lookups). */
+const PRICE_LOOKUP_CAP = 40;
+
+/**
+ * Static pre-filter before live lookups: with a requested name, keeps the rows that pass the same
+ * relevance pipeline the selection applies later (best first); without one, the first rows in SQL
+ * (similarity) order. Never more than PRICE_LOOKUP_CAP.
+ */
+export function narrowBeforePricing<T extends { id: string; name: string; category: string; vatCode: string | null }>(
+  rows: readonly T[],
+  productName?: string,
+): T[] {
+  if (!productName?.trim()) return rows.slice(0, PRICE_LOOKUP_CAP);
+  const scored = rows.map((r) => ({ id: r.id, category: r.category, vatCode: r.vatCode, nameMatchScore: computeNameMatchScore(productName, r.name) }));
+  const score = new Map(
+    selectRelevantCandidates(scored)
+      .sort((a, b) => b.nameMatchScore - a.nameMatchScore)
+      .slice(0, PRICE_LOOKUP_CAP)
+      .map((c) => [c.id, c.nameMatchScore] as const),
+  );
+  return rows.filter((r) => score.has(r.id)).sort((a, b) => score.get(b.id)! - score.get(a.id)!);
+}
+
 export async function getCandidatesByProductType(
   productType: string,
   deliveryDate: string,
@@ -969,6 +992,10 @@ export async function getCandidatesByProductType(
           .orderBy(...orderBySimilarity)
           .limit(200);
       }
+
+      // Narrow down with the static data before asking Valio (undisclosed rate limits): only products
+      // whose names can match the request are priced, at most PRICE_LOOKUP_CAP per item.
+      rows = narrowBeforePricing(rows, productName);
 
       if (rows.length > 0) {
         const priceMap = new Map<string, { price: number; vat: number }>();
