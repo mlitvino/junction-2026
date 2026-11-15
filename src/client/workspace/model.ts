@@ -3,6 +3,7 @@ import type { SessionUser } from "@/shared/contracts/me";
 import type { Proposal, Order, ApprovalWithProposal } from "@/shared/contracts/purchasing";
 import type { ProductDetail, ProductSummary, OffersResponse } from "@/shared/contracts/products";
 import type { Recipe } from "@/shared/contracts/recipes";
+import { RecipeIngredientReconciliationSchema } from "@/shared/contracts/recipes";
 import type { InventoryItem } from "@/shared/contracts/inventory";
 import type { LayersResponse, EffectiveResponse } from "@/shared/contracts/preferences";
 import type { Member } from "@/shared/contracts/organization";
@@ -36,6 +37,15 @@ export const ThreadSchema = z.object({
   diff: z.string().optional(),
   error: z.string().optional(),
   recipeChoice: z.boolean().optional(),
+  recipeReconciliation: z
+    .object({
+      recipeId: z.string(),
+      recipeName: z.string(),
+      requestedServings: z.number(),
+      scaleFactor: z.number(),
+      items: z.array(RecipeIngredientReconciliationSchema),
+    })
+    .optional(),
   safetyBlocked: z.boolean().optional(),
   requirement: z.enum(["gluten-free", "milk-protein-free"]).optional(),
 });

@@ -10,7 +10,14 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
-import type { Proposal, ProposalLine, Order } from "@/shared/contracts/purchasing";
+import { BudgetComparison, SelectionTrail } from "./selection-trail";
+import type {
+  Proposal,
+  ProposalLine,
+  ProposalVerification,
+  Order,
+  OrderReceipt,
+} from "@/shared/contracts/purchasing";
 
 export const store = apiClient.workspace;
 export const inputClass =
@@ -143,6 +150,7 @@ const statusLabels: Record<string, string> = {
   REJECTED: "Rejected",
   BLOCKED: "Needs attention",
   CANCELLED: "Withdrawn",
+  EXPIRED: "Expired",
   ORDERED: "Order recorded",
   SIMULATED_CONFIRMED: "Recorded",
 };
@@ -155,7 +163,7 @@ export function StatusBadge({
   label?: string;
   icon?: IconName;
 }) {
-  const tone = ["BLOCKED", "REJECTED"].includes(status)
+  const tone = ["BLOCKED", "REJECTED", "EXPIRED"].includes(status)
     ? "bg-destructive/10 text-destructive"
     : ["APPROVED", "ORDERED", "SIMULATED_CONFIRMED"].includes(status)
       ? "bg-success-surface text-success"
@@ -193,6 +201,70 @@ export function ProductLine({ line }: { line: ProposalLine }) {
     </div>
   );
 }
+export function ReceiptPanel({ receipt }: { receipt: OrderReceipt }) {
+  return (
+    <Panel className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h2 className="section-title">Order receipt</h2>
+          <p className="mt-1 text-caption text-muted-foreground">
+            Order {receipt.orderId} · Issued {displayDate(receipt.issuedAt)}
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => window.print()}>
+          Print receipt
+        </Button>
+      </div>
+      <dl className="grid gap-4 text-sm sm:grid-cols-2 md:grid-cols-4">
+        <div>
+          <dt className="text-muted-foreground">Organization</dt>
+          <dd className="mt-1 font-medium">{receipt.organizationName}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Ordered by</dt>
+          <dd className="mt-1 font-medium">{receipt.orderedByName ?? "Buyer"}</dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Approved by</dt>
+          <dd className="mt-1 font-medium">
+            {receipt.approvedByName ?? "Explicit purchasing policy"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted-foreground">Delivery date</dt>
+          <dd className="mt-1 font-medium">{displayDate(receipt.deliveryDate)}</dd>
+        </div>
+      </dl>
+      <div className="divide-y border-t pt-2 text-sm">
+        {receipt.lines.map((line) => (
+          <div key={line.productId} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+            <div>
+              <p className="font-medium">{line.name}</p>
+              <p className="text-caption text-muted-foreground">
+                {line.quantity} {line.salesUnit ?? "units"} ×{" "}
+                {eur(line.unitPriceExclVat, receipt.currency)} · {line.vendorName}
+              </p>
+            </div>
+            <span className="font-medium tabular-nums">
+              {eur(line.lineTotalExclVat, receipt.currency)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between border-t pt-3">
+        <span className="font-medium">Total (excl. VAT)</span>
+        <PriceDisplay value={receipt.totalExclVat} currency={receipt.currency} />
+      </div>
+      <p className="break-all text-caption text-muted-foreground">
+        Proposal {receipt.proposalId} · Hash {receipt.proposalHash}
+        {receipt.proposalSignature
+          ? ` · Signed (${receipt.signatureKeyId ?? "server"})`
+          : ""}
+      </p>
+    </Panel>
+  );
+}
+
 export function OrderSummary({ order }: { order: Order }) {
   return (
     <Panel>
@@ -216,65 +288,185 @@ export function OrderSummary({ order }: { order: Order }) {
   );
 }
 
-export function ProductComparison({ proposal }: { proposal: Proposal }) {
-  const [rows, setRows] = useState<
-    { id: string; name: string; unit: string; price: number | null; confirmed: boolean }[]
-  >([]);
-  const [loaded, setLoaded] = useState(false);
+export function ProductComparison({
+  proposal,
+  threadId,
+  canRevise = false,
+  onRevised,
+}: {
+  proposal: Proposal;
+  threadId?: string;
+  canRevise?: boolean;
+  onRevised?: (revised: Proposal) => void;
+}) {
+  const [rowsState, setRowsState] = useState<{
+    proposalId: string;
+    rows: {
+      id: string;
+      name: string;
+      unit: string;
+      price: number | null;
+      confirmed: boolean;
+      tier?: string | null;
+      reasons?: string[];
+    }[];
+    loaded: boolean;
+  }>({ proposalId: proposal.id, rows: [], loaded: false });
+  const [selectedLineState, setSelectedLineState] = useState<{
+    proposalId: string;
+    lineId: string;
+  }>({ proposalId: proposal.id, lineId: proposal.lines[0]?.productId ?? "" });
   const action = useAction();
+
+  const rows = rowsState.proposalId === proposal.id ? rowsState.rows : [];
+  const loaded = rowsState.proposalId === proposal.id ? rowsState.loaded : false;
+  const selectedLineId =
+    selectedLineState.proposalId === proposal.id
+      ? selectedLineState.lineId
+      : (proposal.lines[0]?.productId ?? "");
+
+  const activeLine =
+    proposal.lines.find((l) => l.productId === selectedLineId) ?? proposal.lines[0];
+  const currentLineIds = new Set(proposal.lines.map((l) => l.productId));
+  const visibleRows = rows.filter((row) => !currentLineIds.has(row.id));
+
+  async function loadAlternatives(line: Proposal["lines"][number] | undefined) {
+    const query = line?.name.split(" ")[0] ?? "";
+    if (!store.mock && query) {
+      const ranked = await store.api.rankProducts({
+        q: query,
+        quantity: line?.quantity ?? 1,
+        date: proposal.pricingDate,
+        limit: 6,
+      });
+      const alt = ranked.ranked
+        .filter((r) => !proposal.lines.some((l) => l.productId === r.product.id))
+        .slice(0, 3);
+      if (alt.length) {
+        setRowsState({
+          proposalId: proposal.id,
+          rows: alt.map((r) => ({
+            id: r.product.id,
+            name: r.product.name,
+            unit: r.salesUnit,
+            price: r.unitPriceExclVat,
+            confirmed: r.availableQuantity !== null,
+            tier: r.tier,
+            reasons: r.reasons,
+          })),
+          loaded: true,
+        });
+        return;
+      }
+    }
+    const products = (await store.api.searchProducts(query)).items
+      .filter((p) => !proposal.lines.some((l) => l.productId === p.id))
+      .slice(0, 3);
+    const offers = products.length
+      ? await store.api.getOffers(
+          products.map((p) => p.id),
+          proposal.pricingDate,
+        )
+      : null;
+    setRowsState({
+      proposalId: proposal.id,
+      rows: products.map((product) => {
+        const offer = offers?.offers.find((o) => o.productId === product.id);
+        return {
+          id: product.id,
+          name: product.name,
+          unit: product.salesUnit,
+          price: offer?.price?.priceExclVat ?? null,
+          confirmed:
+            !!offer?.availability?.orderable &&
+            offer.availability.availableQuantity !== null,
+        };
+      }),
+      loaded: true,
+    });
+  }
+
   return (
     <details
       onToggle={(event) => {
         if (event.currentTarget.open && !loaded)
-          void action.run(async () => {
-            const query = proposal.lines[0]?.name.split(" ")[0] ?? "";
-            const products = (await store.api.searchProducts(query)).items
-              .filter((p) => !proposal.lines.some((l) => l.productId === p.id))
-              .slice(0, 3);
-            const offers = products.length
-              ? await store.api.getOffers(
-                  products.map((p) => p.id),
-                  proposal.pricingDate,
-                )
-              : null;
-            setRows(
-              products.map((product) => {
-                const offer = offers?.offers.find((o) => o.productId === product.id);
-                return {
-                  id: product.id,
-                  name: product.name,
-                  unit: product.salesUnit,
-                  price: offer?.price?.priceExclVat ?? null,
-                  confirmed:
-                    !!offer?.availability?.orderable &&
-                    offer.availability.availableQuantity !== null,
-                };
-              }),
-            );
-            setLoaded(true);
-          });
+          void action.run(() => loadAlternatives(activeLine));
       }}
     >
       <summary className="min-h-11 py-3 text-sm">Compare alternatives</summary>
       <div className="space-y-4 border-t py-4">
         <ErrorMessage error={action.error} />
+        {proposal.lines.length > 1 && (
+          <label className="block text-label">
+            Line to compare &amp; swap
+            <select
+              className={`${inputClass} mt-1.5`}
+              value={activeLine?.productId ?? ""}
+              onChange={(event) => {
+                const nextId = event.target.value;
+                setSelectedLineState({ proposalId: proposal.id, lineId: nextId });
+                setRowsState({ proposalId: proposal.id, rows: [], loaded: false });
+                const nextLine = proposal.lines.find((l) => l.productId === nextId);
+                void action.run(() => loadAlternatives(nextLine));
+              }}
+            >
+              {proposal.lines.map((line) => (
+                <option key={line.productId} value={line.productId}>
+                  {line.name} ({line.quantity} {line.salesUnit ?? "units"})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {action.busy ? (
           <p role="status" className="text-sm text-muted-foreground">
             Checking a shortlist of alternatives…
           </p>
-        ) : rows.length ? (
-          rows.map((row) => (
+        ) : visibleRows.length ? (
+          visibleRows.map((row) => (
             <div className="flex flex-wrap justify-between gap-3 border-b pb-4" key={row.id}>
               <div>
-                <h3 className="text-sm font-medium">{row.name}</h3>
+                <h3 className="text-sm font-medium">
+                  {row.tier ? `${row.tier.toUpperCase()} · ` : ""}
+                  {row.name}
+                </h3>
                 <p className="mt-2 text-caption text-muted-foreground">
                   Per {row.unit} ·{" "}
                   {row.confirmed
                     ? "Available in the current snapshot"
                     : "Availability not confirmed"}
                 </p>
+                {row.reasons && row.reasons.length > 0 && (
+                  <p className="mt-1 text-caption text-muted-foreground">
+                    {row.reasons.join(" · ")}
+                  </p>
+                )}
               </div>
-              <PriceDisplay value={row.price} />
+              <div className="flex items-center gap-3">
+                <PriceDisplay value={row.price} />
+                {canRevise && activeLine && row.id !== activeLine.productId && (
+                  <Button
+                    variant="outline"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.run(async () => {
+                        const revised = await store.reviseProposal(
+                          proposal.id,
+                          {
+                            replacements: [
+                              { fromProductId: activeLine.productId, toProductId: row.id },
+                            ],
+                          },
+                          threadId,
+                        );
+                        onRevised?.(revised.proposal);
+                      })
+                    }
+                  >
+                    Swap to this
+                  </Button>
+                )}
+              </div>
             </div>
           ))
         ) : (
@@ -286,8 +478,9 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
           )
         )}
         <p className="text-caption text-muted-foreground">
-          These are comparison candidates, not verified substitutes. Confirm packaging and dietary
-          requirements before preparing a new proposal.
+          {store.mock
+            ? "These are comparison candidates, not verified substitutes. Confirm packaging and dietary requirements before preparing a new proposal."
+            : "Ranked candidates exclude allergens, dietary restrictions, blocked vendors, and products exceeding CO2 or delivery-reliability limits from your organization policy."}
         </p>
         <Link href="/buyer/products" className={buttonVariants({ variant: "outline" })}>
           Choose products & review quantities
@@ -525,18 +718,33 @@ export function ApprovalCard({
   threadId,
   compact = false,
   onReview,
+  onRevised,
   reviewLayout = false,
 }: {
   proposal: Proposal;
   threadId?: string;
   compact?: boolean;
   onReview?: () => void;
+  onRevised?: (revised: Proposal) => void;
   reviewLayout?: boolean;
 }) {
   const s = useWorkspace();
   const router = useRouter();
   const action = useAction();
-  const [reason, setReason] = useState("");
+  const [reasonState, setReasonState] = useState<{ proposalId: string; text: string }>({
+    proposalId: proposal.id,
+    text: "",
+  });
+  const [verificationState, setVerificationState] = useState<{
+    proposalId: string;
+    data: ProposalVerification | null;
+  }>({ proposalId: proposal.id, data: null });
+  const reason = reasonState.proposalId === proposal.id ? reasonState.text : "";
+  const setReason = (text: string) => setReasonState({ proposalId: proposal.id, text });
+  const verification =
+    verificationState.proposalId === proposal.id ? verificationState.data : null;
+  const setVerification = (data: ProposalVerification | null) =>
+    setVerificationState({ proposalId: proposal.id, data });
   const buyer = s.user?.roles.includes("buyer"),
     approver = s.user?.roles.includes("approver");
   const owner = proposal.createdBy === s.user?.id;
@@ -559,6 +767,11 @@ export function ApprovalCard({
     ? s.local.threads.find((t) => t.id === threadId)?.proposals.indexOf(proposal.id)
     : undefined;
   const superseded = proposal.status === "CANCELLED" && !!threadId;
+  const canRevise =
+    !!buyer &&
+    owner &&
+    ["READY", "PENDING_APPROVAL", "APPROVED"].includes(proposal.status) &&
+    !stale;
   const canDecide =
     approver &&
     proposal.status === "PENDING_APPROVAL" &&
@@ -598,7 +811,7 @@ export function ApprovalCard({
                 label={
                   superseded
                     ? "Superseded — no longer actionable"
-                    : stale && !["ORDERED", "CANCELLED", "REJECTED"].includes(proposal.status)
+                    : stale && !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
                       ? "Prices need refreshing"
                       : canDecide
                         ? "Ready for your approval"
@@ -647,6 +860,17 @@ export function ApprovalCard({
                   choose a product with confirmed supply.
                 </p>
               )}
+            {proposal.selection && proposal.selection.warnings.length > 0 && (
+              <p className="text-sm text-warning">{proposal.selection.warnings.join(" ")}</p>
+            )}
+            <BudgetComparison proposal={proposal} />
+            <SelectionTrail
+              key={`trail-${proposal.id}`}
+              proposal={proposal}
+              threadId={threadId}
+              canRevise={canRevise}
+              onRevised={onRevised}
+            />
             {
               <details>
                 <summary className="min-h-11 py-3 text-sm">
@@ -659,7 +883,13 @@ export function ApprovalCard({
                 </div>
               </details>
             }
-            <ProductComparison proposal={proposal} />
+            <ProductComparison
+              key={proposal.id}
+              proposal={proposal}
+              threadId={threadId}
+              canRevise={canRevise}
+              onRevised={onRevised}
+            />
             <EvidenceDisclosure title="Purchasing conditions & evidence">
               <p>{proposal.decision.reasons.map((r) => r.message).join(" ")}</p>
               <p>
@@ -685,6 +915,52 @@ export function ApprovalCard({
               <p className="break-all text-caption">
                 Proposal: {proposal.id} · Content reference: {proposal.hash}
               </p>
+              {proposal.selection && proposal.selection.pipeline.length > 0 && (
+                <div className="space-y-2 border-t pt-3">
+                  <p className="font-medium text-foreground">Agent selection trail</p>
+                  {proposal.selection.pipeline.map((step, index) => (
+                    <p key={index}>
+                      {step.extractedItem.productName} ({step.parsedQuantity} {step.parsedUnit}
+                      {step.conversionNote ? ` · ${step.conversionNote}` : ""}):{" "}
+                      {step.selectedProduct
+                        ? `Selected ${step.selectedProduct.name} (${step.selectedProduct.rankReasons?.join(", ") || "best match"}).`
+                        : "No matching product selected."}{" "}
+                      {step.removedByPreferences.length > 0
+                        ? `${step.removedByPreferences.length} candidate(s) excluded by rules.`
+                        : ""}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {!store.mock && (
+                <div className="space-y-2 border-t pt-3">
+                  <Button
+                    variant="ghost"
+                    disabled={action.busy}
+                    onClick={() =>
+                      void action.run(async () => {
+                        setVerification(await store.api.verifyProposal(proposal.id));
+                      })
+                    }
+                  >
+                    Verify hash &amp; Valio snapshots
+                  </Button>
+                  {verification && (
+                    <p className="text-caption">
+                      Hash valid: {verification.hashValid ? "Yes" : "No"} · Signature valid:{" "}
+                      {verification.signatureValid === null ||
+                      verification.signatureValid === undefined
+                        ? "Unsigned"
+                        : verification.signatureValid
+                          ? `Yes (${verification.signatureKeyId ?? "server"})`
+                          : "No"}{" "}
+                      · Snapshots matched:{" "}
+                      {verification.lines.filter((l) => l.snapshotFound).length}/
+                      {verification.lines.length}
+                    </p>
+                  )}
+                </div>
+              )}
             </EvidenceDisclosure>
           </>
         )}
@@ -899,7 +1175,7 @@ export function BasketReviewDrawer({
           <Icon name="close" />
         </Button>
       </div>
-      <ApprovalCard proposal={proposal} threadId={threadId} />
+      <ApprovalCard key={proposal.id} proposal={proposal} threadId={threadId} />
     </aside>
   );
 }
