@@ -19,6 +19,7 @@ import {
   StatusBadge,
 } from "./ui";
 import { ProductPicker } from "./product-picker";
+import { ChatCheckout } from "./chat-checkout";
 
 const suggestions = [
   { text: "Order 100 litres of lactose-free milk", icon: "orders" },
@@ -253,8 +254,16 @@ export function AssistantWelcome() {
 
 export function AssistantConversation({ id }: { id: string }) {
   const s = useWorkspace(),
-    [review, setReview] = useState<string | null>(null);
-  const close = useCallback(() => setReview(null), []);
+    [review, setReview] = useState<string | null>(null),
+    [checkout, setCheckout] = useState<string | null>(null);
+  const close = useCallback(() => {
+    setReview(null);
+    setCheckout(null);
+  }, []);
+  const openCheckout = (proposalId: string) => {
+    setReview(proposalId);
+    setCheckout(proposalId);
+  };
   const thread = s.local.threads.find((t) => t.id === id);
   const recommendation = useRef<HTMLDivElement>(null);
   const currentProposalId = thread?.proposals.at(-1);
@@ -282,7 +291,9 @@ export function AssistantConversation({ id }: { id: string }) {
   const activeId = thread.proposals.at(-1),
     active = s.proposals.find((p) => p.id === activeId);
   const drawerProposal =
-    review === active?.id && !["CANCELLED", "REJECTED", "ORDERED"].includes(active.status)
+    review === active?.id &&
+    !["CANCELLED", "REJECTED"].includes(active.status) &&
+    (active.status !== "ORDERED" || checkout === active.id)
       ? active
       : undefined;
   return (
@@ -301,8 +312,8 @@ export function AssistantConversation({ id }: { id: string }) {
                     key={`message-${entry.index}`}
                     className={
                       message.role === "user"
-                        ? "ml-auto w-fit max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-5 py-3 text-sm leading-6 text-primary-foreground sm:max-w-xl"
-                        : "max-w-2xl text-large-body"
+                        ? "luukku-message ml-auto w-fit max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-5 py-3 text-sm leading-6 text-primary-foreground sm:max-w-xl"
+                        : "luukku-message max-w-2xl text-large-body"
                     }
                   >
                     <p className="whitespace-pre-wrap break-words">{message.text}</p>
@@ -355,7 +366,11 @@ export function AssistantConversation({ id }: { id: string }) {
                     proposal={proposal}
                     threadId={id}
                     compact
-                    onReview={() => setReview(proposal.id)}
+                    onReview={() => {
+                      setCheckout(null);
+                      setReview(proposal.id);
+                    }}
+                    onCheckout={() => openCheckout(proposal.id)}
                   />
                   <Link
                     href={`/proposals/${proposal.id}`}
@@ -447,7 +462,16 @@ export function AssistantConversation({ id }: { id: string }) {
         </div>
         <ConversationComposer id={id} />
         {drawerProposal && (
-          <BasketReviewDrawer proposal={drawerProposal} threadId={id} onClose={close} />
+          <BasketReviewDrawer
+            proposal={drawerProposal}
+            threadId={id}
+            onClose={close}
+            onCheckout={() => openCheckout(drawerProposal.id)}
+          >
+            {checkout === drawerProposal.id ? (
+              <ChatCheckout key={drawerProposal.id} proposal={drawerProposal} />
+            ) : undefined}
+          </BasketReviewDrawer>
         )}
       </div>
     </div>

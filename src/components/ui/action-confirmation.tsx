@@ -1,8 +1,10 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "./button";
+import { Icon, type IconName } from "./icon";
 import { useAction } from "@/features/procurement/use-action";
+import { HoldToAuthorize } from "./hold-to-authorize";
 
 export function ActionConfirmation({
   title,
@@ -12,6 +14,8 @@ export function ActionConfirmation({
   destructive = false,
   children,
   onConfirm,
+  triggerIcon,
+  holdToConfirm = false,
 }: {
   title: string;
   description: string;
@@ -20,17 +24,31 @@ export function ActionConfirmation({
   destructive?: boolean;
   children?: React.ReactNode;
   onConfirm: () => Promise<void>;
+  triggerIcon?: IconName;
+  holdToConfirm?: boolean;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const action = useAction();
+  const [session, setSession] = useState(0);
+  const [confirmed, setConfirmed] = useState(false);
+  useEffect(() => {
+    if (!confirmed) return;
+    const timer = setTimeout(() => setConfirmed(false), 550);
+    return () => clearTimeout(timer);
+  }, [confirmed]);
   return (
     <>
       <Button
         ref={button}
         variant={destructive ? "outline" : "default"}
-        onClick={() => dialog.current?.showModal()}
+        className={confirmed ? "luukku-committed" : undefined}
+        onClick={() => {
+          setSession((value) => value + 1);
+          dialog.current?.showModal();
+        }}
       >
+        {triggerIcon && <Icon name={triggerIcon} className="size-4" />}
         {trigger}
       </Button>
       <dialog
@@ -40,7 +58,10 @@ export function ActionConfirmation({
         onCancel={(event) => {
           if (action.busy) event.preventDefault();
         }}
-        onClose={() => button.current?.focus()}
+        onClose={() => {
+          setSession((value) => value + 1);
+          button.current?.focus();
+        }}
         onKeyDown={(event) => {
           if (event.key !== "Tab") return;
           const controls = event.currentTarget.querySelectorAll<HTMLElement>(
@@ -62,6 +83,7 @@ export function ActionConfirmation({
             event.preventDefault();
             void action.run(async () => {
               await onConfirm();
+              if (holdToConfirm && !destructive) setConfirmed(true);
               dialog.current?.close();
             });
           }}
@@ -78,13 +100,25 @@ export function ActionConfirmation({
             <Button variant="ghost" disabled={action.busy} onClick={() => dialog.current?.close()}>
               Cancel
             </Button>
-            <Button
-              type="submit"
-              variant={destructive ? "destructive" : "default"}
-              disabled={action.busy}
-            >
-              {action.busy ? "Saving…" : confirmLabel}
-            </Button>
+            {holdToConfirm && !destructive ? (
+              <HoldToAuthorize
+                key={session}
+                label={confirmLabel}
+                disabled={action.busy}
+                onAuthorize={() => {
+                  const form = dialog.current?.querySelector("form");
+                  if (dialog.current?.open && !action.busy) form?.requestSubmit();
+                }}
+              />
+            ) : (
+              <Button
+                type="submit"
+                variant={destructive ? "destructive" : "default"}
+                disabled={action.busy}
+              >
+                {action.busy ? "Saving…" : confirmLabel}
+              </Button>
+            )}
           </div>
         </form>
       </dialog>

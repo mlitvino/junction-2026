@@ -11,6 +11,8 @@ import { Icon, type IconName } from "@/components/ui/icon";
 import { ActionConfirmation } from "@/components/ui/action-confirmation";
 import { useAction } from "@/features/procurement/use-action";
 import type { Proposal, ProposalLine, Order } from "@/shared/contracts/purchasing";
+import { TradeAirlock } from "./trade-airlock";
+import { AnimatedPrice } from "./animated-price";
 
 export const store = apiClient.workspace;
 export const inputClass =
@@ -104,7 +106,9 @@ export function Panel({
   className?: string;
 }) {
   return (
-    <section className={`rounded-lg border bg-card p-4 md:p-6 ${className}`}>{children}</section>
+    <section className={`luukku-chamber border bg-card p-4 md:p-6 ${className}`}>
+      {children}
+    </section>
   );
 }
 export function EvidenceDisclosure({
@@ -130,7 +134,9 @@ export function PriceDisplay({
 }) {
   return (
     <span className="inline-flex flex-col text-right">
-      <span className="text-lg font-semibold tabular-nums">{eur(value, currency)}</span>
+      <span className="luukku-amount text-lg tabular-nums">
+        <AnimatedPrice value={value} currency={currency} />
+      </span>
       <span className="text-caption text-muted-foreground">excl. VAT</span>
     </span>
   );
@@ -164,7 +170,8 @@ export function StatusBadge({
         : "bg-muted text-muted-foreground";
   return (
     <span
-      className={`inline-flex max-w-full items-center gap-2 rounded-full px-3 py-1 text-caption font-medium ${tone}`}
+      key={status}
+      className={`luukku-status inline-flex max-w-full items-center gap-2 px-3 py-1 ${tone}`}
     >
       {icon ? (
         <Icon name={icon} className="size-3.5 shrink-0" />
@@ -216,7 +223,13 @@ export function OrderSummary({ order }: { order: Order }) {
   );
 }
 
-export function ProductComparison({ proposal }: { proposal: Proposal }) {
+export function ProductComparison({
+  proposal,
+  compact = false,
+}: {
+  proposal: Proposal;
+  compact?: boolean;
+}) {
   const [rows, setRows] = useState<
     { id: string; name: string; unit: string; price: number | null; confirmed: boolean }[]
   >([]);
@@ -224,6 +237,7 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
   const action = useAction();
   return (
     <details
+      className={compact ? "group/comparison open:col-span-full" : undefined}
       onToggle={(event) => {
         if (event.currentTarget.open && !loaded)
           void action.run(async () => {
@@ -255,7 +269,22 @@ export function ProductComparison({ proposal }: { proposal: Proposal }) {
           });
       }}
     >
-      <summary className="min-h-11 py-3 text-sm">Compare alternatives</summary>
+      <summary
+        className={
+          compact
+            ? "flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm text-primary"
+            : "min-h-11 py-3 text-sm"
+        }
+      >
+        {compact && <Icon name="compare" className="size-4 shrink-0" />}
+        Compare alternatives
+        {compact && (
+          <Icon
+            name="chevron"
+            className="size-3.5 transition-transform group-open/comparison:rotate-90"
+          />
+        )}
+      </summary>
       <div className="space-y-4 border-t py-4">
         <ErrorMessage error={action.error} />
         {action.busy ? (
@@ -333,7 +362,7 @@ function ReviewPurchaseSummary({
   );
   return (
     <>
-      <Panel className="rounded-xl space-y-4">
+      <Panel className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             <span>Purchase proposal{version ? ` · Proposal v${version}` : ""}</span>
@@ -386,7 +415,8 @@ function ReviewPurchaseSummary({
           </p>
         </div>
       </Panel>
-      <Panel className="rounded-xl space-y-5">
+      <TradeAirlock key={proposal.id} proposal={proposal} />
+      <Panel className="space-y-5">
         <div className="flex items-center justify-between gap-3 border-b pb-4">
           <h2 className="text-sm font-semibold">
             Items in this proposal ({proposal.lines.length})
@@ -482,8 +512,8 @@ function ReviewPurchaseSummary({
                 (excl. VAT)
               </span>
             </dt>
-            <dd className="text-xl font-semibold tabular-nums">
-              {eur(proposal.totalExclVat, proposal.currency)}
+            <dd className="luukku-amount text-xl tabular-nums">
+              <AnimatedPrice value={proposal.totalExclVat} currency={proposal.currency} />
             </dd>
           </div>
         </dl>
@@ -525,12 +555,14 @@ export function ApprovalCard({
   threadId,
   compact = false,
   onReview,
+  onCheckout,
   reviewLayout = false,
 }: {
   proposal: Proposal;
   threadId?: string;
   compact?: boolean;
   onReview?: () => void;
+  onCheckout?: () => void;
   reviewLayout?: boolean;
 }) {
   const s = useWorkspace();
@@ -566,10 +598,11 @@ export function ApprovalCard({
     !stale;
   async function approve() {
     await store.approve(proposal.id, "APPROVED", reason);
-    if (buyer) await store.placeOrder(proposal.id);
+    if (buyer && onCheckout) onCheckout();
+    else if (buyer) await store.placeOrder(proposal.id);
   }
   return (
-    <div className="space-y-4">
+    <div className="luukku-purchase space-y-4">
       {reviewLayout && (
         <ReviewPurchaseSummary
           proposal={proposal}
@@ -578,114 +611,175 @@ export function ApprovalCard({
           canDecide={!!canDecide}
         />
       )}
-      <Panel className="space-y-4">
+      <section
+        aria-label={!reviewLayout ? "Purchase proposal" : undefined}
+        className={
+          reviewLayout
+            ? "space-y-4 rounded-lg border bg-card p-4 md:p-6"
+            : "overflow-hidden rounded-2xl border bg-card"
+        }
+      >
         {!reviewLayout && (
           <>
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-base font-semibold">
-                  Purchase proposal
-                  {revision !== undefined && revision >= 0 ? ` · v${revision + 1}` : ""}
-                </h2>
-                <p className="mt-1 text-caption text-muted-foreground">
-                  {proposal.approval
-                    ? `Review ${proposal.approval.id}`
-                    : "Prepared for your kitchen"}
-                </p>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-4 md:px-6 md:py-5">
+              <div className="flex flex-wrap items-center gap-3">
+                <h2 className="text-base font-semibold">Purchase proposal</h2>
+                {revision !== undefined && revision >= 0 && (
+                  <span className="rounded bg-muted px-2 py-1 text-caption text-muted-foreground">
+                    Proposal v{revision + 1}
+                  </span>
+                )}
               </div>
               <StatusBadge
                 status={proposal.status}
+                icon={
+                  ["APPROVED", "ORDERED"].includes(proposal.status)
+                    ? "check-circle"
+                    : ["BLOCKED", "REJECTED"].includes(proposal.status)
+                      ? "info"
+                      : "clock"
+                }
                 label={
                   superseded
                     ? "Superseded — no longer actionable"
-                    : stale && !["ORDERED", "CANCELLED", "REJECTED"].includes(proposal.status)
+                    : stale &&
+                        !["ORDERED", "CANCELLED", "REJECTED", "EXPIRED"].includes(proposal.status)
                       ? "Prices need refreshing"
                       : canDecide
-                        ? "Ready for your approval"
+                        ? "Ready for review · Awaiting approval"
                         : undefined
                 }
               />
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="min-w-0">
-                <p className="font-medium">{proposal.lines[0]?.name ?? "Purchase basket"}</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  {proposal.lines.map((l) => `${l.quantity} ${l.salesUnit ?? "units"}`).join(" · ")}{" "}
-                  · Needed {displayDate(proposal.pricingDate)}
-                </p>
-              </div>
-              <PriceDisplay value={proposal.totalExclVat} currency={proposal.currency} />
+            <div className="px-4 pt-4 md:px-6">
+              <TradeAirlock key={proposal.id} proposal={proposal} />
             </div>
-            {proposal.status === "BLOCKED" && (
-              <p className="text-sm text-destructive">
-                {proposal.decision.reasons.map((r) => r.message).join(" ")}
-              </p>
-            )}
-            {proposal.approval?.status === "REJECTED" && (
-              <p className="text-sm">
-                Reason: {proposal.approval.comment ?? "The purchase was declined."} You can revise
-                this request in the Assistant.
-              </p>
-            )}
-            {proposal.lines.some(
-              (l) =>
-                !l.orderable ||
-                l.availableQuantity === null ||
-                (l.availableQuantity ?? 0) < l.quantity,
-            ) && (
-              <p className="text-sm text-warning">
-                Some availability or quantity conditions need attention. Review them before
-                deciding.
-              </p>
-            )}
-            {proposal.status === "READY" &&
-              proposal.decision.outcome === "ALLOW" &&
-              !confirmedSupply && (
-                <p className="text-sm text-warning">
-                  Autonomous ordering is paused because supply is not confirmed. Ask an Approver to
-                  require human review in purchasing policies, then prepare a fresh proposal, or
-                  choose a product with confirmed supply.
+            <div className="space-y-3 px-4 py-5 md:px-6 md:py-6">
+              <div className="grid gap-5 rounded-xl border bg-muted/30 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center md:p-5">
+                <div className="min-w-0 space-y-3">
+                  <p className="flex items-start gap-3 text-sm font-medium leading-6">
+                    <Icon name="restocking" className="mt-0.5 size-4 shrink-0 text-primary" />
+                    <span className="min-w-0 break-words">
+                      {proposal.lines.length} {proposal.lines.length === 1 ? "item" : "items"} ·{" "}
+                      {proposal.lines[0]?.name ?? "Purchase basket"}
+                      {proposal.lines.length > 1 ? ` + ${proposal.lines.length - 1} more` : ""}
+                      {proposal.lines.length === 1 && (
+                        <span className="font-normal">
+                          {" "}
+                          ({proposal.lines[0]?.quantity} {proposal.lines[0]?.salesUnit ?? "units"})
+                        </span>
+                      )}
+                    </span>
+                  </p>
+                  <p
+                    className={`flex items-start gap-3 text-sm leading-5 ${confirmedSupply ? "text-muted-foreground" : "text-warning"}`}
+                  >
+                    <Icon name="truck" className="mt-0.5 size-4 shrink-0" />
+                    <span>
+                      Needed {displayDate(proposal.pricingDate)} ·{" "}
+                      {confirmedSupply
+                        ? "Availability confirmed in quoted snapshot"
+                        : "Availability needs confirmation"}
+                    </span>
+                  </p>
+                  <p className="flex items-start gap-3 text-caption leading-5 text-muted-foreground">
+                    <Icon
+                      name={proposal.decision.outcome === "DENY" ? "info" : "shield-outline"}
+                      className="mt-0.5 size-4 shrink-0"
+                    />
+                    <span>
+                      {proposal.decision.outcome === "DENY"
+                        ? "Purchasing policy blocks this proposal"
+                        : proposal.decision.outcome === "REQUIRE_APPROVAL"
+                          ? "Human approval required by purchasing policy"
+                          : "Within configured purchasing limits"}
+                    </span>
+                  </p>
+                </div>
+                <div className="border-t pt-4 text-right sm:border-l sm:border-t-0 sm:pl-6 sm:pt-0">
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    Total (excl. VAT)
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold tabular-nums text-primary">
+                    <AnimatedPrice value={proposal.totalExclVat} currency={proposal.currency} />
+                  </p>
+                </div>
+              </div>
+              {proposal.status === "BLOCKED" && (
+                <p className="text-sm text-destructive">
+                  {proposal.decision.reasons.map((r) => r.message).join(" ")}
                 </p>
               )}
-            {
-              <details>
-                <summary className="min-h-11 py-3 text-sm">
-                  View items ({proposal.lines.length})
-                </summary>
-                <div className="divide-y">
-                  {proposal.lines.map((line) => (
-                    <ProductLine line={line} key={line.productId} />
-                  ))}
-                </div>
-              </details>
-            }
-            <ProductComparison proposal={proposal} />
-            <EvidenceDisclosure title="Purchasing conditions & evidence">
-              <p>{proposal.decision.reasons.map((r) => r.message).join(" ")}</p>
-              <p>
-                Policy limits are excluding VAT. A VAT-inclusive total is not provided by this
-                purchasing snapshot.
-              </p>
-              <p>
-                Fixed prices valid until{" "}
-                {proposal.quoteExpiresAt
-                  ? new Date(proposal.quoteExpiresAt).toLocaleString("en-GB", {
-                      timeZone: "Europe/Helsinki",
-                    })
-                  : "not supplied"}{" "}
-                (Helsinki).
-              </p>
-              <p>
-                Source:{" "}
-                {proposal.priceSource === "valio"
-                  ? "Valio catalog lookup"
-                  : "Development fixture data"}
-                . Availability is a snapshot, not a reserved delivery slot.
-              </p>
-              <p className="break-all text-caption">
-                Proposal: {proposal.id} · Content reference: {proposal.hash}
-              </p>
-            </EvidenceDisclosure>
+              {proposal.approval?.status === "REJECTED" && (
+                <p className="text-sm">
+                  Reason: {proposal.approval.comment ?? "The purchase was declined."} You can revise
+                  this request in the Assistant.
+                </p>
+              )}
+              {proposal.lines.some(
+                (l) =>
+                  !l.orderable ||
+                  l.availableQuantity === null ||
+                  (l.availableQuantity ?? 0) < l.quantity,
+              ) && (
+                <p className="text-sm text-warning">
+                  Some availability or quantity conditions need attention. Review them before
+                  deciding.
+                </p>
+              )}
+              {proposal.status === "READY" &&
+                proposal.decision.outcome === "ALLOW" &&
+                !confirmedSupply && (
+                  <p className="text-sm text-warning">
+                    Autonomous ordering is paused because supply is not confirmed. Ask an Approver
+                    to require human review in purchasing policies, then prepare a fresh proposal,
+                    or choose a product with confirmed supply.
+                  </p>
+                )}
+              <div className="grid gap-x-6 sm:grid-cols-2">
+                <details className="group/items open:col-span-full">
+                  <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-3 text-sm">
+                    View items ({proposal.lines.length}){" "}
+                    <Icon
+                      name="chevron"
+                      className="size-3.5 transition-transform group-open/items:rotate-90"
+                    />
+                  </summary>
+                  <div className="divide-y border-t">
+                    {proposal.lines.map((line) => (
+                      <ProductLine line={line} key={line.productId} />
+                    ))}
+                  </div>
+                </details>
+                <ProductComparison proposal={proposal} compact />
+              </div>
+              <EvidenceDisclosure title="Purchasing conditions & evidence">
+                <p>{proposal.decision.reasons.map((r) => r.message).join(" ")}</p>
+                <p>
+                  Policy limits are excluding VAT. A VAT-inclusive total is not provided by this
+                  purchasing snapshot.
+                </p>
+                <p>
+                  Fixed prices valid until{" "}
+                  {proposal.quoteExpiresAt
+                    ? new Date(proposal.quoteExpiresAt).toLocaleString("en-GB", {
+                        timeZone: "Europe/Helsinki",
+                      })
+                    : "not supplied"}{" "}
+                  (Helsinki).
+                </p>
+                <p>
+                  Source:{" "}
+                  {proposal.priceSource === "valio"
+                    ? "Valio catalog lookup"
+                    : "Development fixture data"}
+                  . Availability is a snapshot, not a reserved delivery slot.
+                </p>
+                <p className="break-all text-caption">
+                  Proposal: {proposal.id} · Content reference: {proposal.hash}
+                </p>
+              </EvidenceDisclosure>
+            </div>
           </>
         )}
         {reviewLayout && (
@@ -715,7 +809,25 @@ export function ApprovalCard({
           </>
         )}
         <ErrorMessage error={action.error} />
-        <div className="flex flex-wrap items-center gap-3">
+        <div
+          className={
+            reviewLayout
+              ? "flex flex-wrap items-center gap-3"
+              : "flex flex-wrap items-center justify-end gap-3 border-t bg-muted/20 px-4 py-4 md:px-6"
+          }
+        >
+          {!reviewLayout && (
+            <p className="mr-auto flex w-full items-center gap-2 text-caption text-muted-foreground xl:w-auto">
+              <Icon name="lock" className="size-4 shrink-0" />
+              {proposal.status === "ORDERED"
+                ? "Order recorded"
+                : proposal.status === "PENDING_APPROVAL" ||
+                    (proposal.status === "READY" &&
+                      proposal.decision.outcome === "REQUIRE_APPROVAL")
+                  ? "Approval required before purchasing"
+                  : "Decisions apply to this exact proposal"}
+            </p>
+          )}
           {reviewLayout && (
             <Button
               variant="ghost"
@@ -730,22 +842,6 @@ export function ApprovalCard({
               Ask assistant for changes
             </Button>
           )}
-          {canDecide &&
-            (onReview ? (
-              <Button onClick={onReview}>Review & approve</Button>
-            ) : (
-              <ActionConfirmation
-                title="Approve this purchase?"
-                description={
-                  buyer
-                    ? "Approve the exact purchase shown and record its order after the pricing and availability checks."
-                    : "Approve the exact purchase shown. A Buyer will record the order after pricing and availability checks."
-                }
-                trigger={reviewLayout ? "Approve" : "Review & approve"}
-                confirmLabel={buyer ? "Approve & record order" : "Approve purchase"}
-                onConfirm={approve}
-              />
-            ))}
           {canDecide && (
             <ActionConfirmation
               title="Reject purchase?"
@@ -773,15 +869,22 @@ export function ApprovalCard({
               (proposal.status === "READY" &&
                 confirmedSupply &&
                 proposal.decision.outcome === "ALLOW" &&
-                proposal.decision.limits.autonomy === "order_within_limits")) && (
+                proposal.decision.limits.autonomy === "order_within_limits")) &&
+            (onCheckout ? (
+              <Button onClick={onCheckout}>
+                Continue to checkout
+                <Icon name="arrow-right" className="size-4" />
+              </Button>
+            ) : (
               <ActionConfirmation
                 title="Record this order?"
+                holdToConfirm
                 description="The service will recheck the fixed prices and availability. Supplier dispatch and payment are not connected."
                 trigger="Record order"
                 confirmLabel="Record order"
                 onConfirm={() => store.placeOrder(proposal.id).then(() => {})}
               />
-            )}
+            ))}
           {buyer && owner && stale && !["ORDERED", "CANCELLED"].includes(proposal.status) && (
             <Button
               disabled={action.busy}
@@ -826,11 +929,17 @@ export function ApprovalCard({
                 Send for review
               </Button>
             )}
-          {proposal.orderId && (
-            <Link className={buttonVariants()} href={`/orders/${proposal.orderId}`}>
-              View order
-            </Link>
-          )}
+          {proposal.orderId &&
+            (onCheckout ? (
+              <Button onClick={onCheckout}>
+                Open checkout
+                <Icon name="arrow-right" className="size-4" />
+              </Button>
+            ) : (
+              <Link className={buttonVariants()} href={`/orders/${proposal.orderId}`}>
+                View order
+              </Link>
+            ))}
           {threadId && !compact && !reviewLayout && (
             <Link
               className={buttonVariants({ variant: "outline" })}
@@ -851,9 +960,32 @@ export function ApprovalCard({
                 onConfirm={() => store.cancel(proposal.id)}
               />
             )}
+          {canDecide &&
+            (onReview ? (
+              <Button onClick={onReview}>
+                <Icon name="check-circle" className="size-4" />
+                Review & approve
+              </Button>
+            ) : (
+              <ActionConfirmation
+                title="Approve this purchase?"
+                holdToConfirm
+                description={
+                  buyer && !onCheckout
+                    ? "Approve the exact purchase shown and record its order after the pricing and availability checks."
+                    : "Approve the exact purchase shown. A Buyer will record the order after pricing and availability checks."
+                }
+                trigger={reviewLayout ? "Approve" : "Review & approve"}
+                triggerIcon={!reviewLayout ? "check-circle" : undefined}
+                confirmLabel={buyer && !onCheckout ? "Approve & record order" : "Approve purchase"}
+                onConfirm={approve}
+              />
+            ))}
         </div>
         {proposal.status === "PENDING_APPROVAL" && !approver && (
-          <p className="text-caption text-muted-foreground">
+          <p
+            className={`text-caption text-muted-foreground ${reviewLayout ? "" : "px-4 pb-4 md:px-6"}`}
+          >
             Waiting for another authorized approver. You can still discuss changes in the Assistant.
           </p>
         )}
@@ -863,7 +995,7 @@ export function ApprovalCard({
             Decisions apply to this exact proposal. Ordering rechecks prices and availability.
           </p>
         )}
-      </Panel>
+      </section>
     </div>
   );
 }
@@ -872,10 +1004,14 @@ export function BasketReviewDrawer({
   proposal,
   threadId,
   onClose,
+  onCheckout,
+  children,
 }: {
   proposal: Proposal;
   threadId?: string;
   onClose: () => void;
+  onCheckout?: () => void;
+  children?: React.ReactNode;
 }) {
   const close = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -886,20 +1022,20 @@ export function BasketReviewDrawer({
     return () => document.removeEventListener("keydown", key);
   }, [onClose]);
   return (
-    <aside aria-label="Review order" className="review-drawer">
+    <aside aria-label={children ? "Checkout" : "Review order"} className="review-drawer">
       <div className="mb-6 flex items-center justify-between">
-        <h2 className="section-title">Review order</h2>
+        <h2 className="section-title">{children ? "Checkout" : "Review order"}</h2>
         <Button
           ref={close}
           variant="ghost"
           size="icon"
-          aria-label="Close order review"
+          aria-label={children ? "Close checkout" : "Close order review"}
           onClick={onClose}
         >
           <Icon name="close" />
         </Button>
       </div>
-      <ApprovalCard proposal={proposal} threadId={threadId} />
+      {children ?? <ApprovalCard proposal={proposal} threadId={threadId} onCheckout={onCheckout} />}
     </aside>
   );
 }
