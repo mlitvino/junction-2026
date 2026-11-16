@@ -697,9 +697,33 @@ test("connected 401 and contract failures cannot silently activate fixture ident
   );
   const service = createWorkspaceService(http, { mock: false, storage: memory });
   await service.initialize();
+  // No session is a guest (public pages), never the demo identity: no user, no data, no error.
   assert.equal(state(service).user, null);
-  assert.match(state(service).error, /Not signed in/);
+  assert.equal(state(service).error, null);
   assert.equal(state(service).proposals.length, 0);
+});
+
+test("guests see every page with empty data; their actions ask them to sign in before any API call", async () => {
+  let calls = 0;
+  const http = createHttpApi(async () => {
+    calls++;
+    return Response.json({ error: "Not signed in" }, { status: 401 });
+  });
+  const service = createWorkspaceService(http, { mock: false, storage: memory });
+  await service.initialize();
+  assert.equal(calls, 1, "only the passive /me check");
+  assert.deepEqual(await service.searchProducts("milk"), { total: 0, items: [] });
+  await service.refresh();
+  await service.loadSettings();
+  assert.deepEqual(await service.loadRecipes(), []);
+  assert.deepEqual(await service.loadInventory(), []);
+  assert.equal(calls, 1, "page loads don't call the API for a guest");
+  await assert.rejects(
+    service.createPurchase({ lines: [{ productId: "469330", quantity: 1 }] }),
+    /Sign in to continue/,
+  );
+  await assert.rejects(service.loadProposal("p-1"), /Sign in to see this/);
+  assert.equal(calls, 1, "actions stop before the API");
 });
 
 test("dietary changes cannot be bypassed through restock or manual selection in the same thread", async () => {

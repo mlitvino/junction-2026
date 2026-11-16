@@ -108,6 +108,10 @@ export function createHttpApi(transport: typeof fetch = (...args) => fetch(...ar
             : response.status === 403
               ? "Your account does not have permission for this action."
               : "The service could not complete this request.";
+      // Something needed an account: open the sign-in panel (src/client/auth-panel.ts). Not for the
+      // passive /me check on page load: guests may browse without being asked to sign in.
+      if (response.status === 401 && path !== "/me" && typeof window !== "undefined")
+        window.dispatchEvent(new CustomEvent("luukku:auth-required", { detail: "login" }));
       throw new ApiError(error, response.status, code);
     }
     const parsed = schema.safeParse(value);

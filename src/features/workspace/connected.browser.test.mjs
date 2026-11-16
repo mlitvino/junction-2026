@@ -30,8 +30,10 @@ test("connected canonical purchasing across Buyer and Approver browser contexts"
   const errors = [];
   for (const p of [page, review]) p.on("pageerror", (e) => errors.push(e.message));
   assert.equal((await buyer.request.get(base + "/api/me")).status(), 401);
+  // Pages are public: a guest sees the buyer page itself (no redirect) and a Sign in button.
   await page.goto(base + "/buyer");
-  await page.waitForURL(/\/login/);
+  assert.match(page.url(), /\/buyer$/);
+  await page.getByRole("button", { name: "Sign in" }).first().waitFor();
   const suffix = Date.now().toString(36),
     username = `qa32_${suffix}`,
     colleague = `qa32_a_${suffix}`;

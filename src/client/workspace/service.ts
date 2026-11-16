@@ -119,7 +119,7 @@ const DEMO_STOCK = [
 ];
 
 export function createWorkspaceService(
-  api: WorkspaceApi,
+  transport: WorkspaceApi,
   options: {
     mock: boolean;
     storage?: () => Storage | null;
@@ -137,6 +137,30 @@ export function createWorkspaceService(
   let snapshot = server,
     started = false,
     epoch = 0;
+  // Guests (connected mode, loaded, no session) see every page. Passive loads below return empty
+  // for them; anything else that reaches the API is something they did, so it opens the sign-in
+  // panel (src/client/auth-panel.ts, same event name) instead of failing with a 401.
+  const isGuest = () => !options.mock && snapshot.ready && !snapshot.user;
+  const PUBLIC_CALLS = new Set<string>(["getMe", "getHealth"]);
+  const api = new Proxy(transport, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver) as unknown;
+      if (typeof value !== "function" || PUBLIC_CALLS.has(String(key))) return value;
+      return (...args: unknown[]) => {
+        if (isGuest()) askToSignIn();
+        return (value as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  }) as WorkspaceApi;
+  /** Detail pages opened by a guest (e.g. a shared link): say so on the page, don't pop the panel. */
+  function guestCantSee(): never {
+    throw new ApiError("Sign in to see this.", 401, "AUTH_REQUIRED");
+  }
+  function askToSignIn(): never {
+    if (typeof window !== "undefined")
+      window.dispatchEvent(new CustomEvent("luukku:auth-required", { detail: "login" }));
+    throw new ApiError("Sign in to continue.", 401, "AUTH_REQUIRED");
+  }
   const listeners = new Set<() => void>(),
     pending = new Map<string, Promise<unknown>>();
   const key = `aimo:v32:${options.mock ? "development" : "connected"}:presentation`;
@@ -215,6 +239,11 @@ export function createWorkspaceService(
       publish({ ready: true, loading: false, user, local: stored, notice, error: null });
       await refresh();
     } catch (error) {
+      // No session: a guest. Pages stay public; they sign in when they do something that needs it.
+      if (error instanceof ApiError && error.status === 401) {
+        publish({ ready: true, loading: false, error: null });
+        return;
+      }
       publish({
         ready: true,
         loading: false,
@@ -223,6 +252,7 @@ export function createWorkspaceService(
     }
   }
   async function refresh() {
+    if (isGuest()) return;
     const results = await Promise.allSettled([
       api.listProposals(),
       api.listOrders(),
@@ -349,6 +379,7 @@ export function createWorkspaceService(
           );
       }
       body = CreateProposalRequestSchema.parse(body);
+      if (isGuest()) askToSignIn(); // a guest signs in first; the role check below is for members
       if (!snapshot.user?.roles.includes("buyer"))
         throw new Error("A Buyer is required to prepare this purchase.");
       if (threadId && thread(threadId).requirement)
@@ -444,6 +475,7 @@ export function createWorkspaceService(
   }
   async function createPurchaseFromRecipe(body: CreateOrderFromRecipeRequest, threadId?: string) {
     return single(`recipe:${threadId ?? body.recipeId ?? body.dishQuery ?? "custom"}`, async () => {
+      if (isGuest()) askToSignIn(); // a guest signs in first; the role check below is for members
       if (!snapshot.user?.roles.includes("buyer"))
         throw new Error("A Buyer is required to prepare this purchase.");
       const result = await api.createProposalFromRecipe(body);
@@ -484,6 +516,7 @@ export function createWorkspaceService(
     offset = 0,
     filters?: Parameters<WorkspaceApi["searchProducts"]>[2],
   ) {
+    if (isGuest()) return { total: 0, items: [] };
     const result = await api.searchProducts(q, offset, filters);
     publish({ products: result.items });
     return result;
@@ -804,6 +837,7 @@ export function createWorkspaceService(
     );
   }
   async function handleConnectedMessage(id: string, text: string, current?: Proposal) {
+    if (isGuest()) askToSignIn(); // a guest signs in first; the role check below is for members
     if (!snapshot.user?.roles.includes("buyer")) {
       answer(
         id,
@@ -1308,21 +1342,25 @@ export function createWorkspaceService(
     });
   }
   async function loadRecipes(q = "") {
+    if (isGuest()) return [];
     const result = await api.listRecipes(q);
     publish({ recipes: result.recipes });
     return result.recipes;
   }
   async function loadRecipe(id: string) {
+    if (isGuest()) guestCantSee();
     const recipe = await api.getRecipe(id);
     publish({ recipes: [recipe, ...snapshot.recipes.filter((r) => r.id !== id)] });
     return recipe;
   }
   async function loadInventory() {
+    if (isGuest()) return [];
     const result = await api.getInventory();
     publish({ inventory: result.items });
     return result.items;
   }
   async function loadSettings() {
+    if (isGuest()) return;
     const effective = await api.getEffective();
     publish({ effective });
     if (snapshot.user?.roles.includes("approver")) {
@@ -1331,6 +1369,7 @@ export function createWorkspaceService(
     }
   }
   async function loadMembers() {
+    if (isGuest()) return;
     const { members } = await api.getMembers();
     publish({ members });
   }
@@ -1479,6 +1518,7 @@ export function createWorkspaceService(
     createPurchaseFromRecipe,
     async reviseProposal(proposalId: string, body: ReviseProposalRequest, threadId?: string) {
       return single(`revise:${proposalId}`, async () => {
+        if (isGuest()) askToSignIn(); // a guest signs in first; the role check below is for members
         if (!snapshot.user?.roles.includes("buyer"))
           throw new Error("A Buyer is required to revise this purchase.");
         const revised = await api.reviseProposal(proposalId, body);
@@ -1516,11 +1556,13 @@ export function createWorkspaceService(
     approve,
     placeOrder,
     async loadProposal(id: string) {
+      if (isGuest()) guestCantSee();
       const p = await api.getProposal(id);
       putProposal(p);
       return p;
     },
     async loadOrder(id: string) {
+      if (isGuest()) guestCantSee();
       const order = await api.getOrder(id);
       publish({ orders: [order, ...snapshot.orders.filter((o) => o.id !== id)] });
       await this.loadProposal(order.proposalId);
@@ -1542,6 +1584,7 @@ export function createWorkspaceService(
       return single("setup-restock-scenario", async () => {
         if (options.mock)
           throw new Error("This scenario requires the connected Valio Aimo catalog.");
+        if (isGuest()) askToSignIn(); // a guest signs in first; the role check below is for members
         if (!snapshot.user?.roles.includes("buyer"))
           throw new Error("A Buyer role is required to set up restocking.");
         if (

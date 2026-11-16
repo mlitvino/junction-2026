@@ -8,7 +8,7 @@ import { useAction } from "@/features/procurement/use-action";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { today } from "@/client/workspace/service";
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import {
   store,
   inputClass,
@@ -320,7 +320,7 @@ export function ProductPicker({
             Check prices & conditions
           </Button>
           <Button
-            disabled={!lines.length || action.busy || !date || !s.user?.roles.includes("buyer")}
+            disabled={!lines.length || action.busy || !date || !mayAttempt(s, "buyer")}
             onClick={() =>
               void action.run(async () => {
                 const result = await store.createPurchase(

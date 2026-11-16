@@ -1,6 +1,6 @@
 "use client";
 
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import { RESTOCK_SCENARIO_PROMPT } from "@/client/workspace/restock-scenario";
 import { Button } from "@/components/ui/button";
 import { useAction } from "@/features/procurement/use-action";
@@ -9,7 +9,7 @@ import { ErrorMessage, Panel, store } from "./ui";
 export function RestockScenarioSetup({ threadId }: { threadId?: string }) {
   const s = useWorkspace();
   const action = useAction();
-  if (store.mock || !s.user?.roles.includes("buyer")) return null;
+  if (store.mock || !mayAttempt(s, "buyer")) return null;
   const loaded =
     s.local.plans.filter((plan) => plan.id.startsWith("starter-restock-")).length === 4;
   if (loaded) return null;

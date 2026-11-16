@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
 import { useAction } from "@/features/procurement/use-action";
@@ -404,11 +404,21 @@ function PolicyEditor({
   );
 }
 
+/** What a guest sees: the system defaults, editable; saving asks them to sign in. */
+const GUEST_LAYERS: LayersResponse = {
+  base: { scope: "base", values: {}, locked: [], updatedAt: null },
+  buyer: { scope: "buyer", values: {}, locked: [], updatedAt: null },
+  approver: { scope: "approver", values: {}, locked: [], updatedAt: null },
+};
+
 export function Policies() {
   const s = useWorkspace();
   const error = useLoad(() => store.loadSettings(), "policy-layers");
-  const canEdit = !!s.user?.roles.includes("approver");
-  const visibleLayers = canEdit
+  const guest = s.ready && !s.user && !s.error;
+  const canEdit = mayAttempt(s, "approver");
+  const visibleLayers = guest
+    ? GUEST_LAYERS
+    : canEdit
     ? s.layers
     : s.effective?.buyer
       ? {

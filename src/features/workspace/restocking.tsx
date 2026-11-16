@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import { today } from "@/client/workspace/service";
 import { PlanSchema, type RestockPlan } from "@/client/workspace/model";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -149,7 +149,7 @@ export function RestockPlanSummary({ runId }: { runId: string }) {
       <ErrorMessage error={action.error} />
       <div className="flex flex-wrap gap-3">
         <Button
-          disabled={action.busy || (!run.threadId && (!ready || !s.user?.roles.includes("buyer")))}
+          disabled={action.busy || (!run.threadId && (!ready || !mayAttempt(s, "buyer")))}
           onClick={() =>
             void action.run(async () => {
               const result = await store.prepareRun(run.id);

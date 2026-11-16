@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import { usePendingApprovals } from "@/client/use-pending-approvals";
 import type { Thread } from "@/client/workspace/model";
 import type { Proposal } from "@/shared/contracts/purchasing";
@@ -166,7 +166,7 @@ export function ToReview() {
   const [history, setHistory] = useState(false);
   const pendingCount = usePendingApprovals();
   useLoad(() => store.refresh(), "to-review");
-  const canReview = s.user?.roles.includes("approver");
+  const canReview = mayAttempt(s, "approver");
   const all = canReview
     ? s.approvals.map((a) => a.proposal)
     : s.proposals.filter((p) => p.createdBy === s.user?.id && p.approval);

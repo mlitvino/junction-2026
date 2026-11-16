@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { useWorkspace } from "@/client/use-workspace";
+import { mayAttempt, useWorkspace } from "@/client/use-workspace";
 import type { AuditEvent } from "@/shared/contracts/purchasing";
 import { CreateMemberRequestSchema } from "@/shared/contracts/organization";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -58,7 +58,7 @@ export function AgentRegistry() {
               </p>
             </div>
             <Link href="/admin/agents/kitchen" className={buttonVariants({ variant: "outline" })}>
-              {s.user?.roles.includes("approver") ? "Manage policies" : "View preferences"}
+              {mayAttempt(s, "approver") ? "Manage policies" : "View preferences"}
             </Link>
           </div>
         </Panel>
@@ -104,7 +104,7 @@ export function Organization() {
     <Page title="Organization" description={s.user?.organization.name} wide>
       <AdminNavigation />
       <ErrorMessage error={error || action.error} />
-      {!s.user?.roles.includes("approver") ? (
+      {!mayAttempt(s, "approver") ? (
         <EmptyState title="Member management requires an Approver">
           Ask an organization approver to manage access.
         </EmptyState>

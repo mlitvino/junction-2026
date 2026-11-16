@@ -34,7 +34,19 @@ function nextPath(): string {
   return next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
 }
 
-export function AuthForm({ mode }: { mode: Mode }) {
+/**
+ * Sign-in / sign-up form. On the /login and /signup pages it navigates on success; inside the
+ * sign-in panel (`onSwitch` + `onSignedIn`) it switches mode in place and lets the panel reload.
+ */
+export function AuthForm({
+  mode,
+  onSwitch,
+  onSignedIn,
+}: {
+  mode: Mode;
+  onSwitch?: (mode: Mode) => void;
+  onSignedIn?: () => void;
+}) {
   const text = TEXT[mode];
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -49,8 +61,9 @@ export function AuthForm({ mode }: { mode: Mode }) {
     setError(null);
     try {
       await (mode === "login" ? signIn(login, password) : signUp(login, password));
-      // Full navigation so the page guard sees the new session cookie.
-      window.location.assign(nextPath());
+      // Full navigation (or reload in the panel) so the app loads as the signed-in user.
+      if (onSignedIn) onSignedIn();
+      else window.location.assign(nextPath());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
       setPending(false);
@@ -103,9 +116,19 @@ export function AuthForm({ mode }: { mode: Mode }) {
           </button>
           <p className="text-center text-sm text-muted-foreground">
             {text.switchText}{" "}
-            <Link href={text.switchHref} className="underline">
-              {text.switchLink}
-            </Link>
+            {onSwitch ? (
+              <button
+                type="button"
+                className="underline"
+                onClick={() => onSwitch(mode === "login" ? "signup" : "login")}
+              >
+                {text.switchLink}
+              </button>
+            ) : (
+              <Link href={text.switchHref} className="underline">
+                {text.switchLink}
+              </Link>
+            )}
           </p>
         </form>
       </CardContent>

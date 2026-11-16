@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { apiClient, ApiError } from "@/client/api-client";
 import { useWorkspace } from "@/client/use-workspace";
+import { openAuthPanel } from "@/client/auth-panel";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { PageHeader } from "@/components/layout/page-header";
 import { Icon, type IconName } from "@/components/ui/icon";
@@ -74,14 +75,15 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 export function WorkspaceGate({ children }: { children: React.ReactNode }) {
   const s = useWorkspace();
   if (!s.ready) return <Loading />;
-  if (!s.user)
+  // Guests (no session, no error) see the page itself; actions ask them to sign in.
+  if (!s.user && s.error)
     return (
       <div className="mx-auto w-full max-w-xl py-12">
         <h1 className="page-title mb-6">Your workspace is unavailable</h1>
         <ErrorMessage error={s.error} />
-        <Link href="/login" className={buttonVariants({ variant: "outline", className: "mt-6" })}>
+        <Button variant="outline" className="mt-6" onClick={() => openAuthPanel("login")}>
           Sign in
-        </Link>
+        </Button>
       </div>
     );
   return <>{children}</>;

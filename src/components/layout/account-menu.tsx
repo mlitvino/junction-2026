@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { apiClient } from "@/client/api-client";
 import { useWorkspace } from "@/client/use-workspace";
 import { signOut } from "@/client/auth-client";
+import { openAuthPanel } from "@/client/auth-panel";
 import { useAction } from "@/features/procurement/use-action";
 import { Button } from "@/components/ui/button";
 import { Popover } from "@/components/ui/popover";
@@ -30,6 +31,13 @@ export function AccountMenu({ viewer }: { viewer?: ShellViewer }) {
   function closeMenu(target: HTMLElement) {
     target.closest<HTMLElement>("[popover]")?.hidePopover();
   }
+  // A guest (loaded, no session, no error): offer the way in instead of an empty account menu.
+  if (s.ready && !s.user && !s.error)
+    return (
+      <Button onClick={() => openAuthPanel("login")}>
+        Sign in
+      </Button>
+    );
   return (
     <Popover
       label="Open account menu"
