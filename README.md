@@ -13,7 +13,7 @@ pnpm bootstrap         # install, start Postgres, download the Valio files (if m
 pnpm dev               # starts Postgres (Docker) and the app
 ```
 `pnpm bootstrap` is safe to rerun: it skips the download when `data/valio/` already has the files.
-Open http://localhost:3000. You're sent to `/login`; create an account at `/signup` (login + password, min. 2 characters). The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
+Open http://localhost:3000. The app is public; sign in or create an account (login + password) from the **Sign in** button, or when you start something that needs an account. The home page shows the status from `GET /api/health`. API docs: http://localhost:3000/api/docs (Swagger UI), spec: http://localhost:3000/api/openapi.json.
 
 ## Mocks (frontend without a backend)
 Set this in `.env`:

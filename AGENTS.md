@@ -94,7 +94,7 @@ The frontend can build steps 4–5 against the mock as soon as step 1 is agreed,
 ## Auth
 
 - **Default-deny:** every `/api` route needs a session except `/api/health`, `/api/trust/public-key`, `/api/docs`, `/api/openapi.json` and `/api/auth/*` (middleware in `src/server/api/app.ts`); `c.var.user` is always set in private handlers. Routers add `requireRole(...)` for the role they need. Requests can never loosen the organization's rules (no budget, guardrail or preference overrides in request bodies).
-- **Pages:** `src/proxy.ts` redirects to `/login` without a session cookie (cookie check only; the API checks sessions for real). `/login` and `/signup` are public. Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
+- **Pages are public.** Guests see every page (chat, review, settings, …) with empty data: the workspace store (`src/client/workspace/service.ts`) skips its passive loads for them and turns any action into the sign-in panel (`src/features/auth/auth-panel.tsx`) before calling the API. `mayAttempt(s, role)` (`src/client/use-workspace.ts`) keeps role-gated actions clickable for guests. A 401 later in a session also opens the panel. The data stays protected by the API (default-deny above). `src/proxy.ts` only sends signed-in users away from `/login` and `/signup` (cookie check). Skipped when `NEXT_PUBLIC_USE_MOCKS=true`.
 - **Better Auth owns `/api/auth/*`** (sign-up, sign-in, sign-out, session), documented at `/api/auth/reference`. Their shapes are not in `shared/contracts`; the frontend uses `src/client/auth-client.ts`.
 - Its tables (`user`, `session`, `account`, `verification`) are part of our Drizzle schema and migrations (Better Auth uses its Drizzle adapter). Env: `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL`.
 
